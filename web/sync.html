@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fused sync panel</title>
+<style>
+  body { background: #101418; color: #cfd8dc; font-family: -apple-system, "SF Mono", Menlo, monospace;
+         margin: 2em auto; max-width: 1150px; padding: 0 1em; }
+  h1 { font-size: 1.3em; color: #eceff1; }
+  h2 { font-size: 1.05em; color: #90a4ae; margin: 1.2em 0 0.4em; }
+  #clock, #fpga { background: #1a222b; border: 1px solid #2a3540; border-radius: 6px;
+           padding: 0.8em 1em; margin: 1em 0; line-height: 1.6; }
+  #clock .ok { color: #80cbc4; } #clock .warn { color: #ffcc80; }
+  #live { background: #141d24; border: 1px solid #2a3540; border-radius: 6px;
+          padding: 0.8em 1em; margin: 1em 0; }
+  #live .big { font-size: 1.5em; color: #eceff1; font-variant-numeric: tabular-nums; }
+  #spark { width: 100%; height: 90px; display: block; margin-top: 0.5em; }
+  #phase { background: #141d24; border: 1px solid #2a3540; border-radius: 6px;
+           padding: 0.8em 1em; margin: 1em 0; line-height: 1.6; }
+  #phase .big { font-size: 1.5em; color: #eceff1; font-variant-numeric: tabular-nums; }
+  #phasechart { width: 100%; height: 140px; display: block; margin-top: 0.5em; }
+  #dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+         background: #66bb6a; margin-right: 0.5em; transition: opacity 0.3s; }
+  #dot.stale { background: #e57373; }
+  #alerts { display: none; background: #3a1717; border: 1px solid #b71c1c; border-radius: 6px;
+            padding: 0.7em 1em; margin: 1em 0; color: #ef9a9a; font-weight: bold; line-height: 1.6; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #2a3540; padding: 0.45em 0.7em; text-align: left; font-size: 0.92em; }
+  th { background: #1a222b; color: #90a4ae; }
+  td.num { font-variant-numeric: tabular-nums; }
+  tr.bad td { background: #2b1616; }
+  .neg { color: #ef9a9a; } .pos { color: #a5d6a7; } .dim { color: #607d8b; }
+  .ok { color: #80cbc4; } .warn { color: #ffcc80; }
+  #status { color: #607d8b; font-size: 0.85em; margin-top: 1em; }
+  .ladder td { font-size: 0.9em; }
+  .tip { border-bottom: 1px dotted #607d8b; cursor: help; position: relative; }
+  .tip:hover::after {
+    content: attr(data-tip); position: absolute; left: 0; top: 1.4em; z-index: 50;
+    background: #22303c; color: #eceff1; border: 1px solid #37474f; border-radius: 6px;
+    padding: 0.6em 0.8em; width: 300px; font-size: 0.85em; line-height: 1.45;
+    white-space: normal; box-shadow: 0 4px 14px rgba(0,0,0,0.5); pointer-events: none;
+  }
+  #hint { color: #546e7a; font-size: 0.82em; margin: 0.2em 0 0; }
+</style>
+</head>
+<body>
+<h1>Fused multi-satellite sync</h1>
+<div id="hint">Hover any <span class="tip" data-tip="Like this one! Every acronym and unit on this page has a definition.">dotted-underlined term</span> to learn what it means.</div>
+<div id="alerts"></div>
+<div id="live"><span id="dot"></span><span id="livedata" class="big">waiting&hellip;</span>
+  <br><span id="liveage" class="dim"></span>
+  <canvas id="spark"></canvas>
+  <br><span class="dim">tick rate over the last hour (FPGA counter, 32 MHz nominal; PC-read jitter &asymp; &plusmn;30 ppm swamps TCXO physics &mdash; shape, not level, is the signal)</span>
+</div>
+<div id="clock">waiting for data&hellip;</div>
+
+<h2>20 Hz carrier phase &mdash; sub-mm displacement</h2>
+<div id="phase"><span class="dim">waiting for phase producer&hellip;</span></div>
+<canvas id="phasechart"></canvas>
+<span class="dim">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the CLKIN-locked One;
+unwrapped carrier phase &times; &lambda; (&asymp;497.7 mm) = relative path displacement, last 60 s.
+Absolute zero wanders with multipath/atmosphere &mdash; sensitivity, not absolute accuracy, is the spec.</span>
+
+<h2>Per-band drift &mdash; every source measures the same clock</h2>
+<table>
+  <thead><tr>
+    <th>Band / source</th><th>Satellites seen</th><th>Last drift</th>
+    <th>vs consensus</th><th>Last TimeFix</th><th>Anchor</th>
+  </tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="dim">waiting for data&hellip;</td></tr></tbody>
+</table>
+
+<h2>Live satellites &mdash; 1 Hz</h2>
+<div id="livetrack"><span class="dim">waiting for tracker producer&hellip;</span></div>
+<span class="dim">One continuous 16 Msps capture on the Pro (1568.25 MHz centre, bias-tee on) spans BeiDou B1I, GPS L1,
+Galileo E1 and WAAS/SBAS in a single stream; a Rust DLL+PLL channel per satellite reports Doppler, C/N₀ proxy and lock
+duration every second. The locked WAAS GEOs' mean Doppler feeds the &ldquo;L1 / WAAS (live)&rdquo; drift row above.</span>
+
+<h2>Position fix &mdash; live</h2>
+<div id="position"><span class="dim">waiting for position producer&hellip;</span></div>
+<span class="dim">Snapshot PVT from the live tracker's GPS code phases + fresh BKG broadcast ephemeris, solved every
+5 min. Residual RMS tells you how much to trust it: metres = honest fix, kilometres = the phase convention is still
+being nailed down.</span>
+
+<h2>Precision &mdash; all bands, last 60 min</h2>
+<canvas id="prec" style="width:100%;height:170px;display:block;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
+<div id="preclegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
+<canvas id="sats" style="width:100%;height:110px;display:block;background:#141d24;border:1px solid #2a3540;border-radius:6px;margin-top:0.6em;"></canvas>
+<div id="satslegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
+
+<h2>FPGA clock chain &mdash; where the precision comes from</h2>
+<div id="fpga">waiting for data&hellip;</div>
+<table class="ladder">
+  <thead><tr><th>Layer</th><th>Granularity</th><th>Ranging equivalent</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>SPI read of counter</td><td class="num">&plusmn;1&ndash;5 ms</td><td class="num">&plusmn;300&ndash;1500 km</td>
+        <td class="dim">diagnostics only &mdash; USB latency dominates</td></tr>
+    <tr><td>40-bit tick counter @ 32 MHz</td><td class="num">31.25 ns</td><td class="num">9.4 m</td>
+        <td class="ok">live &mdash; counts adclk cycles</td></tr>
+    <tr><td>Nibble-embedded timestamps</td><td class="num">25&ndash;31.25 ns, 0 jitter</td><td class="num">7.5&ndash;9.4 m</td>
+        <td class="ok">LIVE &mdash; verified on hardware 2026-08-23: 2.84M sequence-validated anchors, exact 40 MHz tick recovery from the stream (ext 12-bit mode; 8 Msps boost in test)</td></tr>
+    <tr><td>Clock correction register</td><td class="num">currently 0 ppm (flash reset)</td><td class="num" id="correq">&mdash;</td>
+        <td class="warn">register cleared by today's reflash; residual = raw TCXO drift, see live number above</td></tr>
+    <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;9.4 m</td>
+        <td class="ok">live &mdash; awaiting PPS source (ZED-F9T)</td></tr>
+    <tr><td>Carry-chain TDC (64-tap)</td><td class="num">~150&ndash;400 ps</td><td class="num">4.5&ndash;12 cm</td>
+        <td class="warn">gateware flashed, calibration pending</td></tr>
+    <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps</td><td class="num">~1&ndash;1.5 cm</td>
+        <td class="dim">design target &mdash; reference-limited</td></tr>
+    <tr><td>ATSC pilot carrier PLL</td><td class="num">~0.1 mm @ 20 Hz</td><td class="num">relative displacement</td>
+        <td class="ok">live &mdash; see chart</td></tr>
+    <tr><td>Cross-radio interferometer</td><td class="num">~0.1 mm, clock-free</td><td class="num">differential path</td>
+        <td class="dim">design &mdash; needs trigger sync</td></tr>
+  </tbody>
+</table>
+<div id="status"></div>
+<script>
+var lastState = null;
+function age(epoch) {
+  if (!epoch) return "—";
+  var s = Math.max(0, Date.now() / 1000 - epoch);
+  if (s < 90) return s.toFixed(0) + " s ago";
+  if (s < 5400) return (s / 60).toFixed(0) + " min ago";
+  return (s / 3600).toFixed(1) + " h ago";
+}
+function utc(epoch) {
+  return epoch ? new Date(epoch * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z" : "—";
+}
+function esc(s) {
+  return String(s).replace(/[&<>]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]; });
+}
+function sgn(v) { return v < 0 ? "−" : "+"; }
+function fmtDur(s) {
+  if (s < 90) return s.toFixed(0) + " s";
+  if (s < 5400) return (s / 60).toFixed(1) + " min";
+  return (s / 3600).toFixed(1) + " h";
+}
+function driftCell(s) {
+  if (s.kind !== "ClockDriftPpm" || s.value === null || s.value === undefined) return '<td class="dim">—</td>';
+  var cls = s.value < 0 ? "neg" : "pos";
+  var hz = s.ref_hz ? " (" + sgn(s.value) + Math.abs(s.value * s.ref_hz / 1e6).toFixed(0) + " Hz)" : "";
+  var sig = (s.sigma !== null && s.sigma !== undefined) ? " ± " + s.sigma : "";
+  var sub = "";
+  if (s.ns_per_s !== undefined)
+    sub = '<br><span class="dim">' + sgn(s.ns_per_s) + Math.abs(s.ns_per_s).toFixed(0) + " ns/s · " +
+          sgn(s.m_per_s) + Math.abs(s.m_per_s).toFixed(1) + " m/s ranging</span>";
+  return '<td class="num ' + cls + '">' + sgn(s.value) + Math.abs(s.value).toFixed(3) + sig + " ppm" + hz + sub +
+         '<br><span class="dim">' + age(s.epoch) + "</span></td>";
+}
+function consensusCell(s) {
+  if (s.vs_consensus_ppm === undefined) return '<td class="dim">—</td>';
+  var d = s.vs_consensus_ppm, z = s.z;
+  var cls = Math.abs(z) > 3 ? "neg" : (Math.abs(z) > 1.5 ? "warn" : "ok");
+  return '<td class="num ' + cls + '">' + sgn(d) + Math.abs(d).toFixed(3) + " ppm<br>" +
+         '<span class="dim">' + sgn(z) + Math.abs(z).toFixed(1) + " σ</span>" +
+         (s.alert ? '<br><span class="neg"><b>' + esc(s.alert) + "</b></span>" : "") + "</td>";
+}
+function timefixCell(s) {
+  if (s.kind !== "TimeFix") return '<td class="dim">—</td>';
+  return '<td class="num">+' + s.value + " " + esc(s.unit || "") +
+         '<br><span class="dim">' + age(s.epoch) + "</span></td>";
+}
+function drawSpark(recent) {
+  var cv = document.getElementById("spark");
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!recent || recent.length < 3) return;
+  var hs = recent.map(function (p) { return p[1]; });
+  var lo = Math.min.apply(null, hs), hi = Math.max.apply(null, hs);
+  if (hi - lo < 1) { hi += 0.5; lo -= 0.5; }
+  var pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  var t0 = recent[0][0], t1 = recent[recent.length - 1][0];
+  if (t1 - t0 < 1) t1 = t0 + 1;
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.font = "10px Menlo, monospace";
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach(function (v) {
+    var y = H - (v - lo) / (hi - lo) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillText((v / 1e6).toFixed(6) + " MHz", 4, Math.min(Math.max(y - 2, 10), H - 2));
+  });
+  ctx.strokeStyle = "#80cbc4"; ctx.lineWidth = 1.5; ctx.beginPath();
+  recent.forEach(function (p, i) {
+    var x = (p[0] - t0) / (t1 - t0) * W;
+    var y = H - (p[1] - lo) / (hi - lo) * H;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+function drawPhase(series) {
+  var cv = document.getElementById("phasechart");
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!series || series.length < 3) return;
+  var hs = series.map(function (p) { return p[1]; });
+  var lo = Math.min.apply(null, hs), hi = Math.max.apply(null, hs);
+  if (hi - lo < 0.2) { var mid = (hi + lo) / 2; hi = mid + 0.1; lo = mid - 0.1; }
+  var pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  var t0 = series[0][0], t1 = series[series.length - 1][0];
+  if (t1 - t0 < 1) t1 = t0 + 1;
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.font = "10px Menlo, monospace";
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach(function (v) {
+    var y = H - (v - lo) / (hi - lo) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(2) + " mm", 4, Math.min(Math.max(y - 2, 10), H - 2));
+  });
+  ctx.strokeStyle = "#ce93d8"; ctx.lineWidth = 1.5; ctx.beginPath();
+  series.forEach(function (p, i) {
+    var x = (p[0] - t0) / (t1 - t0) * W;
+    var y = H - (p[1] - lo) / (hi - lo) * H;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+var PALETTE = ["#80cbc4", "#ffcc80", "#ef9a9a", "#a5d6a7", "#90caf9", "#ce93d8", "#fff59d", "#ffab91", "#b0bec5"];
+function drawSeries(cid, legendId, series, prefix, unit) {
+  var cv = document.getElementById(cid);
+  if (!cv) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  var keys = Object.keys(series || {}).filter(function (k) {
+    return prefix === "n:" ? k.indexOf("n:") === 0 : k.indexOf("n:") !== 0;
+  });
+  if (!keys.length) return;
+  var now = Date.now() / 1000, t0 = now - 3600;
+  var lo = Infinity, hi = -Infinity;
+  keys.forEach(function (k) {
+    series[k].forEach(function (p) {
+      if (p[0] >= t0) { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); }
+    });
+  });
+  if (!isFinite(lo)) {
+    // nothing in the last hour at all: scale on each series' last value
+    // so the stale markers below still land on a sane axis
+    keys.forEach(function (k) {
+      var pts = series[k];
+      if (pts.length) { lo = Math.min(lo, pts[pts.length - 1][1]); hi = Math.max(hi, pts[pts.length - 1][1]); }
+    });
+    if (!isFinite(lo)) return;
+  }
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  var pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.font = "10px Menlo, monospace";
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach(function (v) {
+    var y = H - (v - lo) / (hi - lo) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillText(v.toFixed(prefix === "n:" ? 0 : 3) + " " + unit, 4, Math.min(Math.max(y - 2, 10), H - 2));
+  });
+  var legend = [];
+  keys.forEach(function (k, i) {
+    var col = PALETTE[i % PALETTE.length];
+    var label = prefix === "n:" ? k.slice(2) : k;
+    var pts = series[k];
+    var fresh = [];
+    pts.forEach(function (p) { if (p[0] >= t0) fresh.push(p); });
+    if (!fresh.length && pts.length) {
+      // no points in the window: pin the last value at the right edge,
+      // dimmed, with its age — a stale series must say so, not vanish
+      var lp = pts[pts.length - 1];
+      var ageS = Math.max(0, now - lp[0]);
+      var ageTxt = ageS < 3600 ? Math.round(ageS / 60) + "m" : (ageS / 3600).toFixed(1) + "h";
+      legend.push('<span style="color:' + col + ';opacity:.4">●</span> <span style="opacity:.5">' + esc(label) + ' (' + ageTxt + ')</span>');
+      var ys = H - (lp[1] - lo) / (hi - lo) * H;
+      ys = Math.min(Math.max(ys, 8), H - 8);
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = col;
+      ctx.fillRect(W - 10, ys - 1.5, 3, 3);
+      ctx.font = "9px Menlo, monospace";
+      ctx.fillText(ageTxt, W - 36, ys + 3);
+      ctx.globalAlpha = 1;
+      return;
+    }
+    legend.push('<span style="color:' + col + '">●</span> ' + esc(label));
+    if (k === "consensus") {                    // consensus as a line
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath();
+      var started = false;
+      fresh.forEach(function (p) {
+        var x = (p[0] - t0) / 3600 * W, y = H - (p[1] - lo) / (hi - lo) * H;
+        if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+      });
+      ctx.stroke();
+    } else {                                    // everything else: scatter dots
+      ctx.fillStyle = col;
+      fresh.forEach(function (p) {
+        var x = (p[0] - t0) / 3600 * W, y = H - (p[1] - lo) / (hi - lo) * H;
+        ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+      });
+    }
+  });
+  var lg = document.getElementById(legendId);
+  if (lg) lg.innerHTML = legend.join(" &nbsp; ");
+}
+var GLOSSARY = {
+  "ppm": "parts per million — frequency error ratio. 1 ppm at 1575 MHz = 1575 Hz of offset = your clock gains/loses 1000 ns every second.",
+  "ppb": "parts per billion — 1000× finer than ppm. Disciplined-oscillator territory; the phase tracker on this page reaches ~0.4 ppb at 1 s averaging.",
+  "ns/s": "nanoseconds per second — how fast a clock drifts in TIME terms. 1 ppm of frequency error = 1000 ns/s of time walk.",
+  "m/s": "meters/second of apparent range-rate error: clock drift δ makes every Doppler measurement lie by δ × c. 1 ppm ≈ 300 m/s.",
+  "Hz": "Hertz — cycles per second. For carriers: 1 Hz of offset at 602 MHz = 0.0017 ppm.",
+  "kHz": "kilohertz, 1000 Hz.", "MHz": "megahertz, 1,000,000 Hz. L-band GNSS lives at 1176–1610 MHz.",
+  "Doppler": "frequency shift from satellite motion: up to ±5 kHz (MEO) / ±40 kHz (Iridium LEO). Its shape over a pass is what makes Doppler-only positioning work.",
+  "PRN": "Pseudo-Random Noise code number — a satellite's CDMA identity. Each satellite repeats its own public code; receivers separate satellites by correlating against it.",
+  "TCXO": "Temperature-Compensated Crystal Oscillator — the HackRF's 10 MHz master clock. Good (±0.5 ppm) but not atomic; everything here exists to measure and correct it.",
+  "FPGA": "Field-Programmable Gate Array — the iCE40UP5K chip on the HackRF Pro whose logic we reprogram: the timestamp counter, notch filter and TDC all live here.",
+  "TDC": "Time-to-Digital Converter — a carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period. Target ~150 ps single-shot.",
+  "PPS": "Pulse Per Second — a timing receiver's hardware UTC mark, accurate to ~ns. The planned absolute anchor for this station.",
+  "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. The HackRF One is slaved to the Pro this way.",
+  "CLKOUT": "clock output SMA: the Pro exports its disciplined 10 MHz here.",
+  "SPI": "Serial Peripheral Interface — the control bus between the HackRF's processor and FPGA. Reading the tick counter over SPI carries ±ms of USB jitter.",
+  "ADEV": "Allan deviation — clock stability vs averaging time. A τ⁻¹ slope means white measurement noise averaging down, not oscillator physics.",
+  "σ": "sigma — one standard deviation: the honest uncertainty of a measurement. '±σ' tells you how much to trust the number it follows.",
+  "z": "z-score — how many σ a source sits from the consensus of all references. |z| > 3 raises the spoofing alarm.",
+  "consensus": "the weighted mean of all independent references measuring the same clock. Agreement = truth; one source diverging = someone is lying (or broken).",
+  "drift": "the measured carrier offset expressed in ppm of its nominal frequency. For a stationary transmitter this IS the receiver clock's error; for a moving satellite it is mostly orbital Doppler.",
+  "vs consensus": "this row's drift minus the consensus drift of all references. For GEO rows (SBAS) it is a pure per-satellite clock check: green = agrees, amber = disagrees. MEO rows are dimmed because orbital motion dominates them.",
+  "GPS": "US Global Positioning System. L1 C/A at 1575.42 MHz is its oldest and easiest signal.",
+  "WAAS": "Wide Area Augmentation System — GPS correction payloads on GEO satellites. Near-zero Doppler makes them perfect always-on clock references.",
+  "SBAS": "Satellite-Based Augmentation System — the generic family WAAS belongs to (EGNOS in Europe, etc.).",
+  "GEO": "Geostationary orbit, 35,786 km — satellites hover fixed over one longitude. Zero-ish Doppler = stationary carrier.",
+  "MEO": "Medium Earth Orbit (~20,000 km) — where GPS/Galileo/GLONASS/BeiDou live. Passes overhead in hours; Doppler ±5 kHz.",
+  "LEO": "Low Earth Orbit (~780 km for Iridium) — fast passes, huge Doppler, strong signals.",
+  "GNSS": "Global Navigation Satellite Systems — the umbrella term for GPS, Galileo, GLONASS, BeiDou & friends.",
+  "GLONASS": "Russia's GNSS. Legacy signals are FDMA: every satellite sends the SAME code on a different frequency. Broadcasts UTC(SU) directly.",
+  "Galileo": "Europe's GNSS. E1 shares 1575.42 MHz with GPS; its E1 codes are published memory codes, not generated sequences.",
+  "BeiDou": "China's GNSS. B1I at 1561.098 MHz; its GEO/IGSO services (like B2b PPP) are invisible from North America.",
+  "QZSS": "Japan's regional system — below the horizon from Virginia, so excluded from this panel by geometry.",
+  "Iridium": "66-satellite LEO constellation at 1616–1626.5 MHz. Strong bursts; this station's proven Doppler-positioning workhorse.",
+  "Inmarsat": "GEO maritime satellites at L-band (~1535–1555 MHz) — useful as near-stationary carrier references.",
+  "ATSC": "the digital TV standard. Its pilot carrier is GPS-disciplined (single-frequency-network rules) — a free terrestrial frequency reference through a TV antenna.",
+  "FDMA": "Frequency-Division Multiple Access — satellites separated by frequency, not code (GLONASS legacy).",
+  "CDMA": "Code-Division Multiple Access — all satellites on one frequency, separated by their PRN codes (GPS/Galileo/BeiDou).",
+  "C/A": "Coarse/Acquisition code — the civilian GPS L1 signal: 1023 chips, 1.023 Mcps, repeats every 1 ms.",
+  "L1": "the 1575.42 MHz GNSS band — GPS C/A + Galileo E1 + BeiDou B1C + SBAS all share it.",
+  "L2C": "GPS's second civilian signal at 1227.60 MHz, with a dataless pilot (CL) for weak-signal tracking.",
+  "L5": "the 1176.45 MHz safety-of-life band: 10× chipping rate = sharper code = better precision. GPS L5, Galileo E5a and BeiDou B2a all share it.",
+  "E1": "Galileo's 1575.42 MHz signal (CBOC modulation).", "E5a": "Galileo signal at 1176.45 MHz — shares the band with GPS L5.",
+  "E5b": "Galileo signal at 1207.14 MHz.", "E6": "Galileo's 1278.75 MHz signal carrying free high-accuracy (HAS) corrections.",
+  "B1I": "BeiDou's 1561.098 MHz open signal.", "B2a": "BeiDou signal at 1176.45 MHz.", "B3I": "BeiDou's 1268.52 MHz signal.",
+  "G1": "GLONASS's ~1602 MHz FDMA band.", "G2": "GLONASS's ~1246 MHz FDMA band.",
+  "BOC": "Binary Offset Carrier — splits signal energy into two lobes for sharper tracking and band-sharing.",
+  "BPSK": "Binary Phase-Shift Keying — the simplest GNSS modulation: the carrier flips 0°/180° with the code.",
+  "TimeFix": "a decoded absolute-time observation from a signal (e.g. reading the GPS week-second from nav data).",
+  "ClockDriftPpm": "a frequency-offset observation: how far this source says our clock is from truth, in ppm.",
+  "Presence": "a satellite-detection row: who is visible, no precision claim. A constellation vanishing is itself an alarm.",
+  "tick": "one count of the FPGA's 40-bit timestamp counter — 31.25 ns at 32 MHz. Every timestamp on this page is built of ticks.",
+  "bias-tee": "feeds DC power UP the coax to the antenna's built-in amplifier. No bias-tee = deaf active antenna.",
+  "LNA": "Low-Noise Amplifier — the first gain stage; the AA.250 has two inside, powered via bias-tee.",
+  "VGA": "Variable Gain Amplifier — baseband gain knob. Too hot clips the ADC; too cold starves it.",
+  "ADC": "Analog-to-Digital Converter — 8-bit in standard mode, 12-bit in extended-precision mode (~20 dB more dynamic range).",
+  "SNR": "Signal-to-Noise Ratio in dB. +20 dB = signal 100× noise power.",
+  "dB": "decibel — logarithmic ratio. +10 dB = 10×, +20 dB = 100× power.",
+  "FFT": "Fast Fourier Transform — turns time samples into a spectrum. How the pilots and carriers are measured here.",
+  "PLL": "Phase-Locked Loop — tracks a carrier's phase continuously. The 20 Hz phase tracker is one; it resolves mm of path change.",
+  "DLL": "Delay-Locked Loop — tracks the PRN code's arrival time; the pseudorange engine of GNSS.",
+  "NCO": "Numerically Controlled Oscillator — a digital sine generator used to mix signals to baseband.",
+  "LO": "Local Oscillator — the radio's tuning reference; its error IS the clock error we measure.",
+  "I/Q": "In-phase/Quadrature — the two components of a complex radio sample. Everything here is computed on I/Q streams.",
+  "ECEF": "Earth-Centered Earth-Fixed coordinates — XYZ in km from Earth's center; how solvers express position.",
+  "ENU": "East-North-Up — local meters-level frame. Position errors are shown in ENU relative to the surveyed station.",
+  "TOW": "Time of Week — the GPS nav message's seconds-into-week field; how a receiver learns absolute time.",
+  "TLE": "Two-Line Element set — a satellite's public orbit prediction. ~1 km-class error, the dominant position error source for Doppler fixes.",
+  "UTC(SU)": "Soviet/Russian UTC realization — GLONASS broadcasts it natively, no leap-second bookkeeping needed.",
+  "GDOP": "Geometric Dilution of Precision — how satellite geometry amplifies measurement noise into position error.",
+  "RAIM": "Receiver Autonomous Integrity Monitoring — cross-checking satellites against each other to catch a liar.",
+  "EKF": "Extended Kalman Filter — the incremental estimator: fuses every measurement into position+clock state at 20 Hz without re-solving from scratch.",
+  "C/N₀": "carrier-to-noise density in dB-Hz — the fundamental signal-quality currency of GNSS.",
+  "SAW": "Surface Acoustic Wave filter — the AA.250's built-in bandpass; why cellular doesn't desense it (and why Iridium rolls off).",
+  "SOF": "Start of Frame — a USB heartbeat every 1 ms from the host; repurposed here as a free 1 kHz TDC calibration source.",
+  "DNL": "Differential Non-Linearity — per-bin width error of the TDC delay chain; measured by code-density calibration.",
+  "nibble": "4 bits. In ext-precision mode, the top nibble of each 12-bit sample carries the FPGA timestamp INSIDE the data stream — zero-jitter timing.",
+  "cycle slip": "when the PLL loses count of whole carrier cycles (deep fade) — shows as a phase jump; flagged, not hidden.",
+  "multipath": "signal bouncing off buildings/ground before the antenna — the slow cm–m wander on top of every phase measurement."
+};
+var TERM_RE = null;
+function annotate(root) {
+  if (!TERM_RE) {
+    var keys = Object.keys(GLOSSARY).sort(function (a, b) { return b.length - a.length; });
+    TERM_RE = new RegExp("(^|[^A-Za-z0-9/+])(" + keys.map(function (k) {
+      return k.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+    }).join("|") + ")(?![A-Za-z0-9])");
+  }
+  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: function (n) {
+      if (!n.nodeValue || !TERM_RE.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
+      var p = n.parentNode;
+      if (p && (p.nodeName === "CANVAS" || p.classList.contains("tip") ||
+                p.nodeName === "SCRIPT" || p.nodeName === "STYLE")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  var nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(function (node) {
+    var text = node.nodeValue, frag = document.createDocumentFragment(), last = 0, m;
+    TERM_RE.lastIndex = 0;
+    var re = new RegExp(TERM_RE.source, "g");
+    while ((m = re.exec(text))) {
+      var start = m.index + m[1].length, term = m[2];
+      if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
+      var span = document.createElement("span");
+      span.className = "tip";
+      span.setAttribute("data-tip", GLOSSARY[term]);
+      span.textContent = term;
+      frag.appendChild(span);
+      last = start + term.length;
+    }
+    if (last > 0) {
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  });
+}
+function annotateAll() {
+  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "status"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) annotate(el);
+  });
+  document.querySelectorAll("h1, h2, .ladder td, .ladder th, #live .dim").forEach(function (el) { annotate(el); });
+}
+function render(st) {
+  lastState = st;
+  if (st.error) {
+    document.getElementById("clock").innerHTML = '<span class="warn">' + esc(st.error) + " — waiting for data&hellip;</span>";
+    return;
+  }
+  var al = document.getElementById("alerts");
+  if (st.alerts && st.alerts.length) {
+    al.style.display = "block";
+    al.innerHTML = "⚠ INTEGRITY — " + st.alerts.map(esc).join("<br>");
+  } else {
+    al.style.display = "none";
+  }
+  var c = st.clock || {};
+  // live discipline loop (live_radio, in-process on the tracker): its state
+  // is fresher and more authoritative than the static clock block
+  var disc = st.discipline;
+  if (disc && disc.correction_ppm !== undefined && (Date.now() / 1000 - (disc.epoch || 0)) < 120) {
+    c = Object.assign({}, c, {
+      correction_ppm: disc.correction_ppm,
+      residual_ppm: disc.residual_ppm === null ? undefined : disc.residual_ppm,
+      note: "discipline loop: " + (disc.note || "") +
+        (disc.stalled ? " (STALLED)" : ""),
+    });
+  }
+  // headline = the REAL clock number (consensus of independent references);
+  // the SPI-poll tick rate is PC-read jitter — diagnostics, demoted below.
+  if (st.consensus_ppm !== undefined) {
+    var cp = st.consensus_ppm;
+    document.getElementById("livedata").textContent =
+      "consensus " + sgn(cp) + Math.abs(cp).toFixed(3) + " ppm" +
+      "  (" + sgn(cp * 1000) + Math.abs(cp * 1000).toFixed(0) + " ns/s)";
+  }
+  if (c.live_tick_hz) {
+    var drift = c.tick_rate_drift_ppm_vs_session_ref;
+    document.getElementById("liveage").dataset.tick =
+      "SPI tick poll: " + c.live_tick_hz.toLocaleString("en-US", {maximumFractionDigits: 0}) +
+      " Hz (" + sgn(drift) + Math.abs(drift).toFixed(2) + " ppm vs session ref — PC-read jitter, diagnostics only)";
+    drawSpark(c.recent);
+  }
+  var anchor = c.utc_known ? '<span class="ok">FPGA counter anchored</span>'
+                           : '<span class="warn">anchor: ' + esc(c.anchor || "none") + "</span>";
+  var cons = st.consensus_ppm !== undefined
+    ? ' &nbsp;·&nbsp; consensus <b>' + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>" : "";
+  var corrTxt = (c.correction_ppm === undefined || c.correction_ppm === null)
+    ? "correction register <b>0 ppm</b> (cleared by reflash)"
+    : "clock: correction <b>" + (c.correction_ppm >= 0 ? "+" : "") + c.correction_ppm.toFixed(2) + " ppm</b>";
+  document.getElementById("clock").innerHTML =
+    corrTxt +
+    (c.residual_ppm !== undefined ? ", residual <b>" + sgn(c.residual_ppm) + Math.abs(c.residual_ppm).toFixed(3) + " ppm</b>" +
+      ' <span class="dim">(live, from GPS-disciplined ATSC pilots)</span>' : "") +
+    cons + " &nbsp;·&nbsp; " + anchor +
+    (c.note ? '<br><span class="dim">' + esc(c.note) + "</span>" : "") +
+    '<br><span class="dim">state updated ' + utc(st.epoch) + " (" + age(st.epoch) + ")</span>";
+
+  // FPGA section: what the timestamp chain buys, location-wise
+  var res = c.residual_ppm;
+  var fpga = "The 40-bit counter in the iCE40 counts adclk cycles; nibble embedding stamps every sample with " +
+    "<b>zero-jitter</b> ticks recovered straight from the stream (proven: 2.84M anchors, exact 40 MHz domain). ";
+  if (res !== undefined) {
+    var mps = Math.abs(res) * 299.792458;   // ppm -> m/s range-rate
+    var corrNow = c.correction_ppm || 0;
+    fpga += (Math.abs(corrNow) > 0.001
+      ? "The discipline loop holds the reference at correction <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
+        " ppm</b>; the live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>"
+      : "The uncorrected live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>") +
+      " = " + sgn(res) + Math.abs(res * 1000).toFixed(0) +
+      " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
+      "references above. Per-fix the solver absorbs it; what actually limits position is the " +
+      "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today, " +
+      "~150 ps = <b>4.5 cm</b> once the TDC is calibrated. " +
+      "The HackRF One is slaved to this same reference via CLKOUT→CLKIN, so every row above measures one clock.";
+  }
+  if (st.atsc_spread_ppm !== undefined) {
+    fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
+      st.atsc_spread_ppm.toFixed(3) + " ppm</b> (the difference cancels your clock entirely; " +
+      "a sudden move here means a transmitter exciter drifted or something narrowband sits near a pilot — " +
+      "no clock event can explain it).</span>";
+  }
+  document.getElementById("fpga").innerHTML = fpga;
+
+  // 20 Hz carrier-phase section (phase_producer.py, ch35 pilot on the One)
+  var ph = st.phase;
+  if (ph && ph.disp_mm !== undefined && ph.disp_mm !== null) {
+    var lockTag = ph.lock
+      ? '<span class="ok">LOCKED</span>'
+      : '<span class="warn">NO LOCK</span>';
+    var sig = (ph.sigma_mm !== null && ph.sigma_mm !== undefined)
+      ? ' &nbsp;·&nbsp; &sigma; <b>' + ph.sigma_mm.toFixed(3) + " mm</b> (10 s)" : "";
+    var foff = (ph.freq_off_hz !== null && ph.freq_off_hz !== undefined)
+      ? ' &nbsp;·&nbsp; residual <b>' + sgn(ph.freq_off_hz) + Math.abs(ph.freq_off_hz).toFixed(2) +
+        " Hz</b> (" + sgn(ph.freq_off_hz / 602.30944e6 * 1e6) +
+        Math.abs(ph.freq_off_hz / 602.30944e6 * 1e6).toFixed(3) + " ppm)" : "";
+    document.getElementById("phase").innerHTML =
+      lockTag + ' &nbsp;<span class="big">' + sgn(ph.disp_mm) + Math.abs(ph.disp_mm).toFixed(2) +
+      " mm</span> relative to lock" + sig + foff +
+      '<br><span class="dim">' + (ph.rate_hz || 20) + " epochs/s · &lambda; " +
+      (ph.lambda_mm || 497.7) + " mm · updated " + age(ph.epoch) + "</span>";
+    drawPhase(ph.series);
+  }
+
+  var rows = (st.sources || []).map(function (s) {
+    var staleH = s.epoch && st.epoch && (st.epoch - s.epoch) > 3600;
+    var dimStyle = staleH ? ' style="opacity:0.4"' : "";
+    var staleTag = staleH ? ' <span class="warn">[STALE]</span>' : "";
+    return '<tr' + (s.alert ? ' class="bad"' : "") + dimStyle + '><td><b>' + esc(s.band || s.name) + "</b>" + staleTag + "<br>" +
+      '<span class="dim">' + esc(s.name) + " · " + esc(s.kind) + "</span></td>" +
+      "<td>" + esc((s.sats || []).join(", ") || "—") + "</td>" +
+      driftCell(s) + consensusCell(s) + timefixCell(s) +
+      "<td>" + esc(s.anchor || "—") + "</td></tr>";
+  });
+  document.getElementById("rows").innerHTML = rows.join("") ||
+    '<tr><td colspan="6" class="dim">no sources yet</td></tr>';
+
+  // live multi-constellation tracker section (tracker_producer.py, 1 Hz)
+  var lt = document.getElementById("livetrack");
+  var trk = st.tracker;
+  if (trk && trk.sats && trk.sats.length) {
+    var ltRows = trk.sats.map(function (s) {
+      var locked = s.lock_s > 0;
+      var geo = s.sys === "sbas";
+      // SBAS GEOs: near-zero motion Doppler, so vs-consensus is a pure clock
+      // measurement. MEO rows carry km/s of orbital Doppler — shown dim.
+      var driftCell, vsCell;
+      if (s.ppm === undefined) {
+        driftCell = '<td class="num dim">—</td>'; vsCell = '<td class="num dim">—</td>';
+      } else {
+        driftCell = '<td class="num' + (geo ? "" : " dim") + '">' + sgn(s.ppm) + Math.abs(s.ppm).toFixed(2) + "</td>";
+        if (s.vs_ppm === undefined) {
+          vsCell = '<td class="num dim">—</td>';
+        } else if (geo) {
+          var bad = Math.abs(s.vs_ppm) > 0.1;
+          vsCell = '<td class="num ' + (bad ? "warn" : "ok") + '">' + sgn(s.vs_ppm) + Math.abs(s.vs_ppm).toFixed(3) + "</td>";
+        } else {
+          vsCell = '<td class="num dim">' + sgn(s.vs_ppm) + Math.abs(s.vs_ppm).toFixed(1) + "</td>";
+        }
+      }
+      return "<tr><td><b>" + esc(s.sys) + "</b></td>" +
+        '<td class="num">' + s.prn + "</td>" +
+        '<td class="num">' + sgn(s.doppler_hz) + Math.abs(s.doppler_hz).toFixed(0) + " Hz</td>" +
+        driftCell + vsCell +
+        '<td class="num">' + (locked ? fmtDur(s.lock_s) : "—") + "</td>" +
+        '<td class="num">' + s.cn0_proxy.toFixed(1) + "</td>" +
+        '<td class="' + (locked ? "ok" : "dim") + '">' + (locked ? "LOCKED" : "searching") +
+        (s.nav_subs > 0 ? ' <span class="ok" title="parity-valid LNAV subframes decoded live">⬇' + s.nav_subs + "sf</span>" : "") +
+        "</td></tr>";
+    });
+    var ltEpoch = Math.max.apply(null, trk.sats.map(function (s) { return s.epoch || 0; }));
+    lt.innerHTML = "<table><thead><tr><th>Constellation</th><th>PRN</th><th>Doppler</th>" +
+      '<th><span class="tip" data-tip="' + esc(GLOSSARY["drift"] || "") + '">drift, ppm of carrier</span></th>' +
+      '<th><span class="tip" data-tip="' + esc(GLOSSARY["vs consensus"] || "") + '">vs consensus</span> <span class="dim">(GEO only)</span></th>' +
+      "<th>Lock</th><th>C/N₀ proxy</th><th>State</th></tr></thead><tbody>" +
+      ltRows.join("") + "</tbody></table>" +
+      '<span class="dim">' + trk.sats.length + " channels · updated " + age(ltEpoch) +
+      " · SBAS rows: green = within 0.1 ppm of consensus; MEO rows include orbital Doppler, clock not separable yet</span>";
+  } else {
+    lt.innerHTML = '<span class="dim">waiting for tracker producer&hellip;</span>';
+  }
+  // position fix section (position_producer / live_fix, every 5 min)
+  var pos = st.position;
+  var posEl = document.getElementById("position");
+  if (pos && pos.lat !== undefined) {
+    var honest = pos.residual_rms_m < 1000;
+    posEl.innerHTML =
+      "<b>" + pos.lat.toFixed(6) + "°, " + pos.lon.toFixed(6) + "°</b>, alt " +
+      (pos.alt_km * 1000).toFixed(0) + " m" +
+      ' &nbsp;·&nbsp; <span class="' + (honest ? "ok" : "warn") + '">rms ' +
+      pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>" +
+      ' &nbsp;·&nbsp; <span class="dim">' + pos.n_sat + " sats · GDOP " + pos.gdop.toFixed(1) +
+      " · " + esc(pos.source || "") + " · " + age(pos.epoch || st.epoch) + "</span>";
+  } else {
+    posEl.innerHTML = '<span class="dim">waiting for position producer&hellip;</span>';
+  }
+
+  drawSeries("prec", "preclegend", st.band_series || {}, "", "ppm");
+  drawSeries("sats", "satslegend", st.band_series || {}, "n:", "sats");
+  annotateAll();
+}
+function heartbeat() {
+  var dot = document.getElementById("dot");
+  dot.style.opacity = dot.style.opacity === "0.25" ? "1" : "0.25";
+  if (lastState && lastState.epoch) {
+    var s = Math.max(0, Date.now() / 1000 - lastState.epoch);
+    var el = document.getElementById("liveage");
+    el.textContent = "producer " + (s < 120 ? "LIVE" : "STALE") + " — last sample " + s.toFixed(0) + " s ago" +
+      (el.dataset.tick ? " · " + el.dataset.tick : "");
+    dot.className = s < 120 ? "" : "stale";
+  }
+}
+function tick() {
+  fetch("/api/sync").then(function (r) { return r.json(); }).then(render).catch(function (e) {
+    document.getElementById("status").textContent = "fetch failed: " + e;
+  });
+}
+tick();
+setInterval(tick, 5000);
+setInterval(heartbeat, 1000);
+</script>
+</body>
+</html>
