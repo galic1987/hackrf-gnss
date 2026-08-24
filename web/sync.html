@@ -509,7 +509,15 @@ function render(st) {
 
   // 20 Hz carrier-phase section (phase_producer.py, ch35 pilot on the One)
   var ph = st.phase;
-  if (ph && ph.disp_mm !== undefined && ph.disp_mm !== null) {
+  if (ph && (ph.disp_mm === null || ph.disp_mm === undefined)) {
+    // heartbeat with no lock: say so with a FRESH age, never freeze the
+    // last LOCKED reading — silence must look like silence
+    document.getElementById("phase").innerHTML =
+      '<span class="warn">NO LOCK</span> &nbsp;pilot dark — signal or 10 MHz ' +
+      "reference lost; the tracker re-locks automatically within seconds of " +
+      'its return<br><span class="dim">heartbeat live · updated ' + age(ph.epoch) + "</span>";
+    drawPhase([]);
+  } else if (ph) {
     var lockTag = ph.lock
       ? '<span class="ok">LOCKED</span>'
       : '<span class="warn">NO LOCK</span>';

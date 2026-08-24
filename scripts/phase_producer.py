@@ -273,6 +273,8 @@ def main():
             disp10 = deque()                # (t, disp_mm) for sigma, 10 s
             ring = deque(maxlen=1200)       # 60 s of (t, disp_mm) @ 20 Hz
             last_pub = 0.0
+            last_row = None                 # last published drift row (heartbeat)
+            last_ppm = 0.0
 
             while True:
                 if proc.poll() is not None:
@@ -320,6 +322,24 @@ def main():
                         log(f"LOCK — amp median {amp_med:.1f}, phase ref reset")
 
                 if not good or unwrap_ref is None:
+                    # heartbeat while dark: a monitor that goes silent
+                    # exactly when the signal is lost displays its last
+                    # "LOCKED" epoch forever. Publish lock:false with a
+                    # FRESH epoch once a second; the drift row keeps its
+                    # old epoch so the panel ages it stale — the truth.
+                    if t - last_pub >= 1.0 and last_row is not None:
+                        last_pub = t
+                        phase = {
+                            "epoch": round(t, 2), "rate_hz": 20,
+                            "lambda_mm": round(LAMBDA_MM, 1),
+                            "disp_mm": None, "sigma_mm": None,
+                            "freq_off_hz": None, "lock": False,
+                            "series": [],
+                        }
+                        try:
+                            merge_state(phase, last_row, last_ppm)
+                        except Exception as e:
+                            log(f"heartbeat publish failed: {e}")
                     continue
 
                 disp_mm = (unwrapped - unwrap_ref) / (2 * np.pi) * LAMBDA_MM
@@ -384,6 +404,7 @@ def main():
                         "m_per_s": round(ppm * 1e-6 * C_MPS, 2),
                     }
                     try:
+                        last_row, last_ppm = row, ppm
                         merge_state(phase, row, ppm)
                         with open(HIST, "a") as fh:
                             fh.write(json.dumps({
