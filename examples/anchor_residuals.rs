@@ -55,9 +55,23 @@ fn main() {
 
     let text = std::fs::read_to_string(TRACKER_STATE).expect("tracker state");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // Site override: SITE_LL="lat,lon[,h_m]" (the station moved once already —
+    // a hardcoded site makes every residual a lie after a relocation).
+    let lla: [f64; 3] = std::env::var("SITE_LL")
+        .ok()
+        .and_then(|s| {
+            let p: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if p.len() >= 2 {
+                Some([p[0], p[1], *p.get(2).unwrap_or(&20.0)])
+            } else {
+                None
+            }
+        })
+        .unwrap_or(APPROX_LLA);
     let site = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
-        APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
+        lla[0], lla[1], lla[2] / 1000.0,
     ); // km
+    println!("site: {:.5}, {:.5}", lla[0], lla[1]);
 
     // (prn, raw residual in km before clock removal)
     let mut raw: Vec<(u8, f64)> = Vec::new();
