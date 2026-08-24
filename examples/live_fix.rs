@@ -107,6 +107,7 @@ fn main() {
     // live; t_tx already in GPST). Falls back to the coarse snapshot below
     // when fewer than 4 channels are anchored.
     let mut gps_meas = Vec::new();
+    let mut gps_prns: Vec<u8> = Vec::new();
     let mut bds_meas = Vec::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if now - s["epoch"].as_f64().unwrap_or(0.0) > 10.0 {
@@ -139,6 +140,7 @@ fn main() {
                     pseudorange: rho_m / 1000.0 + dt_sv * 299_792.458, // remove sat clock
                     clock_free: false,
                 });
+                gps_prns.push(prn);
             }
             Some("beidou") => {
                 let Some(eph) = bds_ephs.get(&prn) else { continue };
@@ -239,6 +241,71 @@ fn main() {
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
             APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
         );
+        let r0 = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        let alt_hold = || hackrf_gnss::gps::pvt::Meas {
+            sat: [0.0, 0.0, 0.0],
+            pseudorange: r0,
+            clock_free: true,
+        };
+        // EXACT solve (4 sats, 4 unknowns): rms is identically zero and
+        // cannot flag a bad anchor. Leave-one-out: solve all four
+        // 3-sat + alt-hold subsets; if dropping one sat moves the fix by
+        // more than LOO_KM, that sat was dragging the solve — publish the
+        // reduced fix instead, annotated.
+        const LOO_KM: f64 = 20.0;
+        let mut loo_note: Option<String> = None;
+        if meas.len() == 4 {
+            if let Some(full) = hackrf_gnss::gps::pvt::solve(&meas, g) {
+                let mut worst: Option<(u8, f64, hackrf_gnss::gps::pvt::Fix)> = None;
+                for i in 0..meas.len() {
+                    let mut sub = meas.clone();
+                    sub.remove(i);
+                    sub.push(alt_hold());
+                    if let Some(fi) = hackrf_gnss::gps::pvt::solve(&sub, g) {
+                        let d = ((fi.ecef[0] - full.ecef[0]).powi(2)
+                            + (fi.ecef[1] - full.ecef[1]).powi(2)
+                            + (fi.ecef[2] - full.ecef[2]).powi(2))
+                        .sqrt();
+                        if worst.as_ref().map_or(true, |w| d > w.1) {
+                            worst = Some((gps_prns[i], d, fi));
+                        }
+                    }
+                }
+                if let Some((prn, d, fi)) = worst {
+                    if d > LOO_KM {
+                        eprintln!(
+                            "live_fix: LOO — dropping PRN {prn} moves the fix {d:.0} km; publishing the reduced 3-sat fix"
+                        );
+                        loo_note = Some(format!(
+                            "LOO excluded PRN {prn} (moved fix {d:.0} km)"
+                        ));
+                        let gate = "ungated — exact solve, unverifiable";
+                        println!(
+                            "PVT(anchored,2D(alt-hold),LOO): {:.6} {:.6} h {:.0} m | 3 sats, rms {:.1} m, gdop {:.1} [{}; {}]",
+                            fi.lat, fi.lon, fi.alt_km * 1000.0, fi.residual_rms_m, fi.gdop, gate,
+                            loo_note.as_deref().unwrap_or("")
+                        );
+                        let doc = serde_json::json!({
+                            "epoch": now,
+                            "ttl_s": 900,
+                            "position": {
+                                "lat": fi.lat, "lon": fi.lon, "alt_km": fi.alt_km,
+                                "clock_km": fi.clock_km, "residual_rms_m": fi.residual_rms_m,
+                                "gdop": fi.gdop, "n_sat": fi.n_sat,
+                                "mode": "2D(alt-hold)",
+                                "gate": gate,
+                                "loo": loo_note,
+                                "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
+                            }
+                        });
+                        let tmp = format!("{OUT}.tmp");
+                        std::fs::write(&tmp, doc.to_string()).unwrap();
+                        std::fs::rename(&tmp, OUT).unwrap();
+                        return;
+                    }
+                }
+            }
+        }
         let mut mode = "3D";
         if meas.len() == 3 {
             // 3 sats: altitude-hold pseudo-measurement. Range to Earth's
@@ -247,12 +314,7 @@ fn main() {
             // this latitude). The row carries no receiver clock — solved
             // with a zero clock coefficient (clock_free), otherwise clock
             // and altitude trade freely along this row.
-            let r0 = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
-            meas.push(hackrf_gnss::gps::pvt::Meas {
-                sat: [0.0, 0.0, 0.0],
-                pseudorange: r0,
-                clock_free: true,
-            });
+            meas.push(alt_hold());
             mode = "2D(alt-hold)";
         }
         if let Some(f) = hackrf_gnss::gps::pvt::solve(&meas, g) {

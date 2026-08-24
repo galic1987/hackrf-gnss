@@ -142,6 +142,34 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
     // slip is a 20 ms multiple, a garbage t_tx decode is seconds.
     if let Some((prev_t_bit, prev_t_tx)) = ch.anchor {
         let d_tx = t_tx - prev_t_tx;
+        // Wrong-tooth self-heal. A first pick can land one code period off
+        // (e.g. picked before the flip-dip audit converged); left alone the
+        // propagation below propagates the wrong tooth forever (observed
+        // live: a channel parked +1 tooth for 15+ min). The rescue is the
+        // bookkeeping snap — but it is only trustworthy while YOUNG: the
+        // approximation wanders from the comb at up to ~3 us/s from bit
+        // sync, so within ~90 s it is provably inside a quarter-tooth of
+        // the true boundary and a confident snap IS the true tooth. Older
+        // channels can sit confidently on the WRONG tooth, so the gate
+        // closes with age and an established anchor is never disturbed by
+        // a wandered approximation.
+        if d_tx >= 0.0 && d_tx < 120.0 && ch.nav_bits.len() < 4500 {
+            let q = (t_wrap - t_bit_approx) / t_code;
+            let cand = t_wrap - t_code * q.round();
+            let conf = (q - q.round()).abs(); // teeth from approx to its snap
+            let expected = prev_t_bit + (d_tx * 1000.0).round() * t_code;
+            let d_teeth = ((cand - expected) / t_code).abs();
+            if conf <= 0.25 && (0.5..=1.5).contains(&d_teeth) {
+                eprintln!(
+                    "live: PRN {} anchor {:+.1} us off the confident bookkeeping snap — re-picked (wrong-tooth first pick)",
+                    ch.prn,
+                    (expected - cand) * 1e6
+                );
+                ch.edge_off_s = cand - t_bit_approx;
+                ch.edge_off_valid = true;
+                return cand;
+            }
+        }
         if d_tx == 0.0 {
             // Same subframe re-validated (the per-second re-anchor from the
             // widened re-scan window): the boundary instant is FIXED, and
@@ -2467,6 +2495,90 @@ mod tests {
         );
     }
 
+    /// Channel state with the bookkeeping approximation a controlled
+    /// distance from the true boundary, with `nbits` bits of stream age
+    /// (the self-heal gate opens only for young streams: the approximation
+    /// wanders ~3 us/s from bit sync, so only a young approximation is
+    /// provably within a quarter-tooth of the true boundary).
+    fn approx_setup(
+        target_off_ms: f64,
+        nbits: usize,
+    ) -> (Channel, f64, usize, f64, f64) {
+        let dopp = 1000.0;
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, dopp, 0.0);
+        ch.carrier_freq = dopp;
+        let code_rate = 1.023e6 * (1.0 + dopp / F_L1);
+        let t_c = 1023.0 / code_rate;
+        let t_proc = 100_000.0;
+        ch.nav_bits = vec![0u8; nbits];
+        let mut picked = None;
+        for j in 0..1023 {
+            let cp = 300.0 + j as f64;
+            let t_true = (t_proc - cp / code_rate) - 6161.0 * t_c;
+            let abs_bit =
+                (nbits as f64 + (t_true + target_off_ms / 1e3 - t_proc) / 0.02).round() as usize;
+            for ms in 0..20usize {
+                let approx =
+                    t_proc - ms as f64 / 1000.0 + 0.02 * (abs_bit as f64 - nbits as f64);
+                let off = (approx - t_true) * 1e3;
+                if (off - target_off_ms).abs() < 0.05 {
+                    picked = Some((cp, ms, abs_bit, t_true));
+                    break;
+                }
+            }
+            if picked.is_some() {
+                break;
+            }
+        }
+        let (cp, ms, abs_bit, t_true) = picked.expect("no achievable offset");
+        ch.code_phase = cp;
+        ch.nav_ms = vec![0.0; ms];
+        (ch, t_proc, abs_bit, t_true, t_c)
+    }
+
+    /// Wrong-tooth self-heal: a young channel whose stored anchor sits one
+    /// tooth off the confidently-snapped bookkeeping boundary must re-pick.
+    /// Pre-fix (no heal) the stored wrong tooth propagates forever.
+    #[test]
+    fn anchor_self_heal_recovers_wrong_tooth_pick() {
+        let (mut ch, t_proc, abs_bit, t_true, t_c) = approx_setup(0.12, 4_000);
+        ch.anchor = Some((t_true - t_c, 1000.0)); // the bad first pick
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (got - t_true).abs() < 1e-9,
+            "heal left the anchor {:.3} ms from truth",
+            (got - t_true) * 1e3
+        );
+        // and the fallback offset was re-referenced to the corrected anchor
+        assert!(ch.edge_off_valid);
+    }
+
+    /// The same gate must never disturb a CORRECT anchor: (a) the gate is
+    /// closed once the bit stream is old enough for the approximation to be
+    /// confidently wrong; (b) a non-confident approximation (mid-cell)
+    /// never triggers a re-pick.
+    #[test]
+    fn anchor_self_heal_never_disturbs_correct_anchor() {
+        // (a) old stream (20000 bits ~ 400 s): approximation confidently one
+        // tooth off — a young gate would mis-heal; the age gate must hold
+        let (mut ch, t_proc, abs_bit, t_true, _t_c) = approx_setup(1.0, 20_000);
+        ch.anchor = Some((t_true, 1000.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (got - t_true).abs() < 1e-9,
+            "old channel's correct anchor was disturbed by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+        // (b) young but mid-cell approximation (confidence 0.5 > 0.25 gate)
+        let (mut ch, t_proc, abs_bit, t_true, _t_c) = approx_setup(0.5, 4_000);
+        ch.anchor = Some((t_true, 1000.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (got - t_true).abs() < 1e-9,
+            "mid-cell approximation disturbed a correct anchor by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
 
     /// First pick with no previous anchor and no dip knowledge: the bare
     /// snap parks one tooth off (documenting the live +/-1 ms class). With
