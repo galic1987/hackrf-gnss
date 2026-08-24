@@ -53,7 +53,7 @@ fn main() {
         }
     }
     let site =
-        hackrf_gnss::gps::ephemeris::geodetic_to_ecef(40.65, -73.80, 0.020); // km
+        hackrf_gnss::gps::ephemeris::geodetic_to_ecef(39.0042, -77.6095, 0.020); // km
 
     let mut raw: Vec<(usize, f64)> = Vec::new();
     for ch in &eng.l1_band.channels {

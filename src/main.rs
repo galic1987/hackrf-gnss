@@ -128,9 +128,9 @@ struct Args {
 
     /// Fix mode: approximate receiver latitude/longitude (deg). The snapshot
     /// solver only needs this to ~150 km to resolve the millisecond ambiguity.
-    #[arg(long, default_value_t = 40.65)]
+    #[arg(long, default_value_t = 39.0042)]
     approx_lat: f64,
-    #[arg(long, default_value_t = -73.80)]
+    #[arg(long, default_value_t = -77.6095)]
     approx_lon: f64,
 
     /// Fix mode: sample rate of the IQ file (Hz) and the IF at which L1 sits in

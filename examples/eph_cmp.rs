@@ -10,7 +10,7 @@ fn sat(eph: &BrdcEph, t_tx: f64) -> ([f64; 3], f64) {
 }
 
 fn main() {
-    let site = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(40.65, -73.80, 0.020);
+    let site = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(39.0042, -77.6095, 0.020);
     let text = std::fs::read_to_string(
         "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json",
     )
