@@ -33,6 +33,7 @@ const PRO: &str = "0000000000000000977c64de2b557213";
 const CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_seed_cache.json";
 const CORR_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_corr_cache.json";
 const EPH_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
+const TICK_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tick.json";
 
 const DISC_EVERY_S: f64 = 60.0;
 const STEP_MAX_PPM: f64 = 0.1;
@@ -234,6 +235,18 @@ fn main() {
     let mut last_disc = 0.0f64;
     let mut last_corr_written = corr;
 
+    // Tick counter sampling: the in-process replacement for sync_producer
+    // (an external 2-s SPI poller can never open the radio while we own it
+    // 24/7 — its attempts were pure USB contention). 5 s cadence, 200-sample
+    // ring, published as state.tick.json in the shape the panel/series
+    // producers already consume.
+    let mut tick_hist: std::collections::VecDeque<(f64, f64)> =
+        std::collections::VecDeque::new();
+    let mut last_tick: Option<(f64, u64)> = None;
+    let mut last_tick_read = 0.0f64;
+    let mut last_tick_write = 0.0f64;
+    let mut tick_ref_rate: Option<f64> = None;
+
     while let Ok(chunk) = rx.recv() {
         let iter_t0 = std::time::Instant::now();
         if skip_bytes > 0 {
@@ -398,6 +411,50 @@ fn main() {
             }});
             let _ = writeln!(out, "{}", line);
             let _ = out.flush();
+        }
+
+        // ---- tick counter sample (in-process sync_producer replacement) ----
+        if now_wall - last_tick_read >= 5.0 {
+            last_tick_read = now_wall;
+            if let Some(ticks) = radio_ctrl.ts_read_now() {
+                if let Some((pt, pticks)) = last_tick {
+                    let dt = now_wall - pt;
+                    let rate = (ticks.wrapping_sub(pticks)) as f64 / dt;
+                    if dt > 0.5 && (30e6..42e6).contains(&rate) {
+                        // drop transport glitches; first valid rate is the
+                        // session reference for the drift line
+                        tick_ref_rate.get_or_insert(rate);
+                        tick_hist.push_back((now_wall, rate));
+                        if tick_hist.len() > 200 {
+                            tick_hist.pop_front();
+                        }
+                    }
+                }
+                last_tick = Some((now_wall, ticks));
+            }
+            if now_wall - last_tick_write >= 30.0 && !tick_hist.is_empty() {
+                last_tick_write = now_wall;
+                let rate = tick_hist.back().unwrap().1;
+                let ref_rate = tick_ref_rate.unwrap_or(rate);
+                let recent: Vec<serde_json::Value> = tick_hist
+                    .iter()
+                    .map(|&(t, r)| serde_json::json!([t, r]))
+                    .collect();
+                let doc = serde_json::json!({
+                    "epoch": now_wall, "ttl_s": 120,
+                    "clock": {
+                        "live_tick_hz": rate,
+                        "tick_rate_drift_ppm_vs_session_ref": (rate / ref_rate - 1.0) * 1e6,
+                        "samples": tick_hist.len(),
+                        "note": "in-process read via the live_radio control handle; PC-read jitter applies",
+                        "recent": recent,
+                    },
+                });
+                let tmp = format!("{TICK_STATE}.tmp");
+                if std::fs::write(&tmp, doc.to_string()).is_ok() {
+                    let _ = std::fs::rename(&tmp, TICK_STATE);
+                }
+            }
         }
 
         if bytes_in / (2 * FS as u64 * 2) != last_log {

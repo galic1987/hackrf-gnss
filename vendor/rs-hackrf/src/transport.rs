@@ -51,6 +51,10 @@ pub enum StreamControl {
     SetAmpEnable(bool),
     /// Set reference clock correction in ppm (HackRF Pro radio register 23)
     ClockCorrPpm(f64),
+    /// Read the FPGA timestamp counter ("now" latch); the reply channel
+    /// receives the 48-bit tick value. Query variant: the only control
+    /// command with a response.
+    QueryTsNow(std::sync::mpsc::Sender<u64>),
 }
 
 /// Handle for receiving streaming data from a HackRF device.
@@ -159,6 +163,16 @@ impl AsyncReadControlHandle {
             .send(StreamControl::SetAmpEnable(enable))
             .map_err(|_| Error::StreamingError("control channel closed".to_string()))
     }
+
+    /// Read the FPGA timestamp counter mid-stream (the streaming thread
+    /// interleaves the control transfers between bulk reads). None on
+    /// timeout/failure — the caller treats it as a missed sample, not a
+    /// fatal error.
+    pub fn ts_read_now(&self) -> Option<u64> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ctrl_tx.send(StreamControl::QueryTsNow(tx)).ok()?;
+        rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
+    }
 }
 
 // ─── Vendor Request IDs ───────────────────────────────────────────────────────
@@ -198,6 +212,12 @@ enum VendorRequest {
     AntennaEnable = 23,
     /// Enable/disable the 10 MHz CLKOUT output (wValue = 0 or 1).
     ClkoutEnable = 32,
+    /// Write an FPGA SPI register (wValue = value, wIndex = register).
+    /// Requires USB API >= 0x0109.
+    FpgaWriteReg = 49,
+    /// Read an FPGA SPI register (wIndex = register, 1 byte IN).
+    /// Requires USB API >= 0x0109.
+    FpgaReadReg = 50,
     /// Read board hardware revision (1 byte). Requires USB API >= 0x0106.
     BoardRevRead = 45,
     /// Read supported platform bitfield (4 bytes, big-endian). Requires USB API >= 0x0106.
@@ -702,6 +722,36 @@ impl HackRf {
         Ok(())
     }
 
+    /// Read one FPGA SPI register byte.
+    /// Reference: hackrf.c `hackrf_fpga_read_register` - vendor req 50
+    pub fn fpga_read_register(&self, reg: u8) -> Result<u8> {
+        let d = self.control_in(VendorRequest::FpgaReadReg, 0, reg as u16, 1)?;
+        d.first()
+            .copied()
+            .ok_or_else(|| Error::ConfigFailed("short FPGA register read".to_string()))
+    }
+
+    /// Write one FPGA SPI register byte.
+    /// Reference: hackrf.c `hackrf_fpga_write_register` - vendor req 49
+    pub fn fpga_write_register(&self, reg: u8, value: u8) -> Result<()> {
+        self.control_out(VendorRequest::FpgaWriteReg, value as u16, reg as u16, &[])
+    }
+
+    /// Read the FPGA timestamp counter ("now" latch): snapshot-select 2,
+    /// 1 ms for the sync->adclk latch crossing, then 6 LE bytes from 0x11.
+    /// Reference: hackrf_pro `--ts-read now`
+    pub fn ts_read_now(&self) -> Result<u64> {
+        const TS_REG_SNAP_SEL: u8 = 0x10;
+        const TS_REG_VAL0: u8 = 0x11;
+        self.fpga_write_register(TS_REG_SNAP_SEL, 2)?;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let mut ticks = 0u64;
+        for b in 0..6u8 {
+            ticks |= (self.fpga_read_register(TS_REG_VAL0 + b)? as u64) << (8 * b);
+        }
+        Ok(ticks)
+    }
+
     /// Enable or disable the antenna port bias tee (DC power on antenna).
     ///
     /// WARNING: Only enable this if your antenna or LNA requires DC power!
@@ -1052,6 +1102,11 @@ fn streaming_thread(
                 StreamControl::ClockCorrPpm(ppm) => {
                     if let Err(e) = dev.set_clock_correction_ppm(ppm) {
                         tracing::warn!("HackRF set clock correction {} ppm failed: {}", ppm, e);
+                    }
+                }
+                StreamControl::QueryTsNow(reply) => {
+                    if let Ok(t) = dev.ts_read_now() {
+                        let _ = reply.send(t);
                     }
                 }
             }
