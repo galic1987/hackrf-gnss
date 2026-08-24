@@ -599,12 +599,27 @@ function render(st) {
   var pos = st.position;
   var posEl = document.getElementById("position");
   if (pos && pos.lat !== undefined) {
-    var honest = pos.residual_rms_m < 1000;
+    // Plausibility gate: the station is static and surveyed. An exactly-
+    // determined 4-sat solve has ZERO residual by construction, so rms
+    // cannot flag a bad-anchor fix — distance from the surveyed site can.
+    var SURVEY = [40.65, -73.80];
+    var dLat = (pos.lat - SURVEY[0]) * 111.0;                       // km
+    var dLon = (pos.lon - SURVEY[1]) * 111.0 * Math.cos(pos.lat * Math.PI / 180);
+    var distKm = Math.sqrt(dLat * dLat + dLon * dLon);
+    var implausible = distKm > 100;
+    var exactSolve = pos.n_sat <= 4 && pos.residual_rms_m < 1;      // no redundancy
+    var honest = !implausible && pos.residual_rms_m < 1000 && !exactSolve;
+    var qual = implausible
+      ? ' <span class="warn">IMPLAUSIBLE — ' + distKm.toFixed(0) +
+        " km from the surveyed site; 4-sat solve has no redundancy to catch a bad anchor</span>"
+      : exactSolve
+        ? ' <span class="warn">rms ' + pos.residual_rms_m.toFixed(1) +
+          " m is exact-by-construction (4 sats, 4 unknowns) — unverifiable</span>"
+        : ' <span class="' + (honest ? "ok" : "warn") + '">rms ' +
+          pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>";
     posEl.innerHTML =
       "<b>" + pos.lat.toFixed(6) + "°, " + pos.lon.toFixed(6) + "°</b>, alt " +
-      (pos.alt_km * 1000).toFixed(0) + " m" +
-      ' &nbsp;·&nbsp; <span class="' + (honest ? "ok" : "warn") + '">rms ' +
-      pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>" +
+      (pos.alt_km * 1000).toFixed(0) + " m" + qual +
       ' &nbsp;·&nbsp; <span class="dim">' + pos.n_sat + " sats · GDOP " + pos.gdop.toFixed(1) +
       " · " + esc(pos.source || "") + " · " + age(pos.epoch || st.epoch) + "</span>";
   } else {
