@@ -620,6 +620,13 @@ function render(st) {
     posEl.innerHTML =
       "<b>" + pos.lat.toFixed(6) + "°, " + pos.lon.toFixed(6) + "°</b>, alt " +
       (pos.alt_km * 1000).toFixed(0) + " m" + qual +
+      (pos.mode ? ' &nbsp;·&nbsp; <b>' + esc(pos.mode) + "</b>" : "") +
+      (pos.isx_km !== undefined && pos.isx_km !== null
+        ? ' &nbsp;·&nbsp; <span class="tip" data-tip="' + esc(
+            "inter-system clock offset (GPS minus BeiDou receiver clock), in km of light-travel. " +
+            "The real sky keeps this stable; a spoofer faking one constellation breaks it — " +
+            "this is the mixed-constellation integrity observable") + '">GPS−BDS clock <b>' +
+          sgn(pos.isx_km) + Math.abs(pos.isx_km).toFixed(1) + " km</b></span>" : "") +
       ' &nbsp;·&nbsp; <span class="dim">' + pos.n_sat + " sats · GDOP " + pos.gdop.toFixed(1) +
       " · " + esc(pos.source || "") + " · " + age(pos.epoch || st.epoch) + "</span>";
   } else {
