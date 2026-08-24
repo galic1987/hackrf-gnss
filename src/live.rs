@@ -132,7 +132,22 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
     // propagating across a bit-count slip or a garbage t_tx decode.
     if let Some((prev_t_bit, prev_t_tx)) = ch.anchor {
         let d_tx = t_tx - prev_t_tx;
-        if d_tx >= 0.0 && d_tx < 120.0 {
+        if d_tx == 0.0 {
+            // Same subframe re-validated (the per-second re-anchor from the
+            // widened re-scan window): the boundary instant is FIXED.
+            // Recomputing it from the current comb measures a tooth count of
+            // ~10^4-10^5 with the CURRENT carrier-derived code rate, so
+            // carrier-frequency noise (and worse, bias) is amplified by the
+            // whole span: observed live as per-channel secular rho drift of
+            // 40-150 ns/s, growing linearly with anchor age
+            // (interval * ramp / f_carrier). Keep the established instant;
+            // cross-check the bookkeeping so a broken chain self-heals.
+            if (prev_t_bit - t_bit_approx).abs() < 2.0e-3 {
+                ch.edge_off_s = prev_t_bit - t_bit_approx;
+                ch.edge_off_valid = true;
+                return prev_t_bit;
+            }
+        } else if d_tx > 0.0 && d_tx < 120.0 {
             let periods = (d_tx * 1000.0).round();
             let m = ((t_wrap - prev_t_bit) / t_code - periods).round();
             let t_prop = t_wrap - t_code * m;
@@ -2130,8 +2145,6 @@ mod tests {
         let code_rate = 1.023e6 * (1.0 + dopp / F_L1);
         let t_c = 1023.0 / code_rate;
         let t_proc = 100_000.0;
-        let t_wrap = t_proc - ch.code_phase / code_rate;
-        let t_true = t_wrap - 6161.0 * t_c;
         let nbits = 10_000usize;
         ch.nav_bits = vec![0u8; nbits];
         // the 20 ms bit grid is commensurate with the 1 ms epoch grid, so
@@ -2197,21 +2210,41 @@ mod tests {
     /// exactly, not re-derive it from the wandering approximation.
     #[test]
     fn anchor_reanchor_same_subframe_is_stable() {
-        let (mut ch, t_proc, abs_bit, t_true, t_c, _approx) = wrong_tooth_setup(-1.0);
+        let (mut ch, t_proc, abs_bit, t_true, t_c, approx) = wrong_tooth_setup(-1.0);
         ch.anchor = Some((t_true, 1000.0));
-        // 7 s of stream later, on the same comb: 7000 teeth elapsed. The
-        // boundary instant is fixed; only t_proc/code_phase moved.
-        let code_rate = 1.023e6 * (1.0 + 1000.0 / F_L1);
-        let t_wrap2 = (t_proc - ch.code_phase / code_rate) + 7000.0 * t_c;
-        ch.code_phase = 513.7;
-        let t_proc2 = t_wrap2 + ch.code_phase / code_rate;
-        // bookkeeping advanced with the stream: 350 more bits emitted
-        ch.nav_bits.extend(std::iter::repeat(0u8).take(350));
+        // 30 s of stream later, on the same physical comb: 30000 teeth
+        // elapsed, bookkeeping advanced — AND the carrier loop's frequency
+        // estimate wobbled +15 Hz (the live wobble is +/-10-20 Hz between
+        // seconds). The boundary instant is fixed; the 7c84c93 code
+        // re-measured the 30 s tooth count with the WOBBLED rate and moved
+        // the anchor by span*df/f_c ~= 286 ns.
+        let t_proc2 = t_proc + 30.0;
+        let t_wrap2 = (t_proc - ch.code_phase / (1.023e6 * (1.0 + 1000.0 / F_L1)))
+            + 30000.0 * t_c; // a physical comb tooth 30 s later
+        ch.carrier_freq = 1000.0 + 15.0; // loop wobble
+        let wobbled_rate = 1.023e6 * (1.0 + ch.carrier_freq / F_L1);
+        ch.code_phase = (t_proc2 - t_wrap2) * wobbled_rate; // keeps t_wrap2 on the comb
+        assert!((0.0..1023.0).contains(&ch.code_phase), "test setup phase");
+        // bookkeeping advanced with the stream: 1500 more bits emitted
+        ch.nav_bits.extend(std::iter::repeat(0u8).take(1500));
+        let approx2 = t_proc2 - ch.nav_ms.len() as f64 / 1000.0
+            + 0.02 * (abs_bit as f64 - ch.nav_bits.len() as f64);
+        assert!(
+            (approx2 - approx).abs() < 1e-9,
+            "test setup: bookkeeping should be time-consistent"
+        );
         let got = anchor_stream_time(&mut ch, t_proc2, abs_bit, 1000.0);
         assert!(
-            (got - t_true).abs() < 1e-6,
-            "same-subframe re-anchor moved by {:.3} ms",
-            (got - t_true) * 1e3
+            (got - t_true).abs() < 1e-9,
+            "same-subframe re-anchor moved by {:.3} ns under carrier wobble",
+            (got - t_true) * 1e9
+        );
+        // document the old behaviour: the rate-sensitive recomputation
+        let t_code2 = 1023.0 / wobbled_rate;
+        let old = t_wrap2 - t_code2 * ((t_wrap2 - t_true) / t_code2).round();
+        assert!(
+            (old - t_true).abs() > 100e-9,
+            "setup should make the old rate-sensitive path visibly wrong"
         );
     }
 
