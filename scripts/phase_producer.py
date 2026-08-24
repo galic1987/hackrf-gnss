@@ -70,6 +70,7 @@ AMP_DROP = 0.35                   # epoch low-flag: amp < 35% of running median
 AMP_LOST = 0.20                   # sustained below 20% of median -> lock lost
 LOST_BLOCKS = 100                 # 5 s of collapse before lock drops
 LOCK_BLOCKS = 40                  # 2 s of stable amplitude to (re)lock
+DARK_REACQ_BLOCKS = 1200          # 60 s dark -> full FFT re-acquire
 
 _proc = None                      # current hackrf_transfer child
 
@@ -264,6 +265,7 @@ def main():
             locked = False
             stable = 0                      # consecutive good-amplitude blocks
             collapsed = 0                   # consecutive collapsed blocks
+            dark_blocks = 0                 # consecutive not-good blocks
             unwrapped = 0.0                 # radians
             prev_phi = None
             unwrap_ref = None               # radians at lock moment
@@ -300,7 +302,12 @@ def main():
                 amps.append(amp)
                 if amp_med is None and len(amps) >= 40:
                     amp_med = float(np.median(amps))
-                elif amp_med is not None and len(amps) >= 200:
+                elif (amp_med is not None and len(amps) >= 200
+                        and amp > AMP_LOST * amp_med):
+                    # adapt only from healthy blocks — following a collapse
+                    # down to 0 makes `good`/`collapsed` vacuous (0 > 0.6*0)
+                    # and the loop "locks" on noise forever (the 2026-08-24
+                    # stall: amp 0.0/0.0 with lock True for 40+ min)
                     amp_med = float(np.median(amps))
 
                 good = amp_med is None or amp > AMP_DROP * amp_med
@@ -320,6 +327,14 @@ def main():
                         locked = True
                         unwrap_ref = unwrapped
                         log(f"LOCK — amp median {amp_med:.1f}, phase ref reset")
+
+                # 60 s of dark with a live stream means the TRACKING state is
+                # lost (mis-steered derotation), not the signal — the pilot is
+                # 58 dB SNR; only a full FFT re-acquisition recovers. Force it
+                # through the outer reopen loop (stream keeps running).
+                dark_blocks = dark_blocks + 1 if not good else 0
+                if dark_blocks >= DARK_REACQ_BLOCKS:
+                    raise StreamDead("pilot dark 60 s — full re-acquire")
 
                 if not good or unwrap_ref is None:
                     # heartbeat while dark: a monitor that goes silent
