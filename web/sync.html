@@ -607,14 +607,18 @@ function render(st) {
     var dLon = (pos.lon - SURVEY[1]) * 111.0 * Math.cos(pos.lat * Math.PI / 180);
     var distKm = Math.sqrt(dLat * dLat + dLon * dLon);
     var implausible = distKm > 100;
-    var exactSolve = pos.n_sat <= 4 && pos.residual_rms_m < 1;      // no redundancy
+    // the producer's honesty flag covers the mixed solve too (5 unknowns —
+    // exact at n_sat 5); fall back to the 4-sat heuristic for old files
+    var exactSolve = pos.gate
+      ? pos.gate.indexOf("ungated") === 0
+      : pos.n_sat <= 4 && pos.residual_rms_m < 1;                 // no redundancy
     var honest = !implausible && pos.residual_rms_m < 1000 && !exactSolve;
     var qual = implausible
       ? ' <span class="warn">IMPLAUSIBLE — ' + distKm.toFixed(0) +
         " km from the surveyed site; 4-sat solve has no redundancy to catch a bad anchor</span>"
       : exactSolve
         ? ' <span class="warn">rms ' + pos.residual_rms_m.toFixed(1) +
-          " m is exact-by-construction (4 sats, 4 unknowns) — unverifiable</span>"
+          " m is exact-by-construction (" + pos.n_sat + " sats, no redundancy) — unverifiable</span>"
         : ' <span class="' + (honest ? "ok" : "warn") + '">rms ' +
           pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>";
     posEl.innerHTML =

@@ -118,9 +118,13 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
     // rho_m = 1.1e26 m garbage seen live.
     let t_bit_approx = t_proc - ch.nav_ms.len() as f64 / 1000.0
         + 0.02 * (abs_bit as f64 - ch.nav_bits.len() as f64);
-    let code_rate = ch.chip_rate * (1.0 + ch.carrier_freq / ch.f_carrier);
-    let t_wrap = t_proc - ch.code_phase / code_rate;
-    let t_code = ch.code_len / code_rate; // code period in stream time (~1 ms)
+    // the comb period is MEASURED by tooth counting (see track_comb), not
+    // derived from carrier_freq: a marginal channel can hold a sustained
+    // carrier bias of 60-280 Hz while staying code-locked, and the carrier
+    // -derived rate then leaks into every anchor as a secular rho drift of
+    // delta_f/f_carrier (36-150 ns/s per channel, observed live)
+    let t_code = ch.t_code_meas;
+    let t_wrap = ch.wrap_time(t_proc);
     // Tooth-exact propagation: boundaries t_tx seconds apart are exactly
     // 1000 code periods per second apart on the received comb (20 teeth per
     // 20 ms bit, transmit-synchronous), so referencing the previous anchor
@@ -263,6 +267,20 @@ pub struct Channel {
     dip_last: f64,
     dip_n: u32,
     prev_group_tail: Option<f64>,
+    // Measured comb period (stream-time seconds per code period), from
+    // direct tooth counting between report seconds — NOT the
+    // carrier-derived rate. A marginal channel can hold a sustained
+    // carrier_freq bias of 60-280 Hz while staying code-locked (a 200 Hz
+    // offset costs <1 dB of 1 ms prompt power); the carrier-derived code
+    // rate then leaks into every anchor step as a secular rho drift of
+    // delta_f/f_c (observed live: 36-150 ns/s per channel, both signs,
+    // matching the per-channel Doppler-vs-ephemeris residuals). Teeth
+    // elapsed per second are INTEGER — counting them and dividing elapsed
+    // stream time is bias-free.
+    t_code_meas: f64,
+    comb_acc_t: f64,
+    comb_acc_teeth: f64,
+    last_wrap: f64,
     /// self-decoded broadcast ephemeris (subframes 1-3 assembled live)
     pub eph: Option<BrdcEph>,
 }
@@ -300,6 +318,7 @@ impl Channel {
         let code_phase0 = (-code_phase0).rem_euclid(code.len() as f64);
         let ns_epoch = (fs * period_ms as f64 / 1000.0).round() as usize;
         let (pll_t1, pll_t2) = borre(10.0, 0.7, 0.25);
+        let t_code0 = code.len() as f64 / (chip_rate * (1.0 + dopp0 / f_carrier));
         Channel {
             sys,
             prn,
@@ -343,8 +362,49 @@ impl Channel {
             dip_last: 0.0,
             dip_n: 0,
             prev_group_tail: None,
+            // seeded from the carrier estimate; the tooth-counting
+            // accumulator converges to the true comb period within seconds
+            t_code_meas: t_code0,
+            comb_acc_t: 0.0,
+            comb_acc_teeth: 0.0,
+            last_wrap: f64::NAN,
             eph: None,
         }
+    }
+
+    /// Measured tooth instant of the most recent code wrap, using the
+    /// MEASURED comb period for the fractional part (carrier-bias-immune).
+    fn wrap_time(&self, t_proc: f64) -> f64 {
+        t_proc - (self.code_phase / self.code_len) * self.t_code_meas
+    }
+
+    /// Per-second comb tracking: count the integer teeth elapsed since the
+    /// last report and accumulate the measured tooth period. The round is
+    /// robust to any plausible rate error (0.5 tooth in ~1000 needs 500
+    /// ppm). Only accumulates while locked — an unlocked DLL free-runs.
+    fn track_comb(&mut self, t_proc: f64) {
+        let t_wrap = self.wrap_time(t_proc);
+        if !self.locked {
+            self.last_wrap = f64::NAN;
+            return;
+        }
+        if self.last_wrap.is_finite() {
+            let teeth = ((t_wrap - self.last_wrap) / self.t_code_meas).round();
+            if teeth >= 1.0 && teeth < 100_000.0 {
+                self.comb_acc_t += t_wrap - self.last_wrap;
+                self.comb_acc_teeth += teeth;
+                // sliding ~64 s window (halve when full): tracks the true
+                // Doppler drift with negligible lag
+                if self.comb_acc_teeth > 64_000.0 {
+                    self.comb_acc_t *= 0.5;
+                    self.comb_acc_teeth *= 0.5;
+                }
+                if self.comb_acc_teeth >= 1000.0 {
+                    self.t_code_meas = self.comb_acc_t / self.comb_acc_teeth;
+                }
+            }
+        }
+        self.last_wrap = t_wrap;
     }
 
     /// Code replica value at fractional chip phase (with BOC(1,1) subcarrier
@@ -548,6 +608,13 @@ impl Channel {
             }
         }
         (ntrans, trans)
+    }
+
+    /// Debug/test hook: force the carrier frequency estimate (simulates a
+    /// marginal-lock loop bias for the anchor-path immunity tests).
+    pub fn debug_set_dopp(&mut self, f: f64) {
+        self.carrier_freq = f;
+        self.carr_basis = f;
     }
 
     /// Nav-bit slicing, called once per second. GPS: bit sync uses the
@@ -1232,6 +1299,7 @@ impl Band {
         let t_proc = self.in_t - self.remaining().len() as f64 / self.fs;
         for ch in &mut self.channels {
             let (cn0, dopp, cp) = ch.end_second();
+            ch.track_comb(t_proc);
             ch.nav_tick();
             // scan for new subframes since the last scan (the overlap keeps
             // the LAST validated subframe findable, so the anchor re-anchors
@@ -2317,6 +2385,88 @@ mod tests {
             (got - t_true) * 1e3
         );
     }
+
+    /// The comb period is MEASURED by tooth counting, so a sustained
+    /// carrier_freq bias (marginal channels hold 60-280 Hz while staying
+    /// code-locked — the live per-channel drift class) must not leak into
+    /// the anchor. Setup: carrier_freq biased +150 Hz, t_code_meas already
+    /// converged to the true period; a 6 s propagation step must be exact.
+    /// The pre-fix code (carrier-derived t_code) errs by
+    /// lookback * 150 Hz / f_carrier ~ 0.6-1.2 us here.
+    #[test]
+    fn anchor_immune_to_carrier_bias_via_measured_comb() {
+        let dopp_true = 1000.0;
+        let rate_true = 1.023e6 * (1.0 + dopp_true / F_L1);
+        let t_c_true = 1023.0 / rate_true;
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, dopp_true, 0.0);
+        ch.carrier_freq = dopp_true + 150.0; // sustained loop bias
+        ch.t_code_meas = t_c_true; // as tooth counting converges to
+        let t_proc = 100_000.0;
+        ch.code_phase = 300.0;
+        let t_wrap = t_proc - (ch.code_phase / 1023.0) * t_c_true;
+        let m_true = 6161i64;
+        let t_true = t_wrap - m_true as f64 * t_c_true;
+        let t_prev = t_true - 6000.0 * t_c_true;
+        ch.anchor = Some((t_prev, 1000.0));
+        // nav bookkeeping within 0.5 ms of the truth (any cell in the zone)
+        let nbits = 10_000usize;
+        ch.nav_bits = vec![0u8; nbits];
+        let mut chosen = (0usize, 0usize, f64::MAX);
+        for ms in 0..20usize {
+            let ab =
+                (nbits as f64 + (t_true + 0.0002 - t_proc + ms as f64 / 1000.0) / 0.02).round()
+                    as usize;
+            let approx = t_proc - ms as f64 / 1000.0 + 0.02 * (ab as f64 - nbits as f64);
+            let err = (approx - t_true).abs();
+            if err < chosen.2 {
+                chosen = (ms, ab, err);
+            }
+        }
+        assert!(chosen.2 < 0.5e-3, "test setup: approx too far");
+        ch.nav_ms = vec![0.0; chosen.0];
+        let got = anchor_stream_time(&mut ch, t_proc, chosen.1, 1006.0);
+        assert!(
+            (got - t_true).abs() < 1e-9,
+            "anchor under +150 Hz carrier bias off by {:.3} ns",
+            (got - t_true) * 1e9
+        );
+        // document the pre-fix behaviour: carrier-derived t_code
+        let t_code_biased = 1023.0 / (1.023e6 * (1.0 + ch.carrier_freq / F_L1));
+        let old = t_wrap
+            - t_code_biased
+                * (((t_wrap - t_prev) / t_code_biased - 6000.0).round() + 6000.0);
+        assert!(
+            (old - t_true).abs() > 100e-9,
+            "setup should make the carrier-derived path visibly wrong: {:.1} ns",
+            (old - t_true) * 1e9
+        );
+    }
+
+    /// The tooth-counting measurement itself converges to the true comb
+    /// period from a biased (carrier-seeded) start, in ~1 min.
+    #[test]
+    fn comb_period_measurement_converges() {
+        let dopp_true = 1000.0;
+        let rate_true = 1.023e6 * (1.0 + dopp_true / F_L1);
+        let t_c_true = 1023.0 / rate_true;
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, dopp_true, 0.0);
+        ch.locked = true;
+        // biased seed: as if the carrier estimate were +150 Hz off
+        ch.t_code_meas = 1023.0 / (1.023e6 * (1.0 + (dopp_true + 150.0) / F_L1));
+        for n in 1..=90u32 {
+            let t_proc = n as f64;
+            // true most-recent tooth, and the TRUE code phase there
+            let t_wrap_true = (t_proc / t_c_true).floor() * t_c_true;
+            ch.code_phase = (t_proc - t_wrap_true) / t_c_true * 1023.0;
+            ch.track_comb(t_proc);
+        }
+        let err = (ch.t_code_meas - t_c_true) / t_c_true;
+        assert!(
+            err.abs() < 1e-9,
+            "comb period relative error {err:.2e} after 90 s"
+        );
+    }
+
 
     /// First pick with no previous anchor and no dip knowledge: the bare
     /// snap parks one tooth off (documenting the live +/-1 ms class). With

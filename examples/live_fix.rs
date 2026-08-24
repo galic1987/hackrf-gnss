@@ -112,6 +112,16 @@ fn main() {
         if now - s["epoch"].as_f64().unwrap_or(0.0) > 10.0 {
             continue;
         }
+        // lock-quality gate, same bars as the snapshot path below: a
+        // marginal channel's carrier loop can sit 60-280 Hz off its own
+        // code comb while staying "locked" (measured live), and although
+        // the anchor advance no longer uses that estimate, a channel that
+        // marginal has no business in the fix
+        if s["cn0_proxy"].as_f64().unwrap_or(0.0) < 30.0
+            || s["lock_s"].as_f64().unwrap_or(0.0) < 10.0
+        {
+            continue;
+        }
         let (Some(prn), Some(rho_m), Some(t_tx)) = (
             s["prn"].as_u64().map(|p| p as u8),
             s["rho_m"].as_f64(),
@@ -180,9 +190,17 @@ fn main() {
                 );
                 std::process::exit(5);
             }
+            // honesty gate: the mixed solve has 5 unknowns, so n_sat <= 5
+            // is an EXACT solve — rms is zero by construction and the fix
+            // can be arbitrarily wrong. Publish, but say so.
+            let gate = if f.n_sat >= 6 {
+                "redundant"
+            } else {
+                "ungated — exact solve, unverifiable"
+            };
             println!(
-                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km
+                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -192,6 +210,7 @@ fn main() {
                     "clock_km": f.clock_gps_km, "isx_km": f.isx_km,
                     "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
+                    "gate": gate,
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -246,9 +265,16 @@ fn main() {
                 );
                 std::process::exit(5);
             }
+            // honesty gate: 4 sats / 4 unknowns is an EXACT solve — rms is
+            // zero by construction and says nothing about correctness
+            let gate = if f.n_sat >= 5 {
+                "redundant"
+            } else {
+                "ungated — exact solve, unverifiable"
+            };
             println!(
-                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop
+                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -257,6 +283,7 @@ fn main() {
                     "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
                     "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
+                    "gate": gate,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -281,6 +308,11 @@ fn main() {
                 );
                 std::process::exit(5);
             }
+            let gate = if f.n_sat >= 5 {
+                "redundant"
+            } else {
+                "ungated — exact solve, unverifiable"
+            };
             let doc = serde_json::json!({
                 "epoch": now,
                 "ttl_s": 900,
@@ -292,6 +324,7 @@ fn main() {
                     "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop,
                     "n_sat": f.n_sat,
+                    "gate": gate,
                     "source": "live tracker code phases + BRDC ephemeris",
                 }
             });

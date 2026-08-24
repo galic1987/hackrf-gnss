@@ -79,7 +79,18 @@ fn main() {
     let mut f = std::fs::File::open(path).expect("open capture");
     let mut raw = vec![0u8; 2 * 1024 * 1024];
     let mut fed_s = 0.0f64;
-    loop {
+    // optional loop-bias injection: SYNCH_BIAS="PRN:SLEW_HZ_PER_S" — after
+    // the anchor forms, force the channel's carrier estimate off by a
+    // linearly growing amount each second (models a marginal-lock loop
+    // sitting off-peak; the live drift class). Truth mapping below includes
+    // the SV clock, so per-channel errors should stay sub-us regardless.
+    let bias: Option<(usize, f64)> = std::env::var("SYNTH_BIAS").ok().and_then(|s| {
+        let mut it = s.split(':');
+        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+    });
+    let mut last_report_s = 16usize;
+    let mut last_ckpt = 0usize;
+    while fed_s < 30.0 {
         let n = f.read(&mut raw).unwrap_or(0);
         if n == 0 {
             break;
@@ -96,8 +107,42 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         band.poll();
+        let whole = fed_s as usize;
+        if whole > last_report_s {
+            for sec in last_report_s..whole {
+                if let Some((prn, slew)) = bias {
+                    if sec >= 16 {
+                        if let Some(ch) =
+                            band.channels.iter_mut().find(|c| c.prn == prn && c.sys == Sys::Gps)
+                        {
+                            let cur = ch.debug_dopp();
+                            ch.debug_set_dopp(cur + slew);
+                        }
+                    }
+                }
+            }
+            last_report_s = whole;
+        }
+        if whole >= 16 && whole % 5 == 0 && whole > last_ckpt {
+            last_ckpt = whole;
+            report(&band, &ephs, t0, rx, clk_bias, clk_drift, t_ref, whole);
+        }
     }
-    eprintln!("fed {fed_s:.1} s; channels:");
+    eprintln!("fed {fed_s:.1} s; final:");
+    report(&band, &ephs, t0, rx, clk_bias, clk_drift, t_ref, last_ckpt);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report(
+    band: &Band,
+    ephs: &std::collections::HashMap<u8, hackrf_gnss::gps::broadcast::BrdcEph>,
+    t0: f64,
+    rx: [f64; 3],
+    clk_bias: f64,
+    clk_drift: f64,
+    t_ref: f64,
+    at_s: usize,
+) {
     for ch in &band.channels {
         if ch.sys != Sys::Gps {
             continue;
@@ -110,27 +155,22 @@ fn main() {
             eprintln!("  PRN {:2}: no truth eph", ch.prn);
             continue;
         };
-        let t_gps_rx = t_tx; // boundary transmit time, GPS
-        let (sat_m, _, _) =
-            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_gps_rx, [0.0; 3]);
+        let (sat_m, dt_sv, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, [0.0; 3]);
         let geom = ((rx[0] - sat_m[0]).powi(2)
             + (rx[1] - sat_m[1]).powi(2)
             + (rx[2] - sat_m[2]).powi(2))
         .sqrt();
         // sim: receiver clock reads GPS + bias + drift*(t-t_ref); the sample
-        // stream runs on the receiver clock, so the boundary arrives at
-        // stream time (t_tx + geom/c + clk(t_rx)) - t0
+        // stream runs on the receiver clock. The SV transmits the boundary
+        // when its clock reads t_tx, i.e. at GPS time t_tx - dt_sv, so the
+        // boundary arrives at stream time (t_tx - dt_sv + geom/c + clk) - t0
         let t_rx_gps = t_tx + geom / C;
         let clk = clk_bias + clk_drift * (t_rx_gps - t_ref);
-        let t_bit_true = t_tx + geom / C + clk - t0;
+        let t_bit_true = t_tx - dt_sv + geom / C + clk - t0;
         let err_us = (t_bit - t_bit_true) * 1e6;
         eprintln!(
-            "  PRN {:2}: t_tx {:.0} anchor err {:+10.3} us  (bits {}, eph toe {:.0})",
-            ch.prn,
-            t_tx,
-            err_us,
-            ch.nav_bits.len(),
-            eph.toe
+            "  [t={at_s:2}s] PRN {:2}: t_tx {:.0} anchor err {:+10.3} us",
+            ch.prn, t_tx, err_us
         );
     }
 }
