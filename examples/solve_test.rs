@@ -7,7 +7,10 @@ fn main() {
         "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json").unwrap()).unwrap();
     for e in v["ephemeris"].as_array().unwrap() {
         let se: hackrf_gnss::gps::broadcast::BrdcEph = serde_json::from_value(e.clone()).unwrap();
-        let r = &rinex[&se.prn];
+        if se.sys != 0 {
+            continue; // BeiDou: compared against the Cxx records elsewhere
+        }
+        let Some(r) = rinex.get(&se.prn) else { continue };
         // compare satellite positions at the self-decoded toe
         let (a, _, _) = sat_at_txtime_pub(&se, se.toe, [0.0,0.0,0.0]);
         let (b, _, _) = sat_at_txtime_pub(r, se.toe, [0.0,0.0,0.0]);

@@ -87,6 +87,27 @@ impl Sys {
     }
 }
 
+/// Stream time of the start of nav bit `abs_bit` (absolute index into the
+/// channel's emitted bit stream; 20 ms per bit for both GPS LNAV and BDS D1).
+/// The un-emitted ms remainder in nav_ms sits between the last emitted bit
+/// and t_proc — forgetting it puts each channel's anchor off by a random
+/// 0-19 ms (thousands of km of pseudorange; the reason the first anchored
+/// PVT landed in Hudson Bay). The estimate is refined to the code-phase
+/// wrap: bit edges align with code period starts, so the true boundary is an
+/// integer number of 20 ms before the most recent code wrap.
+fn anchor_stream_time(ch: &Channel, t_proc: f64, abs_bit: usize) -> f64 {
+    // abs_bit is always BEHIND the emitted-bit count (the newest complete
+    // subframe ends >= 300 bits before the stream edge): this difference is
+    // negative, so it MUST be computed in f64 — the usize subtraction
+    // underflowed and wrapped to ~3.7e17 s, which is exactly the frozen
+    // rho_m = 1.1e26 m garbage seen live.
+    let t_bit_approx = t_proc - ch.nav_ms.len() as f64 / 1000.0
+        + 0.02 * (abs_bit as f64 - ch.nav_bits.len() as f64);
+    let code_rate = ch.chip_rate * (1.0 + ch.carrier_freq / ch.f_carrier);
+    let t_wrap = t_proc - ch.code_phase / code_rate;
+    t_wrap - 0.02 * ((t_wrap - t_bit_approx) / 0.02).round()
+}
+
 /// One tracked satellite: a Costas PLL + early/late DLL over one code period
 /// per epoch (1 ms for GPS/SBAS/B1I, 4 ms for Galileo E1B).
 pub struct Channel {
@@ -354,8 +375,18 @@ impl Channel {
         // gain is deliberately tiny (τ ≈ 0.5 s): the discriminator is
         // noise-dominated per epoch, and the first attempt (0.1) injected
         // ±16 Hz of jitter per epoch and destroyed phase coherence.
+        // BeiDou D1 carries the NH20 secondary code: (ip,qp) flips sign at
+        // ~11 of every 20 1-ms epochs, and a raw cross product reads those
+        // flips as pi phase steps — the aid random-walked the carrier off
+        // and every B1I channel lost lock within ~10 s on the wideband
+        // replay (GPS held: LNAV flips are 20x rarer). The dot product
+        // detects the flip; un-flipping makes the discriminator NH-immune
+        // (the Costas discriminator below already is).
         let pwr = (ip * ip + qp * qp).max(1e-12);
-        let cross = (self.old_ip * qp - ip * self.old_qp) / pwr; // ~sin(dphi)
+        let mut cross = (self.old_ip * qp - ip * self.old_qp) / pwr; // ~sin(dphi)
+        if self.sys == Sys::Beidou && self.old_ip * ip + self.old_qp * qp < 0.0 {
+            cross = -cross;
+        }
         self.old_ip = ip;
         self.old_qp = qp;
         let f_err = cross / (2.0 * PI * pdi);
@@ -380,9 +411,9 @@ impl Channel {
         self.sec_prompt += ip * ip + qp * qp;
         self.sec_noise += inz * inz + qnz * qnz; // off-code replica: pure noise
         self.sec_epochs += 1;
-        // nav demod: collect prompt-I per 1 ms epoch (GPS LNAV only; the
-        // Costas loop carries the data on ip). Cap the buffer at ~3 min.
-        if self.sys == Sys::Gps {
+        // nav demod: collect prompt-I per 1 ms epoch (GPS LNAV and BeiDou
+        // D1; the Costas loop carries the data on ip). Cap at ~3 min.
+        if matches!(self.sys, Sys::Gps | Sys::Beidou) {
             self.nav_ms.push(ip);
             if self.nav_ms.len() > 200_000 {
                 let drop = self.nav_ms.len() - 200_000;
@@ -405,15 +436,22 @@ impl Channel {
         (ntrans, trans)
     }
 
-    /// Nav-bit slicing, called once per second. Bit sync uses the
+    /// Nav-bit slicing, called once per second. GPS: bit sync uses the
     /// transition-phase histogram (gps::track's proven method): nearly all
     /// 1 ms sign changes land on ONE phase mod 20 for real data. Then one
     /// bit per 20 ms group. Polarity stays unresolved — the LNAV subframe
     /// finder tries both.
+    /// BeiDou D1: bit sync IS the NH20 secondary-code sync (non-coherent
+    /// correlation over 20 ms groups); bits are the NH-wiped 20 ms sums.
     pub fn nav_tick(&mut self) {
-        if self.sys != Sys::Gps {
-            return;
+        match self.sys {
+            Sys::Gps => self.nav_tick_gps(),
+            Sys::Beidou => self.nav_tick_bds(),
+            _ => {}
         }
+    }
+
+    fn nav_tick_gps(&mut self) {
         if self.bit_off.is_none() {
             if self.nav_ms.len() < 400 || !self.locked {
                 return;
@@ -445,6 +483,31 @@ impl Channel {
         while self.nav_ms.len() >= 20 {
             let s: f64 = self.nav_ms[..20].iter().sum();
             self.nav_bits.push(if s > 0.0 { 1 } else { 0 });
+            self.nav_ms.drain(..20);
+        }
+    }
+
+    /// BeiDou D1: the NH20 secondary code period IS the 20 ms nav bit, so
+    /// the NH phase estimate doubles as bit sync. Wiping NH20 then gives one
+    /// clean bit integration per 20 ms group (no transition histogram needed
+    /// — NH wipe removes the dominant within-bit sign flips).
+    fn nav_tick_bds(&mut self) {
+        if self.bit_off.is_none() {
+            if self.nav_ms.len() < 2000 || !self.locked {
+                return;
+            }
+            let n = self.nav_ms.len().min(6000);
+            match crate::beidou_d1::nh_sync(&self.nav_ms[..n]) {
+                Some(off) => {
+                    self.bit_off = Some(off);
+                    self.nav_ms.drain(..off);
+                }
+                None => return,
+            }
+        }
+        while self.nav_ms.len() >= 20 {
+            let b = crate::beidou_d1::nh_bit(&self.nav_ms[..20]);
+            self.nav_bits.push(b);
             self.nav_ms.drain(..20);
         }
     }
@@ -1021,43 +1084,57 @@ impl Band {
             // a frame straddling the previous scan point isn't missed)
             let nav_subs = {
                 let from = ch.nav_scanned.saturating_sub(300);
-                let subs = crate::gps::lnav::find_subframes(&ch.nav_bits[from..]);
-                let n = subs.len();
-                if let Some(last) = subs.last() {
-                    // newest subframe -> refresh the pseudorange anchor.
-                    // The first preamble bit sits at absolute bit index
-                    // (from + last.bit_index). Stream time of a bit start:
-                    // the un-emitted ms remainder in nav_ms sits between the
-                    // last emitted bit and t_proc — forgetting it puts each
-                    // channel's anchor off by a random 0-19 ms (thousands of
-                    // km of pseudorange; the reason the first anchored PVT
-                    // landed in Hudson Bay).
-                    let abs_bit = from + last.bit_index;
-                    let t_bit_approx = t_proc - ch.nav_ms.len() as f64 / 1000.0
-                        + 0.02 * (abs_bit - ch.nav_bits.len()) as f64;
-                    // refine to the code-phase wrap: bit edges align with
-                    // code period starts, so the true boundary is an integer
-                    // number of 20 ms before the most recent code wrap
-                    let code_rate =
-                        ch.chip_rate * (1.0 + ch.carrier_freq / ch.f_carrier);
-                    let t_wrap = t_proc - ch.code_phase / code_rate;
-                    let t_bit = t_wrap
-                        - 0.02 * ((t_wrap - t_bit_approx) / 0.02).round();
-                    let t_tx = (last.tow_next as f64 - 1.0) * 6.0;
-                    ch.anchor = Some((t_bit, t_tx));
-                    ch.nav_scanned = abs_bit + 300;
-                    // self-decoded ephemeris once subframes 1-3 exist
-                    // (scan the FULL buffer — 1/2/3 may predate this window)
-                    if ch.eph.is_none() {
-                        let all = crate::gps::lnav::find_subframes(&ch.nav_bits);
-                        if let Some(mut e) = crate::gps::lnav::parse_ephemeris(&all) {
-                            e.prn = ch.prn as u8;
-                            eprintln!("live[{}]: self-decoded ephemeris for PRN {}", self.name, ch.prn);
-                            ch.eph = Some(e);
+                match ch.sys {
+                    Sys::Gps => {
+                        let subs = crate::gps::lnav::find_subframes(&ch.nav_bits[from..]);
+                        let n = subs.len();
+                        if let Some(last) = subs.last() {
+                            // newest subframe -> refresh the pseudorange anchor
+                            let abs_bit = from + last.bit_index;
+                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit);
+                            let t_tx = (last.tow_next as f64 - 1.0) * 6.0;
+                            ch.anchor = Some((t_bit, t_tx));
+                            ch.nav_scanned = abs_bit + 300;
+                            // self-decoded ephemeris once subframes 1-3 exist
+                            // (scan the FULL buffer — 1/2/3 may predate this window)
+                            if ch.eph.is_none() {
+                                let all = crate::gps::lnav::find_subframes(&ch.nav_bits);
+                                if let Some(mut e) = crate::gps::lnav::parse_ephemeris(&all) {
+                                    e.prn = ch.prn as u8;
+                                    eprintln!("live[{}]: self-decoded ephemeris for PRN {}", self.name, ch.prn);
+                                    ch.eph = Some(e);
+                                }
+                            }
                         }
+                        n
                     }
+                    Sys::Beidou => {
+                        let subs = crate::beidou_d1::find_subframes(&ch.nav_bits[from..]);
+                        let n = subs.len();
+                        if let Some(last) = subs.last() {
+                            let abs_bit = from + last.bit_index;
+                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit);
+                            // D1 SOW is the BDT second-of-week at THIS
+                            // subframe's preamble leading edge (unlike the
+                            // GPS HOW, which names the next one). t_tx is
+                            // carried in GPST for all constellations:
+                            // BDT + 14 s.
+                            let t_tx = crate::beidou_d1::sow_bdt_to_gpst(last.sow_bdt as f64);
+                            ch.anchor = Some((t_bit, t_tx));
+                            ch.nav_scanned = abs_bit + 300;
+                            if ch.eph.is_none() {
+                                let all = crate::beidou_d1::find_subframes(&ch.nav_bits);
+                                if let Some(mut e) = crate::beidou_d1::parse_ephemeris(&all) {
+                                    e.prn = ch.prn as u8;
+                                    eprintln!("live[{}]: self-decoded D1 ephemeris for BDS PRN {}", self.name, ch.prn);
+                                    ch.eph = Some(e);
+                                }
+                            }
+                        }
+                        n
+                    }
+                    _ => 0,
                 }
-                n
             };
             out.push(SatReport {
                 prn: ch.prn,
@@ -1068,8 +1145,17 @@ impl Band {
                 lock_s: ch.lock_s,
                 nav_bits: ch.nav_bits.len(),
                 nav_subs,
-                rho_m: ch.anchor.map(|(t_bit, t_tx)| (t_bit - t_tx) * 299_792_458.0),
-                t_tx: ch.anchor.map(|(_, t_tx)| t_tx),
+                // publish the anchor only while the channel is locked: the
+                // anchor otherwise freezes at its last value and a dead
+                // channel keeps reporting a stale pseudorange forever
+                // (observed live: unlocked sats with lock_s 0 carrying a
+                // constant rho_m for hours).
+                rho_m: if ch.locked {
+                    ch.anchor.map(|(t_bit, t_tx)| (t_bit - t_tx) * 299_792_458.0)
+                } else {
+                    None
+                },
+                t_tx: if ch.locked { ch.anchor.map(|(_, t_tx)| t_tx) } else { None },
                 epoch,
             });
         }
@@ -1096,9 +1182,10 @@ impl Band {
         out
     }
 
-    /// Per-channel true pseudoranges from TOW anchors: (prn, rho_m, t_tx_s).
-    /// rho = (t_bit - t_tx) * c; the arbitrary stream-time origin is common
-    /// to all channels and is absorbed by the PVT clock term. GPS only.
+    /// Per-channel true pseudoranges from TOW/SOW anchors: (prn, rho_m,
+    /// t_tx_s). rho = (t_bit - t_tx) * c; the arbitrary stream-time origin is
+    /// common to all channels and is absorbed by the PVT clock term. GPS and
+    /// BeiDou (BDS t_tx is converted to GPST at the anchor: BDT + 14 s).
     pub fn nav_obs(&self) -> Vec<(u8, f64, f64)> {
         const C: f64 = 299_792_458.0;
         self.channels

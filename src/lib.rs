@@ -9,6 +9,7 @@ pub mod glonass;
 pub mod glonass_nav;
 pub mod inmarsat;
 pub mod beidou;
+pub mod beidou_d1;
 pub mod galileo;
 pub mod e5b;
 pub mod e5;

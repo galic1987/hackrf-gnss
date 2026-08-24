@@ -36,6 +36,9 @@ fn main() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
             for e in v["ephemeris"].as_array().into_iter().flatten() {
                 if let Ok(eph) = serde_json::from_value::<BrdcEph>(e.clone()) {
+                    if eph.sys != 0 {
+                        continue; // BeiDou: separate timescale/orbit constants
+                    }
                     ephs.insert(eph.prn, eph);
                 }
             }

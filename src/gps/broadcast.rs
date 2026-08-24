@@ -16,9 +16,14 @@ const F_REL: f64 = -4.442807633e-10; // relativistic clock constant
 const WEEK_S: f64 = 604800.0;
 const PI: f64 = std::f64::consts::PI;
 
-/// One GPS satellite's broadcast ephemeris (SI units, angles in radians).
+/// One satellite's broadcast ephemeris (SI units, angles in radians).
+/// `sys`: 0 = GPS, 1 = BeiDou (BDS ephemeris times are stored as
+/// GPST-equivalent seconds-of-week — BDT SOW + 14 s — so one t_tx timescale
+/// serves every constellation; see beidou_d1.rs).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BrdcEph {
+    #[serde(default)]
+    pub sys: u8,
     pub prn: u8,
     pub toe: f64,
     pub toc: f64,
@@ -130,6 +135,7 @@ pub fn parse_rinex_gps(text: &str) -> HashMap<u8, BrdcEph> {
         // orbit field j on line `l`: 3-space indent, 19-char columns
         let f = |l: usize, j: usize| df(fld(b[l], 4 + j * 19, 4 + (j + 1) * 19));
         let e = BrdcEph {
+            sys: 0,
             prn,
             af0: df(fld(ln, 23, 42)),
             af1: df(fld(ln, 42, 61)),

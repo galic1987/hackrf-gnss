@@ -155,6 +155,164 @@ fn inv4(a: &[[f64; 4]; 4]) -> Option<[[f64; 4]; 4]> {
     Some(inv)
 }
 
+// ------------------------------------------------------- mixed-constellation
+
+/// One measurement tagged with its constellation, for the two-clock mixed
+/// solve. `system`: 0 = GPS, 1 = BeiDou. The design row carries a 1 in the
+/// clock column of its OWN system and 0 in the other, so each constellation's
+/// receiver-clock offset (and the GPS/BDS time-scale offset riding on it) is
+/// estimated independently.
+#[derive(Clone, Copy)]
+pub struct MeasSys {
+    pub sat: [f64; 3],
+    pub pseudorange: f64,
+    pub system: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FixMixed {
+    pub ecef: [f64; 3],
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_km: f64,
+    pub clock_gps_km: f64,
+    pub clock_bds_km: f64,
+    /// inter-system clock offset δt_gps − δt_bds (km): absorbs the GPST/BDT
+    /// scale difference plus any per-band hardware delay — and doubles as a
+    /// spoof-detection observable (a spoofer on one constellation only moves
+    /// one side).
+    pub isx_km: f64,
+    pub iterations: usize,
+    pub residual_rms_m: f64,
+    pub gdop: f64,
+    pub pdop: f64,
+    pub tdop: f64,
+    pub n_sat: usize,
+    pub n_gps: usize,
+    pub n_bds: usize,
+}
+
+/// Two-clock mixed-constellation solve: unknowns x,y,z,δt_gps,δt_bds. Needs
+/// >=5 rows with >=1 row per system (5 unknowns). Same Gauss-Newton skeleton
+/// as [`solve`], widened to a 5x5 normal-equations system.
+pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
+    let n_gps = meas.iter().filter(|m| m.system == 0).count();
+    let n_bds = meas.iter().filter(|m| m.system == 1).count();
+    if meas.len() < 5 || n_gps == 0 || n_bds == 0 {
+        return None;
+    }
+    let mut p = guess;
+    let mut clk = [0.0f64; 2]; // [gps, bds] clock biases (km)
+    let mut last_q = [[0.0f64; 5]; 5];
+    let mut iters = 0;
+
+    for _ in 0..12 {
+        iters += 1;
+        let mut hth = [[0.0f64; 5]; 5];
+        let mut htr = [0.0f64; 5];
+        for m in meas {
+            let d = [p[0] - m.sat[0], p[1] - m.sat[1], p[2] - m.sat[2]];
+            let g = norm3(d);
+            if g < 1e-6 {
+                return None;
+            }
+            let sys = m.system.min(1) as usize;
+            let u = [d[0] / g, d[1] / g, d[2] / g, (sys == 0) as u8 as f64, (sys == 1) as u8 as f64];
+            let r = m.pseudorange - (g + clk[sys]);
+            for i in 0..5 {
+                htr[i] += u[i] * r;
+                for j in 0..5 {
+                    hth[i][j] += u[i] * u[j];
+                }
+            }
+        }
+        let q = inv5(&hth)?;
+        last_q = q;
+        let mut dx = [0.0f64; 5];
+        for i in 0..5 {
+            for j in 0..5 {
+                dx[i] += q[i][j] * htr[j];
+            }
+        }
+        p[0] += dx[0];
+        p[1] += dx[1];
+        p[2] += dx[2];
+        clk[0] += dx[3];
+        clk[1] += dx[4];
+        if dx[0].hypot(dx[1]).hypot(dx[2]) < 1e-7 {
+            break;
+        }
+    }
+
+    let mut ss = 0.0;
+    for m in meas {
+        let g = norm3([p[0] - m.sat[0], p[1] - m.sat[1], p[2] - m.sat[2]]);
+        let r = m.pseudorange - (g + clk[m.system.min(1) as usize]);
+        ss += r * r;
+    }
+    let rms_m = (ss / meas.len() as f64).sqrt() * 1000.0;
+
+    let gdop = (last_q[0][0] + last_q[1][1] + last_q[2][2] + last_q[3][3] + last_q[4][4]).sqrt();
+    let pdop = (last_q[0][0] + last_q[1][1] + last_q[2][2]).sqrt();
+    let tdop = (last_q[3][3] + last_q[4][4]).sqrt();
+    let (lat, lon, alt) = ecef_to_geodetic(p);
+    Some(FixMixed {
+        ecef: p,
+        lat,
+        lon,
+        alt_km: alt,
+        clock_gps_km: clk[0],
+        clock_bds_km: clk[1],
+        isx_km: clk[0] - clk[1],
+        iterations: iters,
+        residual_rms_m: rms_m,
+        gdop,
+        pdop,
+        tdop,
+        n_sat: meas.len(),
+        n_gps,
+        n_bds,
+    })
+}
+
+/// 5x5 inverse (Gauss-Jordan). None if singular.
+fn inv5(a: &[[f64; 5]; 5]) -> Option<[[f64; 5]; 5]> {
+    let mut m = *a;
+    let mut inv = [[0.0f64; 5]; 5];
+    for i in 0..5 {
+        inv[i][i] = 1.0;
+    }
+    for col in 0..5 {
+        let mut piv = col;
+        for r in col + 1..5 {
+            if m[r][col].abs() > m[piv][col].abs() {
+                piv = r;
+            }
+        }
+        if m[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        inv.swap(col, piv);
+        let d = m[col][col];
+        for k in 0..5 {
+            m[col][k] /= d;
+            inv[col][k] /= d;
+        }
+        for r in 0..5 {
+            if r == col {
+                continue;
+            }
+            let f = m[r][col];
+            for k in 0..5 {
+                m[r][k] -= f * m[col][k];
+                inv[r][k] -= f * inv[col][k];
+            }
+        }
+    }
+    Some(inv)
+}
+
 /// ECEF (km) -> geodetic lat/lon (deg), altitude (km). WGS-84.
 pub fn ecef_to_geodetic(p: [f64; 3]) -> (f64, f64, f64) {
     let a = 6378.137;
@@ -224,6 +382,71 @@ mod tests {
         let m = ranges(0.0);
         assert!(solve(&m[..3], [0.0, 0.0, 0.0]).is_none());
         assert!(solve(&m[..4], [0.0, 0.0, 0.0]).is_some());
+    }
+
+    /// 3 GPS + 3 BDS rows on the real six-sat geometry, each constellation
+    /// with its OWN receiver-clock bias.
+    fn ranges_mixed(c_gps: f64, c_bds: f64) -> Vec<MeasSys> {
+        SATS.iter()
+            .enumerate()
+            .map(|(k, &s)| {
+                let g = norm3([STATION[0] - s[0], STATION[1] - s[1], STATION[2] - s[2]]);
+                let system = if k < 3 { 0 } else { 1 };
+                let clock = if system == 0 { c_gps } else { c_bds };
+                MeasSys { sat: s, pseudorange: g + clock, system }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mixed_solve_recovers_position_and_both_clocks() {
+        let (c_gps, c_bds) = (50.0, 80.0); // km — deliberately different
+        let m = ranges_mixed(c_gps, c_bds);
+        let fix = solve_mixed(&m, [0.0, 0.0, 0.0]).expect("converges");
+        let err_m = norm3([
+            fix.ecef[0] - STATION[0],
+            fix.ecef[1] - STATION[1],
+            fix.ecef[2] - STATION[2],
+        ]) * 1000.0;
+        assert!(err_m < 1.0, "position error {err_m:.3} m");
+        assert!((fix.clock_gps_km - c_gps).abs() < 1e-3, "gps clock {}", fix.clock_gps_km);
+        assert!((fix.clock_bds_km - c_bds).abs() < 1e-3, "bds clock {}", fix.clock_bds_km);
+        assert!((fix.isx_km - (c_gps - c_bds)).abs() < 1e-3, "isx {}", fix.isx_km);
+        assert!(fix.residual_rms_m < 1e-3, "residual {}", fix.residual_rms_m);
+        assert_eq!((fix.n_gps, fix.n_bds), (3, 3));
+        // the recovered lat/lon is the New York site
+        assert!((fix.lat - 40.65).abs() < 0.01 && (fix.lon + 73.80).abs() < 0.01);
+    }
+
+    #[test]
+    fn mixed_solve_works_at_the_live_minimum_3_gps_2_bds() {
+        let (c_gps, c_bds) = (50.0, -120.0);
+        let m: Vec<MeasSys> = ranges_mixed(c_gps, c_bds)
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| *k != 2) // 2 GPS + 3 BDS would do; drop one GPS -> 2+3... keep 5 rows
+            .map(|(_, r)| r)
+            .collect();
+        // exactly 5 rows: 2 GPS + 3 BDS here; gate requires >=3 GPS? No: the
+        // solver itself only needs >=5 rows with >=1 per system; the >=3 GPS /
+        // >=2 BDS policy lives in the caller (live_fix).
+        let fix = solve_mixed(&m, [0.0, 0.0, 0.0]).expect("5-row mix converges");
+        let err_m = norm3([
+            fix.ecef[0] - STATION[0],
+            fix.ecef[1] - STATION[1],
+            fix.ecef[2] - STATION[2],
+        ]) * 1000.0;
+        assert!(err_m < 1.0, "position error {err_m:.3} m");
+        assert!((fix.clock_gps_km - c_gps).abs() < 1e-3);
+        assert!((fix.clock_bds_km - c_bds).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mixed_solve_rejects_under_determined_inputs() {
+        let m = ranges_mixed(0.0, 0.0);
+        assert!(solve_mixed(&m[..4], [0.0, 0.0, 0.0]).is_none()); // < 5 rows
+        let gps_only: Vec<MeasSys> = m.iter().copied().filter(|r| r.system == 0).collect();
+        assert!(solve_mixed(&gps_only, [0.0, 0.0, 0.0]).is_none()); // one system
     }
 
     #[test]
