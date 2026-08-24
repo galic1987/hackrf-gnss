@@ -105,8 +105,12 @@ impl Sys {
 /// rounding boundary (both observed live, 2026-08-24). The nav bookkeeping
 /// already pins the boundary to +/-0.5 ms (bit sync resolves the edge to
 /// the enclosing 1 ms epoch), so the nearest code-period boundary IS the
-/// true bit edge.
-fn anchor_stream_time(ch: &Channel, t_proc: f64, abs_bit: usize) -> f64 {
+/// true bit edge — PROVIDED the epoch quantization picked the right 1 ms
+/// cell; when it hasn't (noisy sync in churn), or while the comb wander has
+/// pushed the edge across the tie zone, the snap parks/flips one code
+/// period off. The propagation and flip-dip logic in the body exist to make
+/// the tooth choice immune to both.
+fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) -> f64 {
     // abs_bit is always BEHIND the emitted-bit count (the newest complete
     // subframe ends >= 300 bits before the stream edge): this difference is
     // negative, so it MUST be computed in f64 — the usize subtraction
@@ -117,7 +121,36 @@ fn anchor_stream_time(ch: &Channel, t_proc: f64, abs_bit: usize) -> f64 {
     let code_rate = ch.chip_rate * (1.0 + ch.carrier_freq / ch.f_carrier);
     let t_wrap = t_proc - ch.code_phase / code_rate;
     let t_code = ch.code_len / code_rate; // code period in stream time (~1 ms)
-    t_wrap - t_code * ((t_wrap - t_bit_approx) / t_code).round()
+    // Tooth-exact propagation: boundaries t_tx seconds apart are exactly
+    // 1000 code periods per second apart on the received comb (20 teeth per
+    // 20 ms bit, transmit-synchronous), so referencing the previous anchor
+    // recovers the boundary with no approximation error at all. The nav
+    // bookkeeping's 1 ms epoch quantization otherwise sweeps through the
+    // snap's +/-0.5 ms tie zone every few minutes as the comb drifts
+    // against the epoch grid (~1.3 us/s at kHz Doppler) — the live
+    // +/-1 ms tooth flips. The bookkeeping cross-check (2 ms) rejects
+    // propagating across a bit-count slip or a garbage t_tx decode.
+    if let Some((prev_t_bit, prev_t_tx)) = ch.anchor {
+        let d_tx = t_tx - prev_t_tx;
+        if d_tx >= 0.0 && d_tx < 120.0 {
+            let periods = (d_tx * 1000.0).round();
+            let m = ((t_wrap - prev_t_bit) / t_code - periods).round();
+            let t_prop = t_wrap - t_code * m;
+            if (t_prop - t_bit_approx).abs() < 2.0e-3 {
+                // keep the fallback snap reference comb-referenced: it
+                // wanders against the epoch grid and goes stale in minutes
+                ch.edge_off_s = t_prop - t_bit_approx;
+                ch.edge_off_valid = true;
+                return t_prop;
+            }
+        }
+    }
+    // first anchor (or a broken propagation chain): the approximation is
+    // good to one 1 ms epoch; the flip-dip side (when known) says which
+    // interval holds the edge — without it the nearest-tooth snap can park
+    // one code period off (the static +/-1 ms anchors seen live)
+    let off = if ch.edge_off_valid { ch.edge_off_s } else { 0.0 };
+    t_wrap - t_code * ((t_wrap - t_bit_approx - off) / t_code).round()
 }
 
 /// Max age of the newest validated subframe before a channel's rho_m/t_tx
@@ -188,13 +221,28 @@ pub struct Channel {
     /// how far into nav_bits find_subframes has already scanned
     nav_scanned: usize,
     /// (stream time, GPS transmit time) of the newest decoded subframe
-    /// boundary — the anchor for true pseudoranges. Bit positions in the
-    /// epoch stream are sample-exact, so no code-phase correction is needed.
+    /// boundary — the anchor for true pseudoranges.
     pub anchor: Option<(f64, f64)>,
     /// t_proc of the last anchor refresh; rho_m is published only while
     /// this is younger than ANCHOR_MAX_AGE_S (frozen anchors lie — see the
     /// constant's comment)
     anchor_t: f64,
+    /// Snap-reference offset for anchor picks that can't use propagation:
+    /// which side of the emitted group boundary holds the true bit edge
+    /// (+/-0.5 ms from the flip-dip audit), refined to the exact comb
+    /// offset by every propagated anchor. Without it the nearest-tooth
+    /// snap can park one code period off (the static +/-1 ms anchors).
+    edge_off_s: f64,
+    edge_off_valid: bool,
+    // flip-dip audit accumulators (GPS only — BDS nav_ms carries NH20 sign
+    // flips that drown the data-edge dip): mean |prompt| of the first vs
+    // last epoch of groups at bit-value transitions. The smaller side
+    // holds the edge (the mixed epoch integrates to |1 - 2*delta| of full
+    // amplitude).
+    dip_first: f64,
+    dip_last: f64,
+    dip_n: u32,
+    prev_group_tail: Option<f64>,
     /// self-decoded broadcast ephemeris (subframes 1-3 assembled live)
     pub eph: Option<BrdcEph>,
 }
@@ -269,6 +317,12 @@ impl Channel {
             nav_scanned: 0,
             anchor: None,
             anchor_t: f64::NEG_INFINITY,
+            edge_off_s: 0.0,
+            edge_off_valid: false,
+            dip_first: 0.0,
+            dip_last: 0.0,
+            dip_n: 0,
+            prev_group_tail: None,
             eph: None,
         }
     }
@@ -515,12 +569,43 @@ impl Channel {
             if ntrans >= 20 && cnt as f64 / ntrans as f64 > 0.5 {
                 self.bit_off = Some(best);
                 self.nav_ms.drain(..best);
+                // new grid: the flip-dip audit starts over
+                self.dip_first = 0.0;
+                self.dip_last = 0.0;
+                self.dip_n = 0;
+                self.prev_group_tail = None;
             } else {
                 return;
             }
         }
         // emit bits for every complete 20 ms group
         while self.nav_ms.len() >= 20 {
+            // flip-dip audit: when the bit value changes at a group
+            // boundary, exactly one straddling epoch contains the edge and
+            // integrates to |1 - 2*delta| of full amplitude. The dip side
+            // says which 1 ms interval holds the true bit edge — the
+            // nearest-tooth anchor snap is ambiguous exactly there.
+            if let Some(tail) = self.prev_group_tail {
+                let head = self.nav_ms[0];
+                if head.signum() != tail.signum() {
+                    self.dip_first = 0.95 * self.dip_first + 0.05 * head.abs();
+                    self.dip_last = 0.95 * self.dip_last + 0.05 * tail.abs();
+                    self.dip_n += 1;
+                    if self.dip_n >= 8 {
+                        let lo = self.dip_first.min(self.dip_last);
+                        let hi = self.dip_first.max(self.dip_last);
+                        if hi > 0.0 && (hi - lo) / hi > 0.15 {
+                            self.edge_off_s = if self.dip_first < self.dip_last {
+                                0.5e-3 // edge in the group's first epoch
+                            } else {
+                                -0.5e-3 // edge in the previous group's last epoch
+                            };
+                            self.edge_off_valid = true;
+                        }
+                    }
+                }
+            }
+            self.prev_group_tail = Some(self.nav_ms[19]);
             let s: f64 = self.nav_ms[..20].iter().sum();
             self.nav_bits.push(if s > 0.0 { 1 } else { 0 });
             self.nav_ms.drain(..20);
@@ -1145,8 +1230,8 @@ impl Band {
                         if let Some(last) = subs.last() {
                             // newest subframe -> refresh the pseudorange anchor
                             let abs_bit = from + last.bit_index;
-                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit);
                             let t_tx = (last.tow_next as f64 - 1.0) * 6.0;
+                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit, t_tx);
                             ch.anchor = Some((t_bit, t_tx));
                             ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
@@ -1168,13 +1253,13 @@ impl Band {
                         let n = subs.len();
                         if let Some(last) = subs.last() {
                             let abs_bit = from + last.bit_index;
-                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit);
                             // D1 SOW is the BDT second-of-week at THIS
                             // subframe's preamble leading edge (unlike the
                             // GPS HOW, which names the next one). t_tx is
                             // carried in GPST for all constellations:
                             // BDT + 14 s.
                             let t_tx = crate::beidou_d1::sow_bdt_to_gpst(last.sow_bdt as f64);
+                            let t_bit = anchor_stream_time(ch, t_proc, abs_bit, t_tx);
                             ch.anchor = Some((t_bit, t_tx));
                             ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
@@ -1953,7 +2038,7 @@ mod tests {
         let (ms, abs_bit, err) = best;
         assert!(err < 0.5e-3, "test setup: approx off by {err}");
         ch.nav_ms = vec![0.0; ms];
-        let got = anchor_stream_time(&ch, t_proc, abs_bit);
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 0.0);
         assert!(
             (got - t_true).abs() < 1e-5,
             "anchor off by {:.3} ms (m_true={m_true}, m mod 20 = {})",
@@ -2028,6 +2113,188 @@ mod tests {
         assert!(
             !ch.anchor_fresh(100.0 + ANCHOR_MAX_AGE_S + 1.0),
             "anchor older than ANCHOR_MAX_AGE_S must be withdrawn"
+        );
+    }
+
+    /// Build a GPS channel whose nav bookkeeping approximation for the
+    /// subframe boundary sits a controlled distance OFF the true boundary,
+    /// in the (0.5, 1.5) ms wrong-tooth zone where a bare nearest-tooth
+    /// snap picks the wrong code period (the static +/-1 ms anchors seen
+    /// live). `sign` chooses the side. Returns (channel, t_proc, abs_bit,
+    /// t_true, t_c, approx).
+    fn wrong_tooth_setup(sign: f64) -> (Channel, f64, usize, f64, f64, f64) {
+        let dopp = 1000.0;
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, dopp, 0.0);
+        ch.carrier_freq = dopp;
+        ch.code_phase = 300.0;
+        let code_rate = 1.023e6 * (1.0 + dopp / F_L1);
+        let t_c = 1023.0 / code_rate;
+        let t_proc = 100_000.0;
+        let t_wrap = t_proc - ch.code_phase / code_rate;
+        let t_true = t_wrap - 6161.0 * t_c;
+        let nbits = 10_000usize;
+        ch.nav_bits = vec![0u8; nbits];
+        // the 20 ms bit grid is commensurate with the 1 ms epoch grid, so
+        // the bookkeeping residue is fixed per code phase; sweep the code
+        // phase to walk the achieved offset through the wrong-tooth zone
+        let mut picked = None;
+        for j in 0..1023 {
+            let cp = 300.0 + j as f64;
+            let t_wrap_j = t_proc - cp / code_rate;
+            let t_true_j = t_wrap_j - 6161.0 * t_c;
+            let abs_bit = (nbits as f64 + (t_true_j + sign * 0.75e-3 - t_proc) / 0.02).round() as usize;
+            for ms in 0..20usize {
+                let approx =
+                    t_proc - ms as f64 / 1000.0 + 0.02 * (abs_bit as f64 - nbits as f64);
+                let actual = (approx - t_true_j) * 1e3;
+                if (actual.abs() - 0.75).abs() <= 0.2 && actual.signum() == sign {
+                    picked = Some((cp, ms, abs_bit, t_true_j, approx));
+                    break;
+                }
+            }
+            if picked.is_some() {
+                break;
+            }
+        }
+        let (cp, ms, abs_bit, t_true, approx) = picked.expect("no achievable wrong-tooth offset");
+        ch.code_phase = cp;
+        ch.nav_ms = vec![0.0; ms];
+        (ch, t_proc, abs_bit, t_true, t_c, approx)
+    }
+
+    /// Tooth-exact propagation: with a previous anchor in place, the new
+    /// boundary is exactly 6000 code periods (per 6 s of t_tx) along the
+    /// comb — the wandering nav approximation must NOT be consulted. The
+    /// bare snap in this setup lands one full code period off.
+    #[test]
+    fn anchor_propagates_tooth_exact() {
+        let (mut ch, t_proc, abs_bit, t_true, t_c, approx) = wrong_tooth_setup(1.0);
+        // previous subframe's boundary: exactly 6000 teeth (6 s of t_tx) back
+        let t_prev = t_true - 6000.0 * t_c;
+        ch.anchor = Some((t_prev, 1000.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1006.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "propagated anchor off by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+        // the bare snap on the same bookkeeping picks the wrong tooth —
+        // this is the bug class the propagation fixes
+        let code_rate = 1.023e6 * (1.0 + 1000.0 / F_L1);
+        let t_wrap = t_proc - ch.code_phase / code_rate;
+        let bare = t_wrap - t_c * ((t_wrap - approx) / t_c).round();
+        assert!(
+            (bare - t_true).abs() > 0.5e-3,
+            "setup should put the bare snap on the wrong tooth"
+        );
+        // and the propagation refreshed the fallback offset to the exact one
+        assert!(ch.edge_off_valid);
+        assert!((ch.edge_off_s - (t_true - approx)).abs() < 1e-6);
+    }
+
+    /// Re-anchoring the SAME subframe (d_tx = 0, the per-second re-anchor
+    /// from the widened re-scan window) must reproduce the stored boundary
+    /// exactly, not re-derive it from the wandering approximation.
+    #[test]
+    fn anchor_reanchor_same_subframe_is_stable() {
+        let (mut ch, t_proc, abs_bit, t_true, t_c, _approx) = wrong_tooth_setup(-1.0);
+        ch.anchor = Some((t_true, 1000.0));
+        // 7 s of stream later, on the same comb: 7000 teeth elapsed. The
+        // boundary instant is fixed; only t_proc/code_phase moved.
+        let code_rate = 1.023e6 * (1.0 + 1000.0 / F_L1);
+        let t_wrap2 = (t_proc - ch.code_phase / code_rate) + 7000.0 * t_c;
+        ch.code_phase = 513.7;
+        let t_proc2 = t_wrap2 + ch.code_phase / code_rate;
+        // bookkeeping advanced with the stream: 350 more bits emitted
+        ch.nav_bits.extend(std::iter::repeat(0u8).take(350));
+        let got = anchor_stream_time(&mut ch, t_proc2, abs_bit, 1000.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "same-subframe re-anchor moved by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
+
+    /// First pick with no previous anchor and no dip knowledge: the bare
+    /// snap parks one tooth off (documenting the live +/-1 ms class). With
+    /// the flip-dip side known, the pick is exact.
+    #[test]
+    fn anchor_first_pick_uses_dip_side() {
+        let (mut ch, t_proc, abs_bit, t_true, _t_c, _approx) = wrong_tooth_setup(1.0);
+        // no anchor, no dip knowledge: wrong tooth (the bug class)
+        let bare = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (bare - t_true).abs() > 0.5e-3 && (bare - t_true).abs() < 1.5e-3,
+            "bare snap should park ~1 tooth ({:.3} ms) off",
+            (bare - t_true) * 1e3
+        );
+        // dip says the edge sits BELOW the approximation (last epoch of the
+        // previous group): shifting the snap reference down resolves it
+        ch.edge_off_s = -0.5e-3;
+        ch.edge_off_valid = true;
+        let fixed = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (fixed - t_true).abs() < 1e-6,
+            "dip-guided pick off by {:.3} ms",
+            (fixed - t_true) * 1e3
+        );
+    }
+
+    /// The flip-dip audit: synthetic 1 ms epochs with a known edge position
+    /// must set edge_off_s on the correct side of the group boundary.
+    fn dip_case(edge_after_boundary_ms: f64) -> Channel {
+        // 40 groups of 20 epochs, bit value alternating every group (a flip
+        // at every boundary), amplitude 1000. The edge sits
+        // edge_after_boundary_ms into group epoch 0 (positive) or that far
+        // before the boundary (negative: mixed epoch is the previous
+        // group's last).
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, 1000.0, 0.0);
+        ch.bit_off = Some(0);
+        let d = edge_after_boundary_ms;
+        let mut ms = Vec::with_capacity(800);
+        for g in 0..40 {
+            let v = if g % 2 == 0 { 1000.0 } else { -1000.0 };
+            let pv = -v;
+            for e in 0..20 {
+                let val = if d >= 0.0 {
+                    if e == 0 {
+                        // first epoch: old value for d ms, new for the rest
+                        pv * d + v * (1.0 - d)
+                    } else {
+                        v
+                    }
+                } else if e == 19 {
+                    // last epoch: old value for 1+d ms, new for -d ms
+                    v * (1.0 + d) + pv * (-d)
+                } else {
+                    v
+                };
+                ms.push(val);
+            }
+        }
+        ch.nav_ms = ms;
+        ch.nav_tick_gps();
+        ch
+    }
+
+    #[test]
+    fn flip_dip_audit_finds_edge_side() {
+        // edge 0.3 ms into the group's first epoch -> snap reference +0.5 ms
+        let ch = dip_case(0.3);
+        assert_eq!(ch.nav_bits.len(), 40, "all groups emitted");
+        assert!(ch.edge_off_valid, "dip audit should converge");
+        assert!(
+            ch.edge_off_s > 0.0,
+            "edge in first epoch must bias the snap up, got {}",
+            ch.edge_off_s
+        );
+        // edge 0.3 ms before the boundary (previous group's last epoch)
+        let ch = dip_case(-0.3);
+        assert!(ch.edge_off_valid, "dip audit should converge");
+        assert!(
+            ch.edge_off_s < 0.0,
+            "edge in last epoch must bias the snap down, got {}",
+            ch.edge_off_s
         );
     }
 }
