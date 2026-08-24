@@ -102,12 +102,15 @@ fn main() {
     let epoch0 = now_f64();
     set_realtime();
 
-    // Radio thread: the ASYNC streaming reader keeps 8 bulk transfers
-    // queued — the synchronous read_sync leaves an inter-transfer gap with
-    // no host read pending, and the HackRF's FIFO overflowed in that gap
-    // (rhythmic sample loss every few seconds no matter how fast the
-    // consumer was). Corrections go through the control handle on the main
-    // thread, interleaved between transfers by the streaming thread.
+    // Radio thread: the ASYNC streaming reader keeps 24 bulk transfers
+    // queued (~190 ms of device-side slack) — the synchronous read_sync
+    // leaves an inter-transfer gap with no host read pending, and the
+    // HackRF's FIFO overflowed in that gap (rhythmic sample loss). 8
+    // transfers (64 ms) proved too thin under host build load: cargo/
+    // nextpnr stalls of ~115 ms overflowed the queue every few minutes,
+    // and each overflow forced a full channel realign — the churn that
+    // kept anchors from maturing. Corrections go through the control
+    // handle on the main thread, interleaved between transfers.
     let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(512); // ~8 s of stream
     let drops = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let drops_r = drops.clone();
@@ -136,7 +139,7 @@ fn main() {
         eprintln!("live_radio: radio config failed: {e}");
         std::process::exit(2);
     }
-    let stream = match dev.into_streaming_reader(8, 262144) {
+    let stream = match dev.into_streaming_reader(24, 262144) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("live_radio: start streaming failed: {e}");
