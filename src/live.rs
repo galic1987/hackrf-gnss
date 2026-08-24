@@ -124,34 +124,39 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
     // Tooth-exact propagation: boundaries t_tx seconds apart are exactly
     // 1000 code periods per second apart on the received comb (20 teeth per
     // 20 ms bit, transmit-synchronous), so referencing the previous anchor
-    // recovers the boundary with no approximation error at all. The nav
-    // bookkeeping's 1 ms epoch quantization otherwise sweeps through the
-    // snap's +/-0.5 ms tie zone every few minutes as the comb drifts
-    // against the epoch grid (~1.3 us/s at kHz Doppler) — the live
-    // +/-1 ms tooth flips. The bookkeeping cross-check (2 ms) rejects
-    // propagating across a bit-count slip or a garbage t_tx decode.
+    // recovers the boundary with no approximation error at all.
+    //
+    // The nav bookkeeping (t_bit_approx) is only a SANITY reference here:
+    // it is epoch-gridded and wanders away from the comb at ~1.3-2.5 us/s
+    // from bit-sync time, so a tight cross-check is fatal — with a 2 ms
+    // gate, every refresh started failing after ~15-25 min of channel age
+    // and the anchor fell back to the bare snap, which RAMPS at the
+    // comb-vs-epoch creep rate (up to +/-2.4 us/s) and jumps a whole tooth
+    // every time the creep crosses a tie boundary (both observed live: the
+    // smooth 40-150 ns/s per-channel marches and the +/-2-3 ms jumps).
+    // 15 ms still catches the real failures by orders of magnitude: a bit
+    // slip is a 20 ms multiple, a garbage t_tx decode is seconds.
     if let Some((prev_t_bit, prev_t_tx)) = ch.anchor {
         let d_tx = t_tx - prev_t_tx;
         if d_tx == 0.0 {
             // Same subframe re-validated (the per-second re-anchor from the
-            // widened re-scan window): the boundary instant is FIXED.
-            // Recomputing it from the current comb measures a tooth count of
-            // ~10^4-10^5 with the CURRENT carrier-derived code rate, so
-            // carrier-frequency noise (and worse, bias) is amplified by the
-            // whole span: observed live as per-channel secular rho drift of
-            // 40-150 ns/s, growing linearly with anchor age
-            // (interval * ramp / f_carrier). Keep the established instant;
-            // cross-check the bookkeeping so a broken chain self-heals.
-            if (prev_t_bit - t_bit_approx).abs() < 2.0e-3 {
-                ch.edge_off_s = prev_t_bit - t_bit_approx;
-                ch.edge_off_valid = true;
-                return prev_t_bit;
-            }
-        } else if d_tx > 0.0 && d_tx < 120.0 {
+            // widened re-scan window): the boundary instant is FIXED, and
+            // the TOW match makes the pair self-consistent — return the
+            // established instant unconditionally. (Recomputing it from the
+            // current comb measures ~10^4-10^5 teeth at the CURRENT
+            // carrier-derived rate, injecting loop wobble amplified by the
+            // whole span; and cross-checking against the wandering
+            // approximation throws the channel into the ramping fallback —
+            // both seen live.)
+            ch.edge_off_s = prev_t_bit - t_bit_approx;
+            ch.edge_off_valid = true;
+            return prev_t_bit;
+        }
+        if d_tx > 0.0 && d_tx < 120.0 {
             let periods = (d_tx * 1000.0).round();
             let m = ((t_wrap - prev_t_bit) / t_code - periods).round();
             let t_prop = t_wrap - t_code * m;
-            if (t_prop - t_bit_approx).abs() < 2.0e-3 {
+            if (t_prop - t_bit_approx).abs() < 15.0e-3 {
                 // keep the fallback snap reference comb-referenced: it
                 // wanders against the epoch grid and goes stale in minutes
                 ch.edge_off_s = t_prop - t_bit_approx;
@@ -2245,6 +2250,71 @@ mod tests {
         assert!(
             (old - t_true).abs() > 100e-9,
             "setup should make the old rate-sensitive path visibly wrong"
+        );
+    }
+
+    /// Put the nav bookkeeping a chosen ~5 ms off the true boundary — the
+    /// post-wander regime (the approximation drifts ~1.3-2.5 us/s from bit
+    /// sync, so it passes 2 ms after ~15-25 min of channel age).
+    fn wandered_setup() -> (Channel, f64, usize, f64, f64) {
+        let (mut ch, t_proc, _ab0, t_true, t_c, _a0) = wrong_tooth_setup(1.0);
+        let nbits = ch.nav_bits.len();
+        // coarsely place the approximation near t_true + 5 ms via the 20 ms
+        // bit grid, then fine-tune with the 1 ms remainder grid
+        let target = t_true + 5.0e-3;
+        let mut best: Option<(usize, usize, f64)> = None; // (ms, abs_bit, approx)
+        for db in -1isize..=1 {
+            let abs_bit =
+                ((nbits as f64 + (target - t_proc) / 0.02).round() as isize + db) as usize;
+            for ms in 0..20usize {
+                let a =
+                    t_proc - ms as f64 / 1000.0 + 0.02 * (abs_bit as f64 - nbits as f64);
+                let good = (a - target).abs() < 0.5e-3
+                    && (a - t_true).abs() > 2.5e-3
+                    && (a - t_true).abs() < 15e-3;
+                if good && best.map_or(true, |b| (a - target).abs() < (b.2 - target).abs()) {
+                    best = Some((ms, abs_bit, a));
+                }
+            }
+        }
+        let (ms, abs_bit, approx) = best.expect("no achievable wandered offset");
+        ch.nav_ms = vec![0.0; ms];
+        let _ = approx;
+        (ch, t_proc, abs_bit, t_true, t_c)
+    }
+
+    /// With the approximation wandered past the old 2 ms cross-check, the
+    /// same-subframe re-anchor must STILL return the established instant —
+    /// the 7c84c93/2359cc2 gate threw the channel into the bare-snap
+    /// fallback, which then ramped at the comb creep rate and flipped whole
+    /// teeth (the live 40-150 ns/s marches and +/-1-3 ms jumps).
+    #[test]
+    fn anchor_reanchor_survives_approx_wander() {
+        let (mut ch, t_proc, abs_bit, t_true, _t_c) = wandered_setup();
+        ch.anchor = Some((t_true, 1000.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1000.0);
+        assert!(
+            (got - t_true).abs() < 1e-9,
+            "same-subframe re-anchor under wander moved by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
+
+    /// New-subframe propagation must tolerate the same wander: the tooth
+    /// count from the previous anchor is exact regardless of what the
+    /// bookkeeping has drifted to (a real bookkeeping break is a 20 ms
+    /// multiple or a garbage t_tx — both far outside the 15 ms gate).
+    #[test]
+    fn anchor_propagation_tolerates_approx_wander() {
+        let (mut ch, t_proc, abs_bit, t_true, t_c) = wandered_setup();
+        // previous subframe's boundary: exactly 6000 teeth (6 s of t_tx) back
+        let t_prev = t_true - 6000.0 * t_c;
+        ch.anchor = Some((t_prev, 1000.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_bit, 1006.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "propagated anchor under wander off by {:.3} ms",
+            (got - t_true) * 1e3
         );
     }
 
