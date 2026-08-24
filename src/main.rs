@@ -884,9 +884,21 @@ const STATE_TTL_S: f64 = 1200.0; // 20 min
 fn merge_sync_state(dir: &std::path::Path) -> Option<String> {
     use serde_json::Value;
 
-    let legacy: Option<Value> = std::fs::read_to_string(dir.join("sync_state.json"))
+    let legacy_path = dir.join("sync_state.json");
+    let legacy: Option<Value> = std::fs::read_to_string(&legacy_path)
         .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(|v| {
+            // The legacy writer expires like every other producer (the
+            // tombstone class): a dead band_producer's values must
+            // DISAPPEAR, not outrank live ones. Same rule as state.*.json:
+            // mtime age vs the file's own ttl_s (default STATE_TTL_S).
+            let ttl = v.get("ttl_s").and_then(|t| t.as_f64()).unwrap_or(STATE_TTL_S);
+            std::fs::metadata(&legacy_path)
+                .and_then(|m| m.modified()).ok()
+                .and_then(|t| t.elapsed().ok())
+                .map_or(false, |a| a.as_secs_f64() <= ttl)
+        });
     let mut per: Vec<std::path::PathBuf> = std::fs::read_dir(dir).ok()?
         .flatten()
         .map(|e| e.path())
@@ -1753,6 +1765,44 @@ mod status_tests {
         let p = std::env::temp_dir().join(format!("gnss_status_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_file(&p);
         p
+    }
+
+    #[test]
+    fn a_stale_legacy_state_file_expires_instead_of_ruling_from_the_grave() {
+        // The per-producer merge expires state.*.json by ttl, but the legacy
+        // sync_state.json was merged UNCONDITIONALLY — a dead band_producer's
+        // rows would outrank live ones indefinitely (the discipline-tombstone
+        // class: a 15-h-old +1.9 ppm beating a live -0.416). A legacy file
+        // older than its ttl must contribute nothing; a fresh one must merge.
+        let dir = std::env::temp_dir().join(format!("gnss_merge_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // stale: negative ttl forces staleness regardless of mtime (the
+        // existing merge tests' convention)
+        std::fs::write(dir.join("sync_state.json"), serde_json::json!({
+            "ttl_s": -1, "epoch": 10,
+            "sources": [{"band": "Dead Band", "kind": "ClockDriftPpm",
+                         "value": 9.9, "epoch": 10}],
+            "clock": {"residual_ppm": 9.9},
+        }).to_string()).unwrap();
+        // a fresh per-producer file keeps the merge non-empty
+        std::fs::write(dir.join("state.tick.json"),
+                       r#"{"epoch":20,"clock":{"live_tick_hz":32e6}}"#).unwrap();
+        let merged = merge_sync_state(&dir).expect("fresh file keeps the doc alive");
+        assert!(!merged.contains("Dead Band"),
+                "stale legacy row survived the merge: {merged}");
+        assert!(!merged.contains("9.9"),
+                "stale legacy clock value survived the merge: {merged}");
+        assert!(merged.contains("live_tick_hz"), "fresh file lost: {merged}");
+        // fresh: merges normally
+        std::fs::write(dir.join("sync_state.json"), serde_json::json!({
+            "epoch": 30,
+            "sources": [{"band": "Dead Band", "value": 9.9, "epoch": 30}],
+        }).to_string()).unwrap();
+        let merged = merge_sync_state(&dir).unwrap();
+        assert!(merged.contains("Dead Band"),
+                "fresh legacy row dropped: {merged}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn append(path: &std::path::Path, lines: &[String]) {

@@ -439,6 +439,19 @@ def main():
                 hist["e6_sats"] = len(sats)
 
         if not rows:
+            # Heartbeat even when every snapshot failed (radio busy with the
+            # 24/7 tracker): the server merge expires files by mtime, so a
+            # silent producer's rows would VANISH from the panel instead of
+            # aging visibly. Touch the state with a fresh epoch; per-row
+            # epochs carry the staleness.
+            try:
+                state = json.load(open(STATE))
+            except Exception:
+                state = {}
+            state["epoch"] = epoch
+            tmp = STATE + ".band.tmp"
+            json.dump(state, open(tmp, "w"), indent=1)
+            os.replace(tmp, STATE)
             time.sleep(45)
             continue
 
