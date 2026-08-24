@@ -80,7 +80,7 @@ fn main() {
             continue;
         };
         let (sat_m, dt_sv, _) =
-            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, [0.0, 0.0, 0.0]);
+            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site.map(|x| x * 1000.0));
         let geom_km = ((site[0] - sat_m[0] / 1000.0).powi(2)
             + (site[1] - sat_m[1] / 1000.0).powi(2)
             + (site[2] - sat_m[2] / 1000.0).powi(2))
@@ -120,16 +120,41 @@ fn main() {
         let dt = now - p["t"].as_f64().unwrap_or(now);
         if dt > 1.0 && dt < 900.0 {
             println!("drift vs run {:.0} s ago (stale-anchor detector):", dt);
-            for (prn, r) in &raw {
-                if let Some(pr) = p["raw"][prn.to_string()].as_f64() {
-                    let rate_ns_s = (r - pr) / C_KM_S / dt * 1e9;
-                    let flag = if rate_ns_s.abs() > 5.0 {
-                        "  <== DRIFTING — anchor suspect"
+            let rates: Vec<(u8, f64)> = raw
+                .iter()
+                .filter_map(|(prn, r)| {
+                    p["raw"][prn.to_string()]
+                        .as_f64()
+                        .map(|pr| (*prn, (r - pr) / C_KM_S / dt * 1e9))
+                })
+                .collect();
+            // Split into common-mode (mean — TCXO wander between discipline
+            // updates, real clock physics, NOT an anchor bug) and per-channel
+            // differential (rate_i - mean — the anchor-health signal). A
+            // stale/biased anchor shows as differential drift; if all
+            // channels move together, it's the clock.
+            let mean = if rates.is_empty() {
+                0.0
+            } else {
+                rates.iter().map(|(_, v)| v).sum::<f64>() / rates.len() as f64
+            };
+            if rates.len() >= 2 {
+                println!("  common-mode (clock wander): {mean:+9.1} ns/s — not an anchor signal");
+            }
+            for (prn, rate_ns_s) in &rates {
+                let diff = rate_ns_s - mean;
+                let flag = if rates.len() >= 2 {
+                    if diff.abs() > 5.0 {
+                        format!("  <== DIFFERENTIAL DRIFT {diff:+.1} ns/s — anchor suspect")
                     } else {
-                        ""
-                    };
-                    println!("  PRN {prn:2}: {rate_ns_s:+9.1} ns/s{flag}");
-                }
+                        String::new()
+                    }
+                } else if rate_ns_s.abs() > 5.0 {
+                    "  <== drifting (single channel — cannot split common-mode)".to_string()
+                } else {
+                    String::new()
+                };
+                println!("  PRN {prn:2}: {rate_ns_s:+9.1} ns/s{flag}");
             }
             println!();
         }
