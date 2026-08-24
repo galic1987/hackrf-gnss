@@ -163,11 +163,21 @@ def publish(sats, now, disc=None):
     if waas:
         mean_d = sum(s["doppler_hz"] for s in waas) / len(waas)
         ppm = mean_d / L1_HZ * 1e6
+        # doppler_hz is measured AFTER the hardware clock-correction register
+        # (resid = raw - corr, per the discipline march). Every other drift
+        # voter (ATSC ch35 via CLKOUT, PC clock) measures the RAW TCXO, so
+        # add the correction back — otherwise the row votes ~0 into a
+        # consensus of -0.47 and pulls it to a meaningless midpoint.
+        corr = (disc or {}).get("correction_ppm") or 0.0
+        ppm += corr
         state["sources"] = [{
             "band": MY_BAND,
-            "name": "WAAS GEO live Doppler · Pro+AA.250, 1 Hz tracker",
+            "name": "WAAS GEO live Doppler + corr register · Pro+AA.250, 1 Hz tracker",
             "kind": "ClockDriftPpm",
-            "value": round(ppm, 4), "sigma": 0.01,
+            # sigma floors at GEO motion Doppler (+-0.025 ppm), not the PLL's
+            # short-term precision — path systematics dominate inter-source
+            # comparison
+            "value": round(ppm, 4), "sigma": 0.03,
             "ref_hz": L1_HZ, "epoch": round(now, 2),
             "sats": [f"PRN {s['prn']}" for s in waas],
             "anchor": "Pro live track @ 1568.25 MHz",

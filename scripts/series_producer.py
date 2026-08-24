@@ -117,7 +117,7 @@ def main():
 
         # cross-producer consensus: weighted mean over ALL live drift rows,
         # regardless of which producer wrote them
-        voters = [(s["value"], max(s.get("sigma") or 0.05, 1e-3))
+        voters = [(s["value"], max(s.get("sigma") or 0.05, 0.05))
                   for s in st.get("sources", [])
                   if s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
                   and s.get("band") != "PC clock"      # client of the reference, not a voter
@@ -137,7 +137,12 @@ def main():
                 if (s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
                         and s.get("band") != "PC clock"
                         and now - s.get("epoch", 0) < 1800):
-                    sig = max(s.get("sigma") or 0.05, 1e-3)
+                    # sigma floor 0.05 ppm for the z-test: inter-PATH
+                    # systematics (CLKOUT chain vs internal, GEO motion) are
+                    # larger than any single instrument's short-term
+                    # precision — a tight per-instrument sigma makes the
+                    # spoof alarm fire on honest disagreement
+                    sig = max(s.get("sigma") or 0.05, 0.05)
                     z = (s["value"] - cons) / sig
                     if abs(z) > 3:
                         xalerts.append(f"{s['band']}: {s['value']-cons:+.3f} ppm from "
