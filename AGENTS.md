@@ -18,6 +18,14 @@ HackRFs. Read this before touching anything that talks to the radios.
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
   `live_radio` first and SIGSTOPping `band_producer`; restart after, from
   current binaries (they carry queued fixes).
+- **Tracker restarts are only reliable after a board reset** (2026-08-24,
+  three trials): SIGTERM or SIGKILL of `live_radio` can leave the Pro's
+  USB streaming state wedged — the next `live_radio` then seeds deaf
+  ("seed done — 0 candidates" forever). Procedure: `pkill -TERM
+  tracker_producer.py; pkill -TERM -f examples/live_radio; sleep 3;
+  hackrf_spiflash -d 0000000000000000977c64de2b557213 -R; sleep 6;
+  nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log &`.
+  Never `pkill -9` live_radio.
 
 ## Producers and state files (merge architecture)
 
