@@ -588,7 +588,10 @@ function render(st) {
       "<th>Lock</th><th>C/N₀ proxy</th><th>State</th></tr></thead><tbody>" +
       ltRows.join("") + "</tbody></table>" +
       '<span class="dim">' + trk.sats.length + " channels · updated " + age(ltEpoch) +
-      " · SBAS rows: green = within 0.1 ppm of consensus; MEO rows include orbital Doppler, clock not separable yet</span>";
+      " · SBAS rows: green = within 0.1 ppm of consensus; MEO rows include orbital Doppler, clock not separable yet" +
+      "<br>Not in the live window: <b>GLONASS</b> G1 (1598–1606 MHz), GPS L2C/L5, Galileo E5b/E6, BeiDou B2/B3 — " +
+      "the 16 Msps capture spans 1560.25–1576.25 MHz, so these get snapshot-rotation rows (band table above), " +
+      "never 1 Hz channels, until a second band is captured</span>";
   } else {
     lt.innerHTML = '<span class="dim">waiting for tracker producer&hellip;</span>';
   }
