@@ -54,6 +54,33 @@ correction back before voting (tracker_producer does). Consensus voters
 floor sigma at 0.05 ppm — inter-path systematics exceed any instrument's
 short-term precision; tight sigmas make the spoof alarm cry wolf.
 
+## Telemetry archive
+
+Durable historical archive for later modeling (thermal drift, sky-visibility
+mask, dropout-cause suggestion). Schema/layout/query doc:
+`observations/archive/README.md`.
+
+- `scripts/telemetry_collector.py` — always-on (nohup, log
+  `/tmp/telemetry_collector.log`); every 10 s merges the live
+  `state.*.json` READ-ONLY (same ttl/tombstone rule as the server) into one
+  JSONL line appended to `observations/telemetry_log.jsonl` (its own file).
+  Must never die on a missing/corrupt state file.
+- `scripts/archive_roller.py` — rolls the JSONL histories
+  (band_drift, phase, clock/fused loop logs, telemetry_log) into
+  `observations/archive/YYYY-MM-DD/<stream>.parquet` (streams: satellite,
+  clock_drift, discipline, phase, loop_log, telemetry, presence, tdc
+  reserved). Atomic tmp+replace writes; idempotent re-runs (natural-key
+  dedupe against existing partitions; `_roller_state.json` offsets are only
+  an incremental-read optimization). `--full` re-reads everything,
+  `--loop N` runs forever. Parquet via system pyarrow; falls back to
+  csv.gz if pyarrow is missing. Reserved placeholder columns (az/el,
+  residual_m, temp_c, gain_db) exist from day one — fill columns, don't
+  migrate schemas.
+- Tests: `python3 scripts/test_archive_roller.py` (sandboxed via
+  HACKRF_GNSS_OBS / HACKRF_GNSS_CRATE env overrides; never touches live
+  observations). The archive tooling touches NO radio and signals NO
+  process.
+
 ## Testing
 
 `cargo test` (lib + `tests/`); `--bin hackrf_gnss` covers the merge/dash
