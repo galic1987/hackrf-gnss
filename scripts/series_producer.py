@@ -98,6 +98,23 @@ def main():
             if s.get("kind") == "Presence" and s.get("sats"):
                 if now - s.get("epoch", 0) < 3600:
                     add("n:" + s["band"], s["epoch"], float(len(s["sats"])))
+        # Live tracker constellations: GPS L1 / E1 / B1I / SBAS all sit INSIDE
+        # the 16 Msps capture at 1568.25 MHz, so the 1 Hz tracker sees them
+        # continuously — no snapshot radio time needed. band_producer's
+        # out-of-band rotation (L5, L2C, G1/G2, E5b, E6) can only open the
+        # Pro when live_radio releases it, so those rows refresh rarely; the
+        # in-band ones should NEVER go stale while the tracker runs.
+        trk = st.get("tracker") or {}
+        if trk.get("sats") and now - st.get("epoch", now) < 30:
+            counts = {}
+            for s in trk["sats"]:
+                if s.get("lock_s", 0) > 0:
+                    counts[s.get("sys", "?")] = counts.get(s.get("sys", "?"), 0) + 1
+            label = {"gps": "GPS L1", "sbas": "SBAS/WAAS",
+                     "galileo": "Galileo E1", "beidou": "BeiDou B1I"}
+            for sysname, n in counts.items():
+                add("n:" + label.get(sysname, sysname) + " (live)", now, float(n))
+
         # cross-producer consensus: weighted mean over ALL live drift rows,
         # regardless of which producer wrote them
         voters = [(s["value"], max(s.get("sigma") or 0.05, 1e-3))
