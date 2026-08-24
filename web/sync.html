@@ -103,8 +103,8 @@ being nailed down.</span>
         <td class="warn">register cleared by today's reflash; residual = raw TCXO drift, see live number above</td></tr>
     <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;9.4 m</td>
         <td class="ok">live &mdash; awaiting PPS source (ZED-F9T)</td></tr>
-    <tr><td>Carry-chain TDC (64-tap)</td><td class="num">~150&ndash;400 ps</td><td class="num">4.5&ndash;12 cm</td>
-        <td class="warn">not in the current flash &mdash; rebuild with absolute-scale RO counter + build-ID regs running; then code-density calibration (run0 was relative-scale only)</td></tr>
+    <tr><td>Carry-chain TDC (48-tap, rev3b)</td><td class="num">499 ps RMS single-shot (worst bin 911 ps)</td><td class="num">15 cm</td>
+        <td class="ok">CALIBRATED 2026-08-24 — absolute scale from on-fabric RO (T_ro 8762.0±16.5 ps) + measured adclk 32.000162 MHz; chain spans the full 31.25 ns period; DNL ±2.2 LSB</td></tr>
     <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps</td><td class="num">~1&ndash;1.5 cm</td>
         <td class="dim">design target &mdash; needs the ZED-F9T PPS on the trigger pin (hardware anchor not yet connected)</td></tr>
     <tr><td>ATSC pilot carrier PLL</td><td class="num">~0.1 mm @ 20 Hz</td><td class="num">relative displacement</td>
