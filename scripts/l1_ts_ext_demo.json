@@ -1,0 +1,8 @@
+{
+  "stream_start_ticks": 895856,
+  "tick_hz": 40000000.0,
+  "fs": 2500000.0,
+  "image": 2,
+  "ticks_source": "nibble-stream",
+  "utc_known": false
+}

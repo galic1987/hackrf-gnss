@@ -1,0 +1,8 @@
+{
+  "stream_start_ticks": 746651393469,
+  "tick_hz": 32209657.5,
+  "fs": 8000000.0,
+  "image": 0,
+  "ticks_source": "spi",
+  "utc_known": false
+}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L-Band Watch</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+
+  <header>
+    <div>
+      <h1>L-Band Watch</h1>
+      <p class="sub">HackRF One &middot; Iridium simplex 1626.0&ndash;1626.5&nbsp;MHz &middot; live from the overnight recorder</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <nav class="nav">
+        <a href="/report">Report</a>
+        <a href="/catalogue">Catalogue</a>
+        <a href="/globe">Globe</a>
+        <a href="http://127.0.0.1:8093/">Tuner</a>
+      </nav>
+      <div class="badge" id="badge"><span class="dot" id="dot"></span><span id="badge-text">connecting…</span></div>
+    </div>
+  </header>
+
+  <section class="tiles">
+    <div class="tile"><div class="k">Cycles recorded</div><div class="v" id="t-cycles">–</div><div class="s" id="t-span">&nbsp;</div></div>
+    <div class="tile"><div class="k">Bursts detected</div><div class="v" id="t-bursts">–</div><div class="s">Iridium TDMA, ~20.32 ms</div></div>
+    <div class="tile"><div class="k">Frames decoded</div><div class="v ok" id="t-locked">–</div><div class="s">payload frames with sync word</div></div>
+    <div class="tile"><div class="k">Frame sync</div><div class="v ok" id="t-sync">–</div><div class="s">unique word 200020022022</div></div>
+    <div class="tile"><div class="k">GNSS acquired</div><div class="v bad" id="t-gnss">–</div><div class="s" id="t-gnss-s">&nbsp;</div></div>
+    <div class="tile"><div class="k">Replay snippets</div><div class="v" id="t-snip">–</div><div class="s">raw IQ saved</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Antenna passband <span class="note">last sweep, 1000&ndash;1800 MHz</span></h2>
+    <canvas id="spec" height="190"></canvas>
+    <div class="axis" id="spec-axis"></div>
+  </section>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>Channel activity <span class="note">bursts per frequency</span></h2>
+      <div id="chan" class="chan"></div>
+    </section>
+
+    <section class="panel">
+      <h2>GNSS status <span class="note">GPS L1 C/A, 100 ms integration</span></h2>
+      <div id="gnss" class="gnss"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Recent bursts <span class="note">newest first &middot; lock &gt; 0.25 means the QPSK constellation resolved</span></h2>
+    <div class="scroll">
+      <table id="bursts">
+        <thead><tr>
+          <th>UTC</th><th>cyc</th><th>t (s)</th><th>dur (ms)</th><th>freq (MHz)</th>
+          <th>lock</th><th>x⁴ (dB)</th><th>sym</th><th>sync</th><th>first symbols</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer id="foot">&nbsp;</footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

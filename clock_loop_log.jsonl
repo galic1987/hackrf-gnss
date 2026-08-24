@@ -1,0 +1,6 @@
+{"t":1787341519.69946,"measured_ppm":-0.8447755125429168,"delta_ppm":0.8447755125429168,"correction_ppm":26.844775512542917,"n_bursts":3,"sats":["IRIDIUM 107"]}
+{"t":1787341603.042939,"measured_ppm":-1.7689246154528604,"delta_ppm":1.7689246154528604,"correction_ppm":28.613700127995777,"n_bursts":2,"sats":["IRIDIUM 107"]}
+{"t":1787341686.196539,"measured_ppm":null,"delta_ppm":null,"correction_ppm":28.613700127995777,"n_bursts":0,"sats":[]}
+{"t":1787341768.311611,"measured_ppm":null,"delta_ppm":null,"correction_ppm":28.613700127995777,"n_bursts":0,"sats":[]}
+{"t":1787341850.719744,"measured_ppm":null,"delta_ppm":null,"correction_ppm":28.613700127995777,"n_bursts":0,"sats":[]}
+{"t":1787341933.015185,"measured_ppm":null,"delta_ppm":null,"correction_ppm":28.613700127995777,"n_bursts":0,"sats":[]}
