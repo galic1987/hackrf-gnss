@@ -82,6 +82,14 @@ duration every second. The locked WAAS GEOs' mean Doppler feeds the &ldquo;L1 / 
 5 min. Residual RMS tells you how much to trust it: metres = honest fix, kilometres = the phase convention is still
 being nailed down.</span>
 
+<h2>Sky visibility &mdash; expected vs observed</h2>
+<div id="sky"><span class="dim">waiting for sky producer&hellip;</span></div>
+<span class="dim">Broadcast-ephemeris az/el for every GPS + BeiDou satellite, diffed against the live tracker
+every 30 s. <span class="ok">teal</span> = tracked as expected, <span class="neg">red</span> = above the mask but
+not tracked (blockage/fade), <span class="warn">amber</span> = tracked below the mask &mdash; reflection or spoof
+candidate. A persistent 5&deg;&times;5&deg; lock histogram (<span class="tip" data-tip="observations/sky_mask.json — every cycle adds each modeled sat's bin to exp, each locked sat to lock; bins with ≥30 samples and <5% lock rate count as masked">learned mask</span>)
+paints this antenna's true window-shaped sky over days.</span>
+
 <h2>Precision &mdash; all bands, last 60 min</h2>
 <canvas id="prec" style="width:100%;height:170px;display:block;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
 <div id="preclegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
@@ -420,7 +428,7 @@ function annotate(root) {
   });
 }
 function annotateAll() {
-  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "status"].forEach(function (id) {
+  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "sky", "status"].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) annotate(el);
   });
@@ -635,6 +643,43 @@ function render(st) {
       " · " + esc(pos.source || "") + " · " + age(pos.epoch || st.epoch) + "</span>";
   } else {
     posEl.innerHTML = '<span class="dim">waiting for position producer&hellip;</span>';
+  }
+
+  // sky-visibility section (sky_producer.py, 30 s): expected vs observed
+  var skyEl = document.getElementById("sky");
+  var sky = st.sky;
+  if (sky && sky.counts) {
+    var sc = sky.counts;
+    var chip = function (s) {
+      var cls = s.cls === "tracked" ? "ok" : s.cls === "unexpected" ? "warn"
+        : s.cls === "absent" ? "neg" : "dim";
+      var tip = esc(s.sys + " " + s.prn + " — " + s.cls +
+        (s.lock_s > 0 ? ", locked " + Math.round(s.lock_s) + " s" : "") +
+        (s.cn0 !== null && s.cn0 !== undefined ? ", C/N₀ " + s.cn0.toFixed(1) : ""));
+      return '<span class="tip ' + cls + '" data-tip="' + tip + '" style="margin-right:0.8em;white-space:nowrap">' +
+        (s.sys === "gps" ? "G" : s.sys === "beidou" ? "C" : "?") +
+        (s.prn < 10 ? "0" + s.prn : s.prn) + " " +
+        s.az_deg.toFixed(0) + "°/" + s.el_deg.toFixed(0) + "°</span>";
+    };
+    var above = (sky.sats || []).filter(function (s) { return s.el_deg >= sky.mask.el_min_deg; })
+      .sort(function (a, b) { return b.el_deg - a.el_deg; });
+    var unx = (sky.sats || []).filter(function (s) { return s.cls === "unexpected"; });
+    skyEl.innerHTML =
+      "<b>" + sc.tracked + "</b> tracked of <b>" + sc.expected + "</b> expected above the mask" +
+      ' &nbsp;·&nbsp; <span class="' + (sc.absent ? "neg" : "dim") + '">' + sc.absent + " absent</span>" +
+      ' &nbsp;·&nbsp; <span class="' + (sc.unexpected ? "warn" : "dim") + '">' + sc.unexpected + " below-mask</span>" +
+      (sc.unmodeled ? ' &nbsp;·&nbsp; <span class="dim">' + sc.unmodeled + " locked w/o ephemeris (" +
+        esc((sky.unmodeled_sats || []).join(", ")) + ")</span>" : "") +
+      ' &nbsp;·&nbsp; <span class="dim">' + age(sky.epoch || st.epoch) +
+      " · mask: el≥" + sky.mask.el_min_deg + "° + " + sky.mask.learned_bins + " learned bins · " +
+      esc(sky.eph || "") + (sky.tracker_stale ? " · tracker STALE" : "") + "</span>" +
+      (unx.length
+        ? '<div class="warn">⚠ tracked below the mask — reflection/spoof candidates: ' +
+          unx.map(chip).join("") + "</div>"
+        : "") +
+      '<div style="margin-top:0.4em;line-height:1.9">' + above.map(chip).join("") + "</div>";
+  } else {
+    skyEl.innerHTML = '<span class="dim">waiting for sky producer&hellip;</span>';
   }
 
   drawSeries("prec", "preclegend", st.band_series || {}, "", "ppm");

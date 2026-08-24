@@ -209,6 +209,25 @@ def parse_telemetry(d):
     return out
 
 
+def parse_sky(d):
+    """One sky_producer cycle line -> satellite-stream rows with the reserved
+    az_deg/el_deg columns finally filled (sky_history.jsonl)."""
+    t = d.get("t")
+    if t is None:
+        return {}
+    rows = []
+    for s in d.get("sats") or []:
+        if not isinstance(s, dict) or s.get("prn") is None:
+            continue
+        rows.append({"epoch": t, "sys": s.get("sys"), "prn": s.get("prn"),
+                     "cn0": s.get("cn0"), "doppler_hz": s.get("doppler_hz"),
+                     "lock_s": s.get("lock_s"), "rho_m": s.get("rho_m"),
+                     "t_tx": s.get("t_tx"), "ppm": s.get("ppm"),
+                     "az_deg": s.get("az_deg"), "el_deg": s.get("el_deg"),
+                     "residual_m": None})
+    return {"satellite": rows} if rows else {}
+
+
 # (path, parser) — parser takes the decoded JSON object
 SOURCES = [
     (os.path.join(OBS, "band_drift_history.jsonl"), parse_band_drift),
@@ -218,6 +237,7 @@ SOURCES = [
     (os.path.join(CRATE, "fused_loop_log.jsonl"),
      lambda d: parse_loop(d, "fused")),
     (os.path.join(OBS, "telemetry_log.jsonl"), parse_telemetry),
+    (os.path.join(OBS, "sky_history.jsonl"), parse_sky),
 ]
 
 
