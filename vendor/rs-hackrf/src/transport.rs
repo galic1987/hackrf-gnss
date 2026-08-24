@@ -196,6 +196,8 @@ enum VendorRequest {
     SetVgaGain = 20,
     /// Enable/disable bias tee / antenna power (wValue = 0 or 1).
     AntennaEnable = 23,
+    /// Enable/disable the 10 MHz CLKOUT output (wValue = 0 or 1).
+    ClkoutEnable = 32,
     /// Read board hardware revision (1 byte). Requires USB API >= 0x0106.
     BoardRevRead = 45,
     /// Read supported platform bitfield (4 bytes, big-endian). Requires USB API >= 0x0106.
@@ -680,6 +682,23 @@ impl HackRf {
         data[1..].copy_from_slice(&value.to_le_bytes());
         self.control_out(VendorRequest::RadioWriteReg, 0, BANK_ALL, &data)?;
         tracing::debug!("Clock correction set to {ppm} ppm");
+        Ok(())
+    }
+
+    /// Enable or disable the 10 MHz CLKOUT output (HackRF Pro).
+    ///
+    /// The station's second radio is CLKIN-slaved to this output, so whoever
+    /// owns the Pro owns the reference: assert it on every startup — radio
+    /// config and flashes can drop it, and a silent CLKOUT loss takes the
+    /// whole slave chain's measurements with it (2026-08-24 phase stall).
+    ///
+    /// Reference: hackrf.c `hackrf_set_clkout_enable` - vendor req 32
+    pub fn set_clkout_enable(&self, enable: bool) -> Result<()> {
+        self.control_out(VendorRequest::ClkoutEnable, enable as u16, 0, &[])?;
+        tracing::debug!(
+            "CLKOUT {}",
+            if enable { "enabled" } else { "disabled" }
+        );
         Ok(())
     }
 

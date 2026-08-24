@@ -126,6 +126,10 @@ fn main() {
         dev.set_vga_gain(46)?;
         dev.set_amp_enable(false)?;
         dev.set_antenna_enable(true)?; // AA.250 dual-stage LNA needs bias
+        // CLKOUT ownership follows radio ownership: this process holds the
+        // Pro 24/7, and the One is CLKIN-slaved to its 10 MHz. Radio config
+        // (and any flash) can drop CLKOUT — re-assert it on every startup.
+        dev.set_clkout_enable(true)?;
         Ok(())
     })();
     if let Err(e) = r {
