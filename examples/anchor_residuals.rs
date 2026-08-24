@@ -100,6 +100,45 @@ fn main() {
     println!("surveyed site ECEF [{:.3}, {:.3}, {:.3}] km", site[0], site[1], site[2]);
     println!("common-mode clock (median): {clock:.3} km ({:.3} us)\n",
              clock / C_KM_S * 1e6);
+    if raw.len() < 3 {
+        println!("*** WARNING: only {} anchored channel(s) — the median pins one", raw.len());
+        println!("*** channel to 0.000 BY CONSTRUCTION; residuals are unmeasurable");
+        println!("*** below 3 channels. Use the pairwise drift rates below instead.");
+        println!("*** A 0.000 'healthy' verdict right now is the artifact, not truth.\n");
+    }
+    // Pairwise divergence diagnostic (meaningful even at n=2 — this is what
+    // caught the 2026-08-24 frozen-anchor divergence): compare each channel's
+    // raw (rho - geom) against the previous run and report the drift rate.
+    // A fresh anchor re-derives t_bit every refresh, so any sustained
+    // per-channel rate beyond a few ns/s is an anchor gone stale (its rate
+    // grows to the satellite's range rate, hundreds of m/s).
+    let cache = "/tmp/anchor_residuals_prev.json";
+    let prev: Option<serde_json::Value> = std::fs::read_to_string(cache)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    if let Some(p) = &prev {
+        let dt = now - p["t"].as_f64().unwrap_or(now);
+        if dt > 1.0 && dt < 900.0 {
+            println!("drift vs run {:.0} s ago (stale-anchor detector):", dt);
+            for (prn, r) in &raw {
+                if let Some(pr) = p["raw"][prn.to_string()].as_f64() {
+                    let rate_ns_s = (r - pr) / C_KM_S / dt * 1e9;
+                    let flag = if rate_ns_s.abs() > 5.0 {
+                        "  <== DRIFTING — anchor suspect"
+                    } else {
+                        ""
+                    };
+                    println!("  PRN {prn:2}: {rate_ns_s:+9.1} ns/s{flag}");
+                }
+            }
+            println!();
+        }
+    }
+    let mut cur = serde_json::json!({"t": now, "raw": {}});
+    for (prn, r) in &raw {
+        cur["raw"][prn.to_string()] = serde_json::json!(r);
+    }
+    let _ = std::fs::write(cache, cur.to_string());
     println!("{:>6} {:>14} {:>12}  verdict", "PRN", "resid (km)", "resid (us)");
     let mut worst = 0.0f64;
     for (prn, r) in &raw {
@@ -122,6 +161,12 @@ fn main() {
     println!(
         "\nworst |resid|: {:.3} km — {}",
         worst,
-        if worst < 0.05 { "anchors trustworthy for PVT" } else { "DO NOT trust an anchored solve" }
+        if raw.len() < 3 {
+            "UNMEASURABLE — need >= 3 anchored channels (median pinning artifact)"
+        } else if worst < 0.05 {
+            "anchors trustworthy for PVT"
+        } else {
+            "DO NOT trust an anchored solve"
+        }
     );
 }

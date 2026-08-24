@@ -54,7 +54,11 @@ logic. Gateware sims live in the firmware repo
 The anchored-PVT truth tool: `cargo run --release --example anchor_residuals`
 — per-satellite anchor residuals vs the surveyed site; GPS anchors must be
 meter-class before trusting any anchored solve (4-sat solves have zero
-residual by construction — rms is not a quality gate at n=4).
+residual by construction — rms is not a quality gate at n=4). Residuals are
+only measurable with >= 3 anchored GPS channels (fewer and the median pins
+one channel to 0.000 by construction; the tool warns). It also prints
+per-channel drift of (rho − geom) vs the previous run — the stale-anchor
+detector; any sustained rate beyond a few ns/s is an anchor gone stale.
 
 ## Firmware
 

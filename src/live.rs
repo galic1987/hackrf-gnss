@@ -94,7 +94,18 @@ impl Sys {
 /// 0-19 ms (thousands of km of pseudorange; the reason the first anchored
 /// PVT landed in Hudson Bay). The estimate is refined to the code-phase
 /// wrap: bit edges align with code period starts, so the true boundary is an
-/// integer number of 20 ms before the most recent code wrap.
+/// integer number of CODE PERIODS before the most recent code wrap.
+///
+/// The refinement must snap to the code-period (~1 ms) lattice, NOT to
+/// 20 ms buckets hanging off t_wrap: the number of code periods between the
+/// boundary and t_wrap is a multiple of 20 only by luck — Doppler drift
+/// walks it, and it steps by one every time the code phase wraps at the
+/// 1-s report boundary. A 20 ms snap then answered r ms early (r = periods
+/// mod 20), flickering by +/-1 ms per refresh and by ~20 ms near the
+/// rounding boundary (both observed live, 2026-08-24). The nav bookkeeping
+/// already pins the boundary to +/-0.5 ms (bit sync resolves the edge to
+/// the enclosing 1 ms epoch), so the nearest code-period boundary IS the
+/// true bit edge.
 fn anchor_stream_time(ch: &Channel, t_proc: f64, abs_bit: usize) -> f64 {
     // abs_bit is always BEHIND the emitted-bit count (the newest complete
     // subframe ends >= 300 bits before the stream edge): this difference is
@@ -105,8 +116,32 @@ fn anchor_stream_time(ch: &Channel, t_proc: f64, abs_bit: usize) -> f64 {
         + 0.02 * (abs_bit as f64 - ch.nav_bits.len() as f64);
     let code_rate = ch.chip_rate * (1.0 + ch.carrier_freq / ch.f_carrier);
     let t_wrap = t_proc - ch.code_phase / code_rate;
-    t_wrap - 0.02 * ((t_wrap - t_bit_approx) / 0.02).round()
+    let t_code = ch.code_len / code_rate; // code period in stream time (~1 ms)
+    t_wrap - t_code * ((t_wrap - t_bit_approx) / t_code).round()
 }
+
+/// Max age of the newest validated subframe before a channel's rho_m/t_tx
+/// are withdrawn. With a healthy bit stream the anchor re-anchors every
+/// second (see the re-scan windows below), so 30 s stale means the nav
+/// pipeline is dead even if the RF loops still read "locked" — publishing
+/// the frozen anchor then reports the satellite's range RATE as a growing
+/// pseudorange error (observed live 2026-08-24: a GPS channel locked the
+/// whole time diverged at 147-885 ns/s = its range rate, because its
+/// subframes stopped validating during a cn0 churn while its neighbour
+/// kept refreshing).
+const ANCHOR_MAX_AGE_S: f64 = 30.0;
+
+/// Subframe re-scan overlaps. find_subframes reports the NEWEST valid
+/// subframe in the window; the window must reach back far enough that the
+/// last validated subframe stays findable, so the anchor re-anchors to it
+/// EVERY SECOND between validations instead of freezing at its last value
+/// (the freeze was the per-channel divergence above). GPS LNAV skips
+/// indices 0-1 (it needs the two trailing bits of the previous subframe),
+/// hence 300 + 2. BDS D1 keeps only cross-consistent PAIRS (b = a + 300
+/// bits, SOW + 6 s), so the window must cover both members of the last
+/// pair: 2 x 300.
+const GPS_RESCAN_BACK: usize = 302;
+const D1_RESCAN_BACK: usize = 600;
 
 /// One tracked satellite: a Costas PLL + early/late DLL over one code period
 /// per epoch (1 ms for GPS/SBAS/B1I, 4 ms for Galileo E1B).
@@ -156,6 +191,10 @@ pub struct Channel {
     /// boundary — the anchor for true pseudoranges. Bit positions in the
     /// epoch stream are sample-exact, so no code-phase correction is needed.
     pub anchor: Option<(f64, f64)>,
+    /// t_proc of the last anchor refresh; rho_m is published only while
+    /// this is younger than ANCHOR_MAX_AGE_S (frozen anchors lie — see the
+    /// constant's comment)
+    anchor_t: f64,
     /// self-decoded broadcast ephemeris (subframes 1-3 assembled live)
     pub eph: Option<BrdcEph>,
 }
@@ -229,6 +268,7 @@ impl Channel {
             nav_bits: Vec::new(),
             nav_scanned: 0,
             anchor: None,
+            anchor_t: f64::NEG_INFINITY,
             eph: None,
         }
     }
@@ -524,6 +564,14 @@ impl Channel {
     }
     pub fn debug_prompt(&self, sig: &[Complex<f32>], dopp: f64, cp: f64) -> f64 {
         self.prompt_only(sig, dopp, cp)
+    }
+
+    /// rho_m/t_tx may be published only while the anchor is fresh — see
+    /// ANCHOR_MAX_AGE_S. A locked channel whose nav pipeline stopped still
+    /// has loops and a stored anchor; only the refresh timestamp tells the
+    /// difference between a measurement and a frozen number.
+    fn anchor_fresh(&self, t_proc: f64) -> bool {
+        self.anchor.is_some() && t_proc - self.anchor_t <= ANCHOR_MAX_AGE_S
     }
 
     /// Close out one tracked second: C/N0 proxy + lock state machine.
@@ -1080,10 +1128,16 @@ impl Band {
         for ch in &mut self.channels {
             let (cn0, dopp, cp) = ch.end_second();
             ch.nav_tick();
-            // scan for new subframes since the last scan (300-bit overlap so
-            // a frame straddling the previous scan point isn't missed)
+            // scan for new subframes since the last scan (the overlap keeps
+            // the LAST validated subframe findable, so the anchor re-anchors
+            // to it every second between validations rather than freezing —
+            // see GPS_RESCAN_BACK/D1_RESCAN_BACK)
             let nav_subs = {
-                let from = ch.nav_scanned.saturating_sub(300);
+                let from = ch.nav_scanned.saturating_sub(match ch.sys {
+                    Sys::Gps => GPS_RESCAN_BACK,
+                    Sys::Beidou => D1_RESCAN_BACK,
+                    _ => 300,
+                });
                 match ch.sys {
                     Sys::Gps => {
                         let subs = crate::gps::lnav::find_subframes(&ch.nav_bits[from..]);
@@ -1094,6 +1148,7 @@ impl Band {
                             let t_bit = anchor_stream_time(ch, t_proc, abs_bit);
                             let t_tx = (last.tow_next as f64 - 1.0) * 6.0;
                             ch.anchor = Some((t_bit, t_tx));
+                            ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
                             // self-decoded ephemeris once subframes 1-3 exist
                             // (scan the FULL buffer — 1/2/3 may predate this window)
@@ -1121,6 +1176,7 @@ impl Band {
                             // BDT + 14 s.
                             let t_tx = crate::beidou_d1::sow_bdt_to_gpst(last.sow_bdt as f64);
                             ch.anchor = Some((t_bit, t_tx));
+                            ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
                             if ch.eph.is_none() {
                                 let all = crate::beidou_d1::find_subframes(&ch.nav_bits);
@@ -1136,6 +1192,14 @@ impl Band {
                     _ => 0,
                 }
             };
+            // publish the anchor only while the channel is locked AND
+            // the anchor is fresh: the anchor otherwise freezes at its
+            // last value and a dead or nav-starved channel keeps
+            // reporting a stale pseudorange (observed live: unlocked
+            // sats with lock_s 0 carrying a constant rho_m for hours;
+            // and a LOCKED channel whose subframes stopped validating
+            // diverging at its range rate, 147-885 ns/s).
+            let anchor_fresh = ch.anchor_fresh(t_proc);
             out.push(SatReport {
                 prn: ch.prn,
                 sys: ch.sys.name(),
@@ -1145,17 +1209,16 @@ impl Band {
                 lock_s: ch.lock_s,
                 nav_bits: ch.nav_bits.len(),
                 nav_subs,
-                // publish the anchor only while the channel is locked: the
-                // anchor otherwise freezes at its last value and a dead
-                // channel keeps reporting a stale pseudorange forever
-                // (observed live: unlocked sats with lock_s 0 carrying a
-                // constant rho_m for hours).
-                rho_m: if ch.locked {
+                rho_m: if ch.locked && anchor_fresh {
                     ch.anchor.map(|(t_bit, t_tx)| (t_bit - t_tx) * 299_792_458.0)
                 } else {
                     None
                 },
-                t_tx: if ch.locked { ch.anchor.map(|(_, t_tx)| t_tx) } else { None },
+                t_tx: if ch.locked && anchor_fresh {
+                    ch.anchor.map(|(_, t_tx)| t_tx)
+                } else {
+                    None
+                },
                 epoch,
             });
         }
@@ -1188,10 +1251,16 @@ impl Band {
     /// BeiDou (BDS t_tx is converted to GPST at the anchor: BDT + 14 s).
     pub fn nav_obs(&self) -> Vec<(u8, f64, f64)> {
         const C: f64 = 299_792_458.0;
+        // same freshness gate as the SatReport path: a stale anchor is a
+        // frozen pseudorange, not a measurement
+        let t_proc = self.in_t - self.remaining().len() as f64 / self.fs;
         self.channels
             .iter()
             .filter_map(|ch| {
                 let (t_bit, t_tx) = ch.anchor?;
+                if !ch.anchor_fresh(t_proc) {
+                    return None;
+                }
                 Some((ch.prn as u8, (t_bit - t_tx) * C, t_tx))
             })
             .collect()
@@ -1844,5 +1913,121 @@ mod tests {
             max_diff = max_diff.max((a.re - b.re).abs()).max((a.im - b.im).abs());
         }
         assert!(max_diff < 1e-3, "chunk-size-dependent output: {max_diff}");
+    }
+
+    /// Anchor lattice-phase regression (the 2026-08-24 flicker bug): the
+    /// 20 ms bit-edge snap MUST be referenced to the code-period lattice,
+    /// not to 0.02 s buckets hanging off t_wrap. When the number of code
+    /// periods between the boundary and the most recent code wrap is not a
+    /// multiple of 20 (Doppler drift walks it; it steps every time the
+    /// code phase wraps at the 1-s report boundary), the old snap landed
+    /// the anchor r ms off (r = m mod 20) and flickered by +/-1 ms per
+    /// refresh, or by ~20 ms near the rounding boundary. The nav
+    /// bookkeeping pins the boundary to +/-0.5 ms, so snapping to the
+    /// NEAREST code-period boundary is exact.
+    fn anchor_case(sys: Sys, code_len: f64, chip_rate: f64, f_carrier: f64, m_true: i64) {
+        let dopp = 1000.0;
+        let mut ch = Channel::new(sys, 1, 4.0e6, dopp, 0.0);
+        ch.carrier_freq = dopp;
+        ch.code_phase = 300.0; // chips
+        let code_rate = chip_rate * (1.0 + dopp / f_carrier);
+        let t_c = code_len / code_rate;
+        let t_proc = 100_000.0;
+        let t_wrap = t_proc - ch.code_phase / code_rate;
+        let t_true = t_wrap - m_true as f64 * t_c;
+        // nav bookkeeping places the 20 ms approximation at 1 ms (epoch)
+        // resolution; find the (nav_ms remainder, abs_bit) pair closest to
+        // the true boundary — the bit sync guarantees within +/-0.5 ms
+        let nbits = 10_000usize;
+        ch.nav_bits = vec![0u8; nbits];
+        let mut best = (usize::MAX, 0usize, f64::MAX); // (nav_ms len, abs_bit, err)
+        for ms in 0..20usize {
+            let ab = (nbits as f64 + (t_true - t_proc + ms as f64 / 1000.0) / 0.02).round()
+                as usize;
+            let approx = t_proc - ms as f64 / 1000.0 + 0.02 * (ab as f64 - nbits as f64);
+            let err = (approx - t_true).abs();
+            if err < best.2 {
+                best = (ms, ab, err);
+            }
+        }
+        let (ms, abs_bit, err) = best;
+        assert!(err < 0.5e-3, "test setup: approx off by {err}");
+        ch.nav_ms = vec![0.0; ms];
+        let got = anchor_stream_time(&ch, t_proc, abs_bit);
+        assert!(
+            (got - t_true).abs() < 1e-5,
+            "anchor off by {:.3} ms (m_true={m_true}, m mod 20 = {})",
+            (got - t_true) * 1e3,
+            m_true % 20
+        );
+    }
+
+    #[test]
+    fn anchor_stream_time_snaps_to_code_period_lattice_gps() {
+        // healthy class: boundary a whole number of 20 code periods back
+        anchor_case(Sys::Gps, 1023.0, 1.023e6, F_L1, 6160);
+        // the flicker class: 6 code periods past a 20 ms multiple — the old
+        // 0.02 s snap answered ~6 ms early
+        anchor_case(Sys::Gps, 1023.0, 1.023e6, F_L1, 6166);
+        // one period past a multiple: the +/-1 ms live flicker mode
+        anchor_case(Sys::Gps, 1023.0, 1.023e6, F_L1, 6161);
+    }
+
+    #[test]
+    fn anchor_stream_time_snaps_to_code_period_lattice_bds() {
+        anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6160);
+        anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6161);
+    }
+
+    /// The re-scan window must keep the LAST validated subframe findable so
+    /// the anchor re-anchors to it every second. The 2026-08-24 divergence
+    /// bug: the window reached back exactly one subframe, putting the last
+    /// subframe's preamble at slice index 0 — but the LNAV finder starts at
+    /// index 2 (it needs the two trailing bits of the previous subframe),
+    /// so between validations the anchor was never refreshed and froze.
+    #[test]
+    fn rescan_window_refinds_last_subframe_gps() {
+        const NAVBITS: &str = include_str!("../tests/fixtures/sim_navbits.txt");
+        let line = NAVBITS.lines().next().unwrap();
+        let mut it = line.split_whitespace();
+        let _prn = it.next().unwrap();
+        let bits: Vec<u8> = it.next().unwrap().bytes().map(|c| c - b'0').collect();
+        let subs = crate::gps::lnav::find_subframes(&bits);
+        let last = subs.last().expect("fixture has subframes");
+        let b = last.bit_index;
+        assert!(b >= 2, "fixture subframe must not start at bit 0");
+        // emulate the tracker state right after this subframe validated
+        let nav_scanned = b + 300;
+        // new behaviour: the widened window re-finds it (as slice index 2)
+        let from = nav_scanned - GPS_RESCAN_BACK;
+        let again = crate::gps::lnav::find_subframes(&bits[from..]);
+        assert!(
+            again.iter().any(|s| from + s.bit_index == b),
+            "widened window must re-find the last validated subframe"
+        );
+        // old behaviour, for the record: the same subframe at slice index 0
+        // is invisible to the finder (this is why anchors froze)
+        let from_old = nav_scanned - 300;
+        let missed = crate::gps::lnav::find_subframes(&bits[from_old..b + 300]);
+        assert!(
+            missed.is_empty(),
+            "this test documents the old freeze: preamble at index 0 is skipped"
+        );
+    }
+
+    /// Freshness gate: publish only within ANCHOR_MAX_AGE_S of the last
+    /// anchor refresh; never publish without an anchor.
+    #[test]
+    fn anchor_freshness_gate() {
+        let mut ch = Channel::new(Sys::Gps, 1, 4.0e6, 1000.0, 0.0);
+        assert!(!ch.anchor_fresh(100.0), "no anchor -> never fresh");
+        ch.anchor = Some((50.0, 40.0));
+        ch.anchor_t = 100.0;
+        assert!(ch.anchor_fresh(100.0));
+        assert!(ch.anchor_fresh(100.0 + ANCHOR_MAX_AGE_S));
+        assert!(
+            !ch.anchor_fresh(100.0 + ANCHOR_MAX_AGE_S + 1.0),
+            "anchor older than ANCHOR_MAX_AGE_S must be withdrawn"
+        );
     }
 }
