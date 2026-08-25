@@ -106,6 +106,21 @@ fn main() {
     // subframes decoded live) and SOW-anchored BeiDou channels (D1 decoded
     // live; t_tx already in GPST). Falls back to the coarse snapshot below
     // when fewer than 4 channels are anchored.
+    //
+    // Satellite positions must come from a RECEPTION-anchored light-time
+    // solve at the approx site: sat_at_txtime's tow is a GPS reception
+    // time, so calling it with the SV-clock t_tx (and a geocenter rx) used
+    // to evaluate each satellite ~70-90 ms away from its true emission
+    // point — a per-satellite range-rate * 80 ms artifact of up to ~80 m
+    // that wandered the anchored fix around by hundreds of metres. The
+    // approx-site anchor is fine: a 1 km site error changes tau by ~3 us,
+    // i.e. millimetres of evaluated position.
+    let site_m = {
+        let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
+            APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
+        );
+        g.map(|x| x * 1000.0)
+    };
     let mut gps_meas = Vec::new();
     let mut gps_prns: Vec<u8> = Vec::new();
     let mut bds_meas = Vec::new();
@@ -133,8 +148,17 @@ fn main() {
         match s["sys"].as_str() {
             Some("gps") => {
                 let Some(eph) = ephs.get(&prn) else { continue };
-                let (sat_m, dt_sv, _) =
-                    hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, [0.0, 0.0, 0.0]);
+                let (_, dt0, _) =
+                    hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site_m);
+                let mut a = t_tx - dt0 + 0.075;
+                let (mut sat_m, mut dt_sv) = ([0.0; 3], dt0);
+                for _ in 0..2 {
+                    let (s, d, r) =
+                        hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, a, site_m);
+                    sat_m = s;
+                    dt_sv = d;
+                    a = t_tx - d + r / 299_792_458.0;
+                }
                 gps_meas.push(hackrf_gnss::gps::pvt::Meas {
                     sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
                     pseudorange: rho_m / 1000.0 + dt_sv * 299_792.458, // remove sat clock
@@ -144,7 +168,15 @@ fn main() {
             }
             Some("beidou") => {
                 let Some(eph) = bds_ephs.get(&prn) else { continue };
-                let (sat_m, dt_sv, _) = sat_at_txtime_bds(eph, t_tx, [0.0, 0.0, 0.0]);
+                let (_, dt0, _) = sat_at_txtime_bds(eph, t_tx, site_m);
+                let mut a = t_tx - dt0 + 0.075;
+                let (mut sat_m, mut dt_sv) = ([0.0; 3], dt0);
+                for _ in 0..2 {
+                    let (s, d, r) = sat_at_txtime_bds(eph, a, site_m);
+                    sat_m = s;
+                    dt_sv = d;
+                    a = t_tx - d + r / 299_792_458.0;
+                }
                 bds_meas.push(hackrf_gnss::gps::pvt::Meas {
                     sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
                     pseudorange: rho_m / 1000.0 + dt_sv * 299_792.458,

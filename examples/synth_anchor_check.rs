@@ -1,9 +1,31 @@
 //! Synthetic-truth anchor bench: feed the 30 s gpssim capture (s45.iq, 8 Msps
 //! complex int8, zero IF, 7 GPS sats at 45 dB-Hz) through a real live `Band`
 //! and score every anchor against the simulation's own truth:
-//!     predicted t_bit = (t_tx + |rx - sat(t_tx)|/c + clk(t)) - t0_gps
-//! Any per-channel offset beyond ~1 us is an anchor-chain bug, measured
-//! against truth with no ephemeris or site error in the loop.
+//!     predicted t_bit = (A - t0_gps) * (1 + clk_drift)
+//! with A = t_tx - dt_sv + tau_geo from a reception-anchored light-time solve
+//! (the sim's exact model, validation/gps_sim.py: the stream runs on the rx
+//! clock, GPS advances at 1/(1+d0) per rx second). Any per-channel offset
+//! beyond ~1 us is an anchor-chain bug, measured against truth with no
+//! ephemeris or site error in the loop.
+//!
+//! Truth-mapping pitfalls (both manufactured a stable per-channel
+//! "fractional code-phase" differential of 0.1-0.4 us on PERFECT anchors —
+//! the 2026-08-25 round-7 false alarm):
+//!   * anchoring the light-time solve at t_tx (SV clock) instead of the GPS
+//!     reception time: the satellite is evaluated ~tau ~ 70 ms from emission,
+//!     leaving range_rate * 70 ms (up to ~50 m) per channel;
+//!   * mis-modelling the rx clock (drift applied against GPS TOW instead of
+//!     rx-clock seconds): a ~173 ms common offset that hid the class.
+//!
+//! knobs:
+//!   SYNTH_BIAS="PRN:HZ_PER_S"  slew one channel's carrier estimate (live
+//!                               marginal-lock drift class; anchors must stay
+//!                               sub-us via the measured comb)
+//!   SYNTH_DELAY_SAMP=D         delay the whole capture by D samples
+//!                               (fractional, linear interpolation): every
+//!                               anchor error must shift by exactly D/fs
+//!                               — end-to-end sub-chip reference probe
+//!   SYNTH_DEC=2                boxcar-decimate to 4 Msps (the live band rate)
 //!
 //! usage: synth_anchor_check [s45.iq]
 
@@ -30,9 +52,7 @@ fn main() {
         rx[1].as_f64().unwrap(),
         rx[2].as_f64().unwrap(),
     ];
-    let clk_bias = truth["clk_bias_s"].as_f64().unwrap();
     let clk_drift = truth["clk_drift"].as_f64().unwrap();
-    let t_ref = truth["t_ref_rxclock_s"].as_f64().unwrap();
     // per-sat truth ephemeris (sim's own), keyed by prn
     let mut ephs: std::collections::HashMap<u8, hackrf_gnss::gps::broadcast::BrdcEph> =
         Default::default();
@@ -71,11 +91,20 @@ fn main() {
     }
 
     let fs = 8.0e6;
+    // optional rate reduction to the live band rate: SYNTH_DEC=2 boxcar-
+    // decimates the 8 Msps capture to 4 Msps (what the live Engine's
+    // downconvert feeds its Bands). Stream TIME is unchanged (seconds are
+    // rate-independent), so the truth mapping below is untouched.
+    let dec: usize = std::env::var("SYNTH_DEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let fs_eff = fs / dec as f64;
     let epoch0 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64();
-    let mut band = Band::new_l1(fs, epoch0);
+    let mut band = Band::new_l1(fs_eff, epoch0);
     let mut f = std::fs::File::open(path).expect("open capture");
     let mut raw = vec![0u8; 2 * 1024 * 1024];
     let mut fed_s = 0.0f64;
@@ -90,18 +119,55 @@ fn main() {
     });
     let mut last_report_s = 16usize;
     let mut last_ckpt = 0usize;
+    // optional sub-chip injection: SYNTH_DELAY_SAMP=D delays the whole
+    // capture by D samples (fractional part by linear interpolation) before
+    // the Band sees it. Every satellite's true arrival shifts by D/fs, so
+    // every anchor error must shift by exactly +D/fs*1e6 us — an end-to-end
+    // probe of the sub-chip reference (acquisition -> DLL -> anchor). The
+    // engine's code-phase zero point is exact if the shift shows up in
+    // full; a fractional-chip bias would eat part of it.
+    let delay: f64 = std::env::var("SYNTH_DELAY_SAMP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let d_int = delay.floor().max(0.0) as usize;
+    let d_frac = delay - d_int as f64;
+    if delay != 0.0 {
+        eprintln!(
+            "SYNTH_DELAY_SAMP={delay}: expect a uniform {:+.3} us anchor-err shift",
+            delay / fs * 1e6
+        );
+    }
+    // delayed-sample history (x[n-1] .. x[n-d_int-1] across chunk edges)
+    let mut hist: std::collections::VecDeque<Complex<f32>> =
+        std::collections::VecDeque::from(vec![Complex::new(0.0, 0.0); d_int + 1]);
     while fed_s < 30.0 {
         let n = f.read(&mut raw).unwrap_or(0);
         if n == 0 {
             break;
         }
         let ns = n / 2;
-        let sig: Vec<Complex<f32>> = raw[..ns * 2]
+        let mut sig: Vec<Complex<f32>> = raw[..ns * 2]
             .chunks_exact(2)
             .map(|c| Complex::new(c[0] as i8 as f32, c[1] as i8 as f32))
             .collect();
+        if delay != 0.0 {
+            for s in sig.iter_mut() {
+                let cur = *s;
+                hist.push_front(cur);
+                let older = hist.pop_back().unwrap(); // x[n - d_int - 1]
+                let recent = hist.back().unwrap(); // x[n - d_int]
+                *s = *recent * (1.0 - d_frac as f32) + older * d_frac as f32;
+            }
+        }
+        if dec > 1 {
+            sig = sig
+                .chunks_exact(dec)
+                .map(|c| c.iter().sum::<Complex<f32>>() / dec as f32)
+                .collect();
+        }
         band.push(&sig);
-        fed_s += ns as f64 / fs;
+        fed_s += sig.len() as f64 / fs_eff;
         while band.worker_active() {
             band.poll();
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -125,11 +191,11 @@ fn main() {
         }
         if whole >= 16 && whole % 5 == 0 && whole > last_ckpt {
             last_ckpt = whole;
-            report(&band, &ephs, t0, rx, clk_bias, clk_drift, t_ref, whole);
+            report(&band, &ephs, t0, rx, clk_drift, whole);
         }
     }
     eprintln!("fed {fed_s:.1} s; final:");
-    report(&band, &ephs, t0, rx, clk_bias, clk_drift, t_ref, last_ckpt);
+    report(&band, &ephs, t0, rx, clk_drift, last_ckpt);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -138,9 +204,7 @@ fn report(
     ephs: &std::collections::HashMap<u8, hackrf_gnss::gps::broadcast::BrdcEph>,
     t0: f64,
     rx: [f64; 3],
-    clk_bias: f64,
     clk_drift: f64,
-    t_ref: f64,
     at_s: usize,
 ) {
     for ch in &band.channels {
@@ -155,18 +219,24 @@ fn report(
             eprintln!("  PRN {:2}: no truth eph", ch.prn);
             continue;
         };
-        let (sat_m, dt_sv, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, [0.0; 3]);
-        let geom = ((rx[0] - sat_m[0]).powi(2)
-            + (rx[1] - sat_m[1]).powi(2)
-            + (rx[2] - sat_m[2]).powi(2))
-        .sqrt();
-        // sim: receiver clock reads GPS + bias + drift*(t-t_ref); the sample
-        // stream runs on the receiver clock. The SV transmits the boundary
-        // when its clock reads t_tx, i.e. at GPS time t_tx - dt_sv, so the
-        // boundary arrives at stream time (t_tx - dt_sv + geom/c + clk) - t0
-        let t_rx_gps = t_tx + geom / C;
-        let clk = clk_bias + clk_drift * (t_rx_gps - t_ref);
-        let t_bit_true = t_tx - dt_sv + geom / C + clk - t0;
+        let (_, dt_sv, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, rx);
+        // sim model (validation/gps_sim.py): the stream runs on the rx clock;
+        // at stream time u the rx clock reads t0 + b0 + u while true GPS is
+        // t0 + u/(1+d0). The SV transmits the boundary when its clock reads
+        // t_tx, i.e. at GPS emission E = t_tx - dt_sv(E); it arrives at GPS
+        // A = E + tau_geo, i.e. at stream time u_A = (A - t0)*(1 + d0).
+        // Iterate the reception-anchored light-time solve: sat_at_txtime's
+        // tow is a GPS RECEPTION time (returns the satellite at tow - tau
+        // and dt_sv there); two passes pin A to ps class. (Anchoring the
+        // solve at t_tx instead — the pre-fix code — evaluates the satellite
+        // ~tau ~ 70 ms from emission and leaves a per-channel range-rate *
+        // 70 ms artifact of up to ~50 m in this truth table.)
+        let mut a = t_tx - dt_sv + 0.075;
+        for _ in 0..2 {
+            let (_, d, rng) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, a, rx);
+            a = t_tx - d + rng / C;
+        }
+        let t_bit_true = (a - t0) * (1.0 + clk_drift);
         let err_us = (t_bit - t_bit_true) * 1e6;
         eprintln!(
             "  [t={at_s:2}s] PRN {:2}: t_tx {:.0} anchor err {:+10.3} us",

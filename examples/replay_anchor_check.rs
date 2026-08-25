@@ -66,12 +66,21 @@ fn main() {
             println!("PRN {:2}: anchored, no ephemeris", ch.prn);
             continue;
         };
-        let (sat_m, dt_sv, _) =
-            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, [0.0; 3]);
-        let geom = ((site[0] - sat_m[0] / 1000.0).powi(2)
-            + (site[1] - sat_m[1] / 1000.0).powi(2)
-            + (site[2] - sat_m[2] / 1000.0).powi(2))
-        .sqrt();
+        // reception-anchored light-time solve (sat_at_txtime's tow is a GPS
+        // RECEPTION time; passing the SV-clock t_tx evaluates the satellite
+        // ~70 ms from emission — up to ~60 m of range-rate artifact)
+        let site_m = site.map(|x| x * 1000.0);
+        let (_, dt0, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site_m);
+        let mut a = t_tx - dt0 + 0.075;
+        let mut dt_sv = dt0;
+        let mut rng_m = 0.0;
+        for _ in 0..2 {
+            let (_, d, r) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, a, site_m);
+            dt_sv = d;
+            rng_m = r;
+            a = t_tx - d + r / 299_792_458.0;
+        }
+        let geom = rng_m / 1000.0;
         let rho_km = (t_bit - t_tx) * 299.792_458 + dt_sv * C_KM_S;
         raw.push((ch.prn, rho_km - geom));
         println!(

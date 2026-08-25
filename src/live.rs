@@ -2849,4 +2849,64 @@ mod tests {
         assert!(ch2.take_slip(), "reseed with a phase history must flag");
         assert_eq!(ch2.carr_cycles, 0.0, "zero is defined at (re)seed");
     }
+
+    /// Round-7 regression: the DLL lock point — and with it the anchor's
+    /// sub-ms fraction, which IS the DLL phase via wrap_time — must carry
+    /// NO fractional-chip bias, for any sub-chip signal phase, Doppler, and
+    /// at both the live band rate (4 Msps) and the synth-bench rate
+    /// (8 Msps). A stable bias here lands 1:1 in every anchor pick (the
+    /// 0.1-0.6 km live-residual class investigated 2026-08-25; the engine
+    /// was exonerated — the class traced to truth-mapping artifacts in the
+    /// benches — and this test keeps it that way).
+    #[test]
+    fn dll_lock_point_has_no_subchip_bias() {
+        for &fs in &[4.0e6, 8.0e6] {
+            for &dopp in &[0.0, 2500.0, -4200.0] {
+                let ns = (fs as f64 / 1000.0).round() as usize;
+                let code = gps_ca(1);
+                let code_rate = 1.023e6 * (1.0 + dopp / F_L1);
+                let step = code_rate / fs;
+                let epochs = 400;
+                let total = ns * epochs;
+                for i in 0..10 {
+                    let phi = i as f64 * 0.1; // chips, sweeps sub-sample too
+                    let sig: Vec<Complex<f32>> = (0..total)
+                        .map(|k| {
+                            let c = code
+                                [((k as f64 * step + phi) as usize) % code.len()]
+                                as f32;
+                            let (sn, cs) =
+                                (2.0 * PI * dopp * k as f64 / fs as f64).sin_cos();
+                            Complex::new(c * cs as f32, c * sn as f32)
+                        })
+                        .collect();
+                    // acquisition-convention seed: signal is code[k*step -
+                    // (-phi)]; the DLL must pull the replica onto the true
+                    // phase from anywhere in the pull-in range
+                    let mut ch = Channel::new(Sys::Gps, 1, fs, dopp, -phi - 0.31);
+                    for e in 0..epochs {
+                        ch.process_epoch(&sig[e * ns..(e + 1) * ns]);
+                    }
+                    let true_phase = (total as f64 * step + phi).rem_euclid(1023.0);
+                    let bias =
+                        (ch.code_phase - true_phase + 511.5).rem_euclid(1023.0) - 511.5;
+                    assert!(
+                        bias.abs() < 0.05,
+                        "fs {fs:e} dopp {dopp:+} phi {phi:.1}: DLL lock bias {bias:+.4} chips ({:+.1} m)",
+                        bias * 293.05
+                    );
+                    // and wrap_time (the anchor's fractional reference) must
+                    // place the last code wrap at the TRUE crossing
+                    let t_proc = total as f64 / fs;
+                    let t_wrap_true = t_proc - true_phase / code_rate;
+                    let t_wrap = ch.wrap_time(t_proc);
+                    assert!(
+                        (t_wrap - t_wrap_true).abs() * 1e6 < 0.05,
+                        "fs {fs:e} dopp {dopp:+} phi {phi:.1}: wrap_time off by {:+.3} us",
+                        (t_wrap - t_wrap_true) * 1e6
+                    );
+                }
+            }
+        }
+    }
 }

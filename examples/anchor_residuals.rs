@@ -2,9 +2,11 @@
 //! anchored-PVT pipeline, computed WITHOUT the solver.
 //!
 //! For every TOW-anchored channel in the live tracker state:
-//!     resid_i = rho_i - |r_surveyed - sat_i(t_tx_i)| - clock
-//! where clock = median over channels of (rho_i - geometric range) — the
-//! common-mode stream-time offset the solver's clock unknown would absorb.
+//!     resid_i = rho_i - |r_surveyed - sat_i(E_i)| - clock
+//! where E_i = t_tx_i - dt_sv is the GPS emission time (reception-anchored
+//! light-time solve) and clock = median over channels of (rho_i - geometric
+//! range) — the common-mode stream-time offset the solver's clock unknown
+//! would absorb.
 //! What remains is per-channel anchor error, and its magnitude decodes the
 //! bug class instantly:
 //!     ~5995 km  -> 20 ms nav-bit slip (one C/A code period of 20 ms is a bit)
@@ -93,12 +95,26 @@ fn main() {
             println!("PRN {prn:2}: anchored but NO ephemeris — skipped");
             continue;
         };
-        let (sat_m, dt_sv, _) =
-            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site.map(|x| x * 1000.0));
-        let geom_km = ((site[0] - sat_m[0] / 1000.0).powi(2)
-            + (site[1] - sat_m[1] / 1000.0).powi(2)
-            + (site[2] - sat_m[2] / 1000.0).powi(2))
-        .sqrt();
+        // Reception-anchored light-time solve. sat_at_txtime's tow is a GPS
+        // RECEPTION time; calling it with the SV-clock transmit time (the
+        // pre-2026-08-25 code) evaluates the satellite ~tau ~ 70 ms away
+        // from emission, leaving a per-channel range-rate * 70 ms artifact
+        // of up to ~60 m in this table (the "fractional code-phase suspect"
+        // class has a truth-side component). Iterate: A = t_tx - dt_sv +
+        // tau converges in two passes to ps class.
+        let site_m = site.map(|x| x * 1000.0);
+        let (_, dt0, _) =
+            hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site_m);
+        let mut a = t_tx - dt0 + 0.075;
+        let mut dt_sv = dt0;
+        let mut rng_m = 0.0;
+        for _ in 0..2 {
+            let (_, d, r) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, a, site_m);
+            dt_sv = d;
+            rng_m = r;
+            a = t_tx - d + r / 299_792_458.0;
+        }
+        let geom_km = rng_m / 1000.0;
         let rho_km = rho_m / 1000.0 + dt_sv * C_KM_S; // sat clock removed, as in live_fix
         raw.push((prn, rho_km - geom_km));
     }
