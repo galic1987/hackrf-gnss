@@ -964,6 +964,14 @@ function render(st) {
             "The real sky keeps this stable; a spoofer faking one constellation breaks it — " +
             "this is the mixed-constellation integrity observable") + '">GPS−BDS clock <b>' +
           sgn(pos.isx_km) + Math.abs(pos.isx_km).toFixed(1) + " km</b></span>" : "") +
+      (pos.n_sbas_corr !== undefined
+        ? ' &nbsp;·&nbsp; <span class="tip" data-tip="' + esc(
+            "WAAS corrections applied in this fix: fast = pseudorange (PRC), lt = satellite position+clock (MT25), iono = grid slant delay (MT18+26). " +
+            "All zero = the solve ran on raw broadcast ephemeris — GEOs not contributing at solve time") + '">WAAS corr <b>' +
+          (pos.n_sbas_corr + pos.n_lt_corr + pos.n_iono_corr > 0
+            ? "fast " + pos.n_sbas_corr + " · lt " + pos.n_lt_corr + " · iono " + pos.n_iono_corr
+            : "none") + "</b></span>"
+        : "") +
       ' &nbsp;·&nbsp; <span class="dim">' + pos.n_sat + " sats · GDOP " + pos.gdop.toFixed(1) +
       " · " + esc(pos.source || "") + " · " + age(pos.epoch || st.epoch) + "</span>";
   } else {

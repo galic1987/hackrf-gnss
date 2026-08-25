@@ -410,6 +410,7 @@ fn main() {
                     "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
                     "gate": gate,
+                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -494,6 +495,7 @@ fn main() {
                                 "gdop": fi.gdop, "n_sat": fi.n_sat,
                                 "mode": "2D(alt-hold)",
                                 "gate": gate,
+                                "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                                 "loo": loo_note,
                                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                             }
@@ -546,6 +548,7 @@ fn main() {
                     "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
                     "gate": gate,
+                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -587,6 +590,7 @@ fn main() {
                     "gdop": f.gdop,
                     "n_sat": f.n_sat,
                     "gate": gate,
+                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "source": "live tracker code phases + BRDC ephemeris",
                 }
             });
