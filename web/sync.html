@@ -193,7 +193,7 @@
 <h1>Fused multi-satellite sync</h1>
 <div id="hint">Hover any <span class="tip" tabindex="0" data-tip-title="Tooltips" data-tip="Like this one! Every acronym, unit, metric and chart on this page has a definition: what it is, why it matters, what a good value looks like.">dotted-underlined term</span> (or press Tab to focus it) to learn what it means.</div>
 <div id="alerts"></div>
-<div id="tourstart"><button class="segbtn" id="tourbtn">&#9654; take the 2-minute tour</button> &mdash; eight stops, from the headline number down to the quantum definition of the second.</div>
+<div id="tourstart"><button class="segbtn" id="tourbtn">&#9654; take the 2-minute tour</button> &mdash; nine stops, from the headline number down to the quantum definition of the second.</div>
 
 <div class="grid">
 
@@ -407,6 +407,15 @@
     <div class="jchain" id="rfchain"><span class="dim">waiting for data&hellip;</span></div>
     <span class="cap">Everything is slaved to ONE clock tree (Si5351 synthesizer &larr; the FPGA correction register &larr; the discipline loop),
     which is why cross-band consensus can cancel clock error at all. The second radio (HackRF One) runs on the same reference via CLKOUT&rarr;CLKIN.</span>
+  </div>
+
+  <!-- academy view D2: physical chain — antenna to screen (end-to-end zoom) -->
+  <div class="card s12" id="physcard">
+    <h2 class="tip" tabindex="0" data-tip-title="Physical chain" data-tip="Two zoom levels of the same machine: the Inside the HackRF Pro card above is the chip-level zoom inside the radio; this chain is the end-to-end physical view, from photons arriving at the roof to pixels on this page. Every stage carries a three-part tooltip — what happens here, why it matters, what can go wrong.">Physical chain &mdash; antenna to screen</h2>
+    <div class="jchain" id="physchain"><span class="dim">waiting for data&hellip;</span></div>
+    <span class="cap">Eleven stages, physical and software, that every measurement on this page has survived. Hover any stage
+    for the full story; the honest failure modes quoted are ones observed on this station (the 122/122 correction-write
+    finding, the 115 ms build-stall overflows, the wedged-restart procedure).</span>
   </div>
 
   <!-- academy view E: sync-method leaderboard -->
@@ -1492,7 +1501,7 @@ function sweepFocus() {
     if (!els[i].hasAttribute("tabindex")) els[i].setAttribute("tabindex", "0");
 }
 function annotateAll() {
-  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "sky", "posenulegend", "posisxlegend", "scatlegend", "status", "hbread", "hblegend", "journey", "jsummary", "scat3dlegend", "domelegend", "skytable", "waveinfo", "phdinfo", "rfchain", "leadlegend", "wavegallery", "l1live", "l1iono", "l2live", "l4live"].forEach(function (id) {
+  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "sky", "posenulegend", "posisxlegend", "scatlegend", "status", "hbread", "hblegend", "journey", "jsummary", "scat3dlegend", "domelegend", "skytable", "waveinfo", "phdinfo", "rfchain", "physchain", "leadlegend", "wavegallery", "l1live", "l1iono", "l2live", "l4live"].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) annotate(el);
   });
@@ -1844,6 +1853,7 @@ function render(st) {
   try { renderWave(st); } catch (e) { if (window.console) console.log("wave render:", e); }
   try { renderPhd(st); } catch (e) { if (window.console) console.log("phd render:", e); }
   try { renderRfChain(st); } catch (e) { if (window.console) console.log("rfchain render:", e); }
+  try { renderPhysChain(st); } catch (e) { if (window.console) console.log("physchain render:", e); }
   try { drawLeaderboard(st); } catch (e) { if (window.console) console.log("leaderboard render:", e); }
   try { renderLearnLive(st); } catch (e) { if (window.console) console.log("learn render:", e); }
   try { renderWaveGallery(st); } catch (e) { if (window.console) console.log("gallery render:", e); }
@@ -2511,7 +2521,108 @@ function renderRfChain(st) {
     "USB → PC", "USB 2.0 delivers the stream to the PC where the trackers, solvers and this panel run. Control-path reads (SPI polls of the tick counter) carry ±30 ppm of jitter — diagnostics only; the precision lives in the FPGA-side timestamps."));
   el.innerHTML = nodes.join('<div class="jarrow flow">→</div>');
 }
-// --- academy E: sync-method leaderboard ---
+// --- academy D2: physical chain, antenna to screen (end-to-end zoom of rfcard) ---
+function renderPhysChain(st) {
+  var el = document.getElementById("physchain");
+  if (!el) return;
+  var c = st.clock || {}, d = st.discipline || {};
+  var sats = (st.tracker && st.tracker.sats) || [];
+  var scc = (st.sky && st.sky.counts) || {};
+  var nodes = [];
+
+  // 1. The sky
+  nodes.push(journeyNode("The sky",
+    (scc.tracked !== undefined) ? "<b>" + scc.tracked + "</b> / " + scc.expected + " tracked" : "—",
+    "GPS L1 · Galileo E1 · BeiDou B1I + SBAS GEOs, arriving RHCP at ≈ −160 dBW",
+    "20 dB under the noise floor",
+    "The sky — signals we cannot see",
+    "What happens here — dozens of satellites broadcast on the SAME frequencies at once, each signal arriving around −160 dBW: a tenth of a billionth of a billionth of a watt, ~20 dB below the receiver's own thermal noise. Why it matters — CDMA is what makes a signal you cannot see recoverable: every satellite repeats its own public 1023-chip PRN code, and correlating the incoming mush against a local copy piles that one satellite up out of the noise (~30 dB of processing gain). The SBAS GEOs are the bonus: near-zero Doppler, so their carriers double as always-on frequency rulers. What can go wrong — blockage and fades (this station watches tracked-vs-expected every 30 s: absent sats are red), reflections sneaking in below the learned sky mask (amber spoof candidates), and wideband interference that raises the noise floor for everyone at once."));
+
+  // 2. Antenna
+  nodes.push(journeyNode("Antenna",
+    "AA.250 active patch",
+    "ceramic RHCP patch + dual-stage LNA on the roof · 3.3 V bias-tee (set_antenna_enable)",
+    "the LNA lives AT the antenna — Friis",
+    "Antenna — where the noise figure is decided",
+    "What happens here — the patch accepts the right-hand-circularly-polarized direct wave and rejects the opposite-spin first ground bounce (free multipath defense); a SAW bandpass keeps cellular out; then two LNA stages amplify the buried signal before any cable can hurt it. The tracker powers the amp over the coax itself (bias-tee, set_antenna_enable at startup). Why it matters — Friis's formula: a receiver chain's noise figure is set almost entirely by its FIRST stage's gain and noise. Gain at the antenna, before the lossy feedline, is what keeps a −160 dBW signal above the noise floor forever after. What can go wrong — no bias-tee = a deaf antenna (the LNA is unpowered); water or UV degrading the roof mount; the SAW's band edges rolling off out-of-band signals we also survey (Iridium at 1626 MHz sits in the rolloff)."));
+
+  // 3. Feedline
+  nodes.push(journeyNode("Feedline",
+    "coax: roof → desk",
+    "dB-class loss at L-band — after the LNA, it barely matters",
+    "post-LNA loss ≈ free",
+    "Feedline — the loss that got neutralized",
+    "What happens here — the amplified signal rides coax down from the roof, losing dB-class power at L-band, and DC power rides UP the same conductor to feed the antenna's LNA. Why it matters — this is the Friis trick in action: loss AFTER the first-stage gain attenuates signal and noise together, so it subtracts almost nothing from the signal-to-noise ratio the LNA already fixed. The same loss BEFORE the LNA would have been fatal, which is why the amplifier lives at the antenna and not at the desk. What can go wrong — water wicked into connectors, corroded shield contacts, kinked or too-long cable runs eating the LNA's margin, and a bias-tee short that kills the amp silently."));
+
+  // 4. RF front-end
+  nodes.push(journeyNode("RF front-end",
+    c.live_tick_hz ? "<b>" + (c.live_tick_hz / 1e6).toFixed(6) + "</b> MHz" : "—",
+    "MAX2831 quadrature mixer → baseband I/Q · programmable filters · MAX5864 8-bit ADC at the 32 MHz AFE clock",
+    "the tick the discipline loop calibrates",
+    "RF front-end — MAX2831 + MAX5864",
+    "What happens here — the MAX2831 mixes the L-band signal against the local oscillator down to baseband I/Q through programmable filters, and the MAX5864 digitizes it: 8-bit samples on the 32 MHz AFE clock (the live value shown is that clock, polled over SPI with ±30 ppm of PC-read jitter — diagnostics only). Why it matters — every ppb of LO or sample-clock error lands identically on every measurement this page makes; this is the clock the discipline loop calibrates, via the FPGA correction register reprogramming the Si5351's MS0/MS1 dividers. What can go wrong — writing that register restarts the SGPIO stream: a telemetry-archive retro found every observable correction write (122/122, down to ±0.01 ppm dithers) followed by a tracker-wide lock collapse and ~1 min relock. The loop now runs SHADOW: corrections are computed, logged, never written."));
+
+  // 5. Clock tree
+  var shadPill = (d.actuate === false) ? '<span class="pill warn">SHADOW</span> '
+    : (d.actuate === true ? '<span class="pill ok">ACTUATING</span> ' : "");
+  nodes.push(journeyNode("Clock tree",
+    d.correction_ppm !== undefined ? "corr <b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + "</b> ppm" : "—",
+    shadPill + "TCXO 10 MHz → Si5351 synthesizer · CLKOUT feeds the second radio's CLKIN",
+    "shared reference → errors cancel in consensus",
+    "Clock tree — Si5351 + TCXO + CLKOUT",
+    "What happens here — a 10 MHz TCXO is the physics; the Si5351 synthesizer derives every sample clock from it through fractional dividers; the FPGA's fp_1_63 correction register (±1% window) is the actuator the discipline loop would pull; and 10 MHz leaves on CLKOUT to slave the HackRF One's CLKIN. Why it matters — ONE clock for everything is what makes consensus work: any clock error shifts every band identically, so cross-band agreement isolates and removes it, and the second radio inherits the same reference, making its errors common-mode too. What can go wrong — every actuating write collapses tracking (the 122/122 finding), so the loop runs SHADOW until a capture-boundary-safe write path exists; and CLKOUT ownership follows radio ownership — after any flash or reset it must be re-asserted (hackrf_clock -o 1) or the second radio silently freewheels."));
+
+  // 6. CPLD / SGPIO dataplane
+  nodes.push(journeyNode("CPLD / SGPIO",
+    "sample shovel",
+    "M0-serialized dataplane: 16 Msps I/Q into the USB transfer queue, ~190 ms of slack",
+    "stalls >115 ms → full realign",
+    "CPLD / SGPIO dataplane — the build-quiet law",
+    "What happens here — the CPLD glues the front-end's sample bus onto SGPIO, the high-speed serial interface the Cortex-M0 services transaction by transaction: 16 Msps of interleaved I/Q shoveled into the USB transfer queue with ~190 ms of device-side slack. Why it matters — pure wires and a fixed serial schedule: this stage adds no timing error of its own, but it sets the hard real-time budget the host must respect. What can go wrong — measured on this station (2026-08-24/25): host build load (cargo/nextpnr) stalling USB service beyond ~115 ms overflows the queue — a 'big gap' in the stream that forces a full channel realign, the churn that kept anchors from maturing. The law that resulted: never build while the tracker runs."));
+
+  // 7. FPGA
+  nodes.push(journeyNode("FPGA",
+    "iCE40 UP5K · 4 image slots",
+    "slot 0 timing image: 48-tap carry-chain TDC + 40-bit tick counter · slot 2 ext-precision RX: NCO mix + CIC 4× decimation, nibble timestamps in-stream",
+    "40-bit tick = 31.25 ns",
+    "FPGA — what fabric does, and why",
+    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (≈0.5 ns provisional self-test) that subdivides it; the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — zero-jitter timing, proven on hardware with 2.84M sequence-validated anchors. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register and CLKOUT."));
+
+  // 8. LPC4320
+  nodes.push(journeyNode("LPC4320 MCU",
+    "M0 + M4",
+    "M0 = dataplane only (163 cycles per SGPIO transaction at full rate) · M4 = services: radio state machine, USB vendor requests",
+    "GPSDO loop + Iridium burst detector: spec stage",
+    "LPC4320 — two cores, one law",
+    "What happens here — the little Cortex-M0 runs the dataplane and nothing else: at full streaming rate it has 163 cycles per 32-byte SGPIO transaction, and the RX path alone consumes 150 of them. The Cortex-M4 runs the services: the radio state machine, USB vendor requests (bitstream select, clock config, the correction register). Why it matters — the 13-cycle M0 headroom is why no feature may ever be added to the dataplane core; it is also why the in-firmware GPSDO loop and Iridium burst detector remain spec-stage residents of the M4, not the M0. What can go wrong — any extra work on the M0 overruns the transaction budget and drops samples; a wedged USB/streaming state after an unclean tracker restart leaves the board seeding deaf until a full reset."));
+
+  // 9. USB to the Mac
+  nodes.push(journeyNode("USB 2.0 HS → Mac",
+    "480 Mbps bulk",
+    "24 queued transfers ≈ 190 ms of slack · macOS IOUSBHost → libusb → the rs-hackrf Rust transport",
+    "the station's shock absorber",
+    "USB — 190 ms of forgiveness",
+    "What happens here — the sample stream crosses USB 2.0 high-speed as bulk transfers: the async reader keeps 24 transfers queued at all times, so the radio's FIFO can coast ~190 ms through host hiccups. On the Mac the stream climbs IOUSBHost → libusb → the vendored rs-hackrf Rust transport. Why it matters — queue depth IS the shock absorber: 8 transfers (64 ms) proved too thin under build load and overflowed every few minutes; 24 is the measured margin that keeps the tracker aligned through ordinary host jitter. What can go wrong — a stall longer than the queue drains it (overflow → realign), and hackrf_open is exclusive: any other process opening the Pro injects USB contention into the tracker's stream — the 2026-08-24 churn."));
+
+  // 10. live_radio tracker
+  var nLock = sats.filter(function (s) { return s.lock_s > 0; }).length;
+  nodes.push(journeyNode("live_radio (Rust)",
+    sats.length ? "<b>" + nLock + "</b> / " + sats.length + " locked" : "—",
+    "ring buffer → per-PRN acquisition (Doppler × code-phase search) → DLL/PLL tracking → 1 Hz channel reports",
+    "owns the Pro 24/7 — exclusive open",
+    "live_radio — the tracker",
+    "What happens here — the stream lands in a crossbeam ring buffer; per-PRN acquisition searches the Doppler × code-phase grid for correlation peaks, then DLL/PLL tracking loops follow each satellite's code arrival time and carrier phase, reporting every channel at 1 Hz (Doppler, C/N₀ proxy, lock duration — the live value shown). Why it matters — this is where radio becomes measurements: every pseudorange, drift row and discipline residual on this page is distilled here. What can go wrong — restarts are only reliable after a board reset (an unclean stop leaves the Pro's USB streaming state wedged and the next instance seeds deaf: '0 candidates' forever); host build stalls overflow the queue into full realigns; and because the open is exclusive, no other tool may touch the Pro while it runs."));
+
+  // 11. producers → state files → server → page
+  nodes.push(journeyNode("State files → this page",
+    "merged <b>" + age(st.epoch) + "</b>",
+    "each producer writes ONLY its own state.&lt;name&gt;.json (tmp + replace, ttl tombstones) · the Rust server merges at read time · panel polls every 5 s",
+    "a dead producer fades, never lies",
+    "The merge architecture",
+    "What happens here — tracker, phase, series, band, position and sky producers each write ONLY their own observations/state.<name>.json via tmp-file + atomic replace, never read-modify-write; the Rust server (src/main.rs --mode serve) merges them at read time — legacy state first, then state.*.json in filename order — and this panel polls the merged JSON every 5 s (its freshness is the live value shown). Why it matters — no producer can corrupt another's state, and every file expires by mtime against its ttl_s: a dead producer's values disappear rather than outrank live ones — the tombstone class. Producers with nothing to say must still heartbeat. What can go wrong — a wedged producer goes stale and its card dims (the STALE pill), a missing anchor site.json is an error heartbeat never a guess, and a writer that skips tmp+replace can publish a torn JSON the merge must survive."));
+
+  el.innerHTML = nodes.join('<div class="jarrow flow">→</div>');
+}
 // measured σ per source from band_series + consensus.
 // NOTE: the 4-sat PVT solve's residual RMS is deliberately NOT a leaderboard
 // metric — an exactly-determined solve (4 equations, 4 unknowns) has zero
@@ -2907,10 +3018,10 @@ function animLoop(ts) {
   }
   requestAnimationFrame(animLoop);
 }
-// --- guided tour: dismissible, 8 stops ---
+// --- guided tour: dismissible, 9 stops ---
 var TOUR = [
   { sel: "h1", title: "Welcome to the sync station",
-    text: "This page is both a live instrument panel and a course, measured by two radios on this box right now. Eight short stops — Escape or dismiss anytime." },
+    text: "This page is both a live instrument panel and a course, measured by two radios on this box right now. Nine short stops — Escape or dismiss anytime." },
   { sel: "#live", title: "The headline number",
     text: "Consensus ppm: the weighted agreement of every independent reference measuring ONE clock. 1 ppm = 1,000 ns of time error per second; this station holds sub-ppm, disciplined to zero." },
   { sel: "#journey", title: "The signal journey",
@@ -2924,7 +3035,9 @@ var TOUR = [
   { sel: "#leadcard", title: "The leaderboard",
     text: "How tightly each independent method measures the same clock: bars are measured scatter with honest error bars, and labels say what's proven vs diagnostic vs projected." },
   { sel: "#l0", title: "The course: L0 → L4",
-    text: "Open L0 and read down: the quantum definition of the second, the physics of the wave, the math of the fix, the hardware, the software. The wave gallery animates every signal we can hear." }
+    text: "Open L0 and read down: the quantum definition of the second, the physics of the wave, the math of the fix, the hardware, the software. The wave gallery animates every signal we can hear." },
+  { sel: "#physcard", title: "The whole physical chain",
+    text: "Eleven stages from the sky to this page — antenna, feedline, RF front-end, clock tree, CPLD, FPGA, the ARM cores, USB, the Rust tracker, and the merge architecture. Hover any stage: what happens there, why it matters, what can go wrong." }
 ];
 var tourIx = -1, tourHl = null;
 function tourEnd(save) {

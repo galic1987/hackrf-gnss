@@ -167,6 +167,19 @@ function main(live) {
       if (!le || !le.innerHTML) throw new Error("no live line for " + w.id);
     });
   });
+  step("physical chain: 11 stages rendered with tooltips", () => {
+    const ph = els["physchain"].innerHTML;
+    if (!ph) throw new Error("physchain empty");
+    if ((ph.match(/class="jnode tip"/g) || []).length !== 11)
+      throw new Error("expected 11 stage cards, got " + (ph.match(/class="jnode tip"/g) || []).length);
+    ["The sky", "AA.250", "Feedline", "MAX2831", "Si5351", "SGPIO", "iCE40", "LPC4320",
+     "USB 2.0", "live_radio", "State files"].forEach((k) => {
+      if (ph.indexOf(k) < 0) throw new Error("missing stage keyword: " + k);
+    });
+    if ((ph.match(/What happens here —/g) || []).length !== 11)
+      throw new Error("not every stage carries the three-part tooltip");
+    if (ph.indexOf("jarrow flow") < 0) throw new Error("no animated connectors");
+  });
   step("illustrative tags drawn on teaching canvases", () => {
     ["l0cv", "l1cv", "l2cv", "l4cv"].forEach((id) => { if (!(drawCounts[id] > 0)) throw new Error(id + " never drew"); });
   });
@@ -175,13 +188,15 @@ function main(live) {
   const ids = Object.keys(drawCounts).sort();
   // data-conditional canvases: with an empty-ish state they correctly never
   // paint (drawSpark needs clock.live_tick_hz, drawPhase needs phase,
-  // posisx needs isx_km fixes) — only require them when their data exists
+  // posisx needs isx_km fixes inside its 3-h window) — only require them
+  // when their data exists
   const expect = ["hbchart", "hbhisto", "posenu",
     "scat_xy", "scat_xz", "scat_yz", "scat3d", "prec", "sats", "skydome", "wavecv", "phdcv",
     "leadcv", "l0cv", "l1cv", "l2cv", "l4cv"].concat(g.WG.map((w) => "wg_" + w.id));
   if (live.clock && live.clock.live_tick_hz) expect.push("spark");
   if (live.phase) expect.push("phasechart");
-  if ((live.position_history || []).some((f) => f.isx_km !== null && f.isx_km !== undefined))
+  if ((live.position_history || []).some((f) => f.isx_km !== null && f.isx_km !== undefined &&
+      f.epoch >= Date.now() / 1000 - 3 * 3600))
     expect.push("posisx");
   const blank = expect.filter((id) => !(drawCounts[id] > 0));
   console.log("canvases drew: " + ids.length + " · expected: " + expect.length +
