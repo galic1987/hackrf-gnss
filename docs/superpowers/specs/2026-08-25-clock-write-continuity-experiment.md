@@ -58,6 +58,19 @@ sign/magnitude where loops DO survive), (d) C/N0 watchdog timeline.
 | everything collapses with unbounded phase | no host-side mitigation | phase-continuous steering redesign (FPGA NCO / multisynth-only updates), the big firmware path |
 | D alone collapses | even retunes are unsafe | discipline actuation stays shadow until the M4 GPSDO loop owns timing |
 
+## Open question added 2026-08-25 (round-5 review): the 0.34 ppm restart step
+
+Across the 17:13 UTC tracker restart the measured residual stepped by
+0.34 ppm — almost exactly the cached correction value. Either the
+pre-restart loop was double-counting the applied correction, or the
+correction register is not reaching hardware the way the bookkeeping
+assumes (consistent with agent-11's finding that nothing compares
+requested==applied). The experiment above must add a measurement leg:
+read the correction register back AND measure the actual tick rate
+(`state.tick.json`) before/after a single write, to establish what a write
+physically does. Until this is resolved, re-actuation is off the table
+regardless of the continuity outcome.
+
 ## Safety
 
 Shadow mode stays on except the scripted single writes; each write is
