@@ -61,7 +61,10 @@ def elect(voters):
     unarbitrated while the actuator followed the midpoint.)
     """
     if len(voters) < 2:
-        return (voters[0][1] if voters else None, [], False)
+        # a single surviving voter is not a consensus — publish it (the
+        # chart must show something) but flagged suspect: nothing
+        # independent confirms it (round-5 review)
+        return (voters[0][1], ["only one live voter — no redundancy; consensus is unverified", ], True) if voters else (None, [], False)
 
     def wmean(vs):
         w = [1.0 / max(s, SIGMA_FLOOR) ** 2 for _, _, s in vs]
@@ -202,7 +205,7 @@ def main():
         clk = st.get("clock", {})
         recent = clk.get("recent") or []
         pc_row = None
-        if cons is not None and len(recent) >= 60:
+        if cons is not None and not suspect and len(recent) >= 60:
             import statistics
             tick_nom = 32.0e6
             rates = [h for _, h in recent if 30e6 < h < 42e6]   # drop transport glitches
@@ -226,6 +229,7 @@ def main():
         }
         if cons is not None:
             out["consensus_ppm"] = round(cons, 4)
+            out["consensus_voters"] = len(voters)
         if suspect:
             # the panel must show the midpoint is unarbitrated, not a number
             out["consensus_suspect"] = True

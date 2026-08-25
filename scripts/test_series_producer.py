@@ -49,9 +49,10 @@ def main():
     check("sigma floor 0.05 prevents cry-wolf", alerts == [] and not suspect,
           f"{alerts}")
 
-    # --- one voter -> consensus is that voter, no alerts -----------------------
-    cons, alerts, _ = sp.elect([("GPS", -0.5, 0.05)])
-    check("single voter passes through", cons == -0.5 and alerts == [])
+    # --- one voter -> published but flagged: no redundancy (round-5) ----------
+    cons, alerts, suspect = sp.elect([("GPS", -0.5, 0.05)])
+    check("single voter is suspect, not silently consensus",
+          cons == -0.5 and suspect and alerts, f"{cons} {alerts}")
     cons, alerts, _ = sp.elect([])
     check("no voters -> None", cons is None and alerts == [])
 
