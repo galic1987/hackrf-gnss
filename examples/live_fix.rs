@@ -53,19 +53,21 @@ fn merge_fast_corr(
 }
 
 /// Same freshest-age preference for long-term corrections (no materiality
-/// note — the |Δprc| > 2 m rule is a fast-correction metric).
+/// note — the |Δprc| > 2 m rule is a fast-correction metric). The row is
+/// the harvested sbas::LtCorr: vc=1 rows carry the rates and t_lt needed
+/// for solve-time propagation (DO-229D A.4.4.7 eq. A-18/A-19).
 fn merge_lt_corr(
-    map: &mut std::collections::HashMap<u8, (f64, f64, f64, f64, u8, f64)>,
+    map: &mut std::collections::HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)>,
     prn: u8,
-    row: (f64, f64, f64, f64, u8),
+    row: hackrf_gnss::sbas::LtCorr,
     age: f64,
 ) {
-    if let Some(&(_, _, _, _, _, prev_age)) = map.get(&prn) {
+    if let Some(&(_, prev_age)) = map.get(&prn) {
         if age >= prev_age {
             return;
         }
     }
-    map.insert(prn, (row.0, row.1, row.2, row.3, row.4, age));
+    map.insert(prn, (row, age));
 }
 
 /// Canonical site anchor (observations/site.json) — NO hardcoded
@@ -214,7 +216,7 @@ fn main() {
     // round-4 finding).
     let mut sbas_prc: std::collections::HashMap<u8, (f64, f64)> =
         std::collections::HashMap::new();
-    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64, u8, f64)> =
+    let mut sbas_lt: std::collections::HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)> =
         std::collections::HashMap::new();
     let mut sbas_conf: std::collections::BTreeMap<u8, f64> = std::collections::BTreeMap::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
@@ -232,25 +234,23 @@ fn main() {
                 merge_fast_corr(&mut sbas_prc, &mut sbas_conf, prn as u8, prc, age);
             }
         }
-        // SBAS long-term corrections (MT24/25): GPS PRN -> (dx, dy, dz m,
-        // daf0 s, iod, insert age s). Corrected sat position = broadcast +
-        // delta, corrected sat clock offset = broadcast + daf0 (DO-229).
-        // The iod is the GPS IODE of the ephemeris the correction was
-        // generated against (DO-229D Table A-10 Note 3); gating on it is
-        // not possible yet — BrdcEph carries no IODE (lnav.rs decodes it
-        // only as a subframe consistency check, and RINEX nav records
-        // don't include it) — so the correction is applied ungated.
+        // SBAS long-term corrections (MT24/25), one JSON object per row:
+        // the flattened sbas::LtCorr (prn, dx/dy/dz m and daf0 s at t_lt,
+        // vc=1 rates ddx/ddy/ddz m/s and daf1 s/s, t_lt_s time-of-day
+        // applicability, iod) plus age_s. Corrected sat position =
+        // broadcast + δ(t), corrected sat clock offset = broadcast +
+        // δΔtSV(t); the base + rate·(t − t_lt) propagation of DO-229D
+        // A.4.4.7 eq. (A-18)/(A-19) happens at application time below
+        // (LtCorr::propagate). The iod is the GPS IODE of the ephemeris
+        // the correction was generated against (DO-229D Table A-10
+        // Note 3); it is gated below against the ephemeris in use when
+        // that ephemeris carries an IODE.
         for row in s["sbas_msgs"]["lt_corr"].as_array().into_iter().flatten() {
-            if let (Some(prn), Some(dx), Some(dy), Some(dz), Some(daf0), Some(iod)) = (
-                row[0].as_u64(),
-                row[1].as_f64(),
-                row[2].as_f64(),
-                row[3].as_f64(),
-                row[4].as_f64(),
-                row[5].as_u64(),
-            ) {
-                let age = row[6].as_f64().unwrap_or(f64::MAX);
-                merge_lt_corr(&mut sbas_lt, prn as u8, (dx, dy, dz, daf0, iod as u8), age);
+            if let Ok(corr) = serde_json::from_value::<hackrf_gnss::sbas::LtCorr>(row.clone()) {
+                // rows from a pre-age tracker build lack age_s — an
+                // unknown age sorts oldest
+                let age = row["age_s"].as_f64().unwrap_or(f64::MAX);
+                merge_lt_corr(&mut sbas_lt, corr.prn, corr, age);
             }
         }
     }
@@ -358,31 +358,44 @@ fn main() {
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
-                let (dx, dy, dz, daf0, iod) = sbas_lt
-                    .get(&prn)
-                    .map(|&(x, y, z, a, i, _)| (x, y, z, a, i))
-                    .unwrap_or((0.0, 0.0, 0.0, 0.0, 0));
+                let lt = sbas_lt.get(&prn);
+                // a correction is present when any base OR rate term is
+                // nonzero (a vc=1 row can be pure rate at t_lt)
+                let lt_nonzero = lt
+                    .map(|(c, _)| {
+                        [c.dx, c.dy, c.dz, c.daf0].iter().any(|&v| v != 0.0)
+                            || [c.ddx, c.ddy, c.ddz, c.daf1]
+                                .iter()
+                                .any(|v| v.map_or(false, |r| r != 0.0))
+                    })
+                    .unwrap_or(false);
                 // IOD gate (DO-229D Table A-10 Note 3): the LT correction is
                 // valid only against the ephemeris issue it names. Self-
                 // decoded ephemerides carry IODE and can be checked; BRDC
                 // ones can't (RINEX has no IODE) and apply unverified —
                 // counted separately so the panel can tell.
-                let lt_ok = (dx != 0.0 || dy != 0.0 || dz != 0.0 || daf0 != 0.0)
-                    && match eph.iode {
-                        Some(iode) if iode != iod => {
-                            n_lt_rejected += 1;
-                            false
-                        }
-                        Some(_) => true,
-                        None => {
-                            n_lt_ungated += 1;
-                            true
-                        }
+                let lt_ok = lt_nonzero
+                    && match lt {
+                        Some((c, _)) => match eph.iode {
+                            Some(iode) if iode != c.iod => {
+                                n_lt_rejected += 1;
+                                false
+                            }
+                            Some(_) => true,
+                            None => {
+                                n_lt_ungated += 1;
+                                true
+                            }
+                        },
+                        None => false,
                     };
-                // counted only when a correction is actually applied
+                // propagate to the current epoch (tow is GPST
+                // seconds-of-week; LtCorr::propagate folds it to
+                // time-of-day and corrects the day rollover per DO-229D
+                // A.4.4.7). Counted only when a correction is applied.
                 let (dx, dy, dz, daf0) = if lt_ok {
                     n_lt_corr += 1;
-                    (dx, dy, dz, daf0)
+                    lt.unwrap().0.propagate(tow)
                 } else {
                     (0.0, 0.0, 0.0, 0.0)
                 };
@@ -799,10 +812,52 @@ mod tests {
         assert_eq!(conf.len(), 1, "Δ0.5 m on G12 must not be noted");
         // LT rows: same freshest-age preference (no materiality note)
         let mut lt = std::collections::HashMap::new();
-        merge_lt_corr(&mut lt, 7, (1.0, 0.0, 0.0, 0.0, 42), 5.0);
-        merge_lt_corr(&mut lt, 7, (2.0, 0.0, 0.0, 0.0, 42), 2.0);
-        assert_eq!(lt[&7].0, 2.0, "the freshest LT row must win");
-        merge_lt_corr(&mut lt, 7, (3.0, 0.0, 0.0, 0.0, 42), 4.0);
-        assert_eq!(lt[&7].0, 2.0, "an older LT row must not displace a fresher one");
+        let lt_row = |dx: f64| hackrf_gnss::sbas::LtCorr {
+            prn: 7,
+            dx,
+            dy: 0.0,
+            dz: 0.0,
+            daf0: 0.0,
+            ddx: None,
+            ddy: None,
+            ddz: None,
+            daf1: None,
+            t_lt_s: None,
+            iod: 42,
+        };
+        merge_lt_corr(&mut lt, 7, lt_row(1.0), 5.0);
+        merge_lt_corr(&mut lt, 7, lt_row(2.0), 2.0);
+        assert_eq!(lt[&7].0.dx, 2.0, "the freshest LT row must win");
+        merge_lt_corr(&mut lt, 7, lt_row(3.0), 4.0);
+        assert_eq!(lt[&7].0.dx, 2.0, "an older LT row must not displace a fresher one");
+    }
+
+    /// The lt_corr JSON rows the tracker publishes (LtCorrReport: the
+    /// flattened sbas::LtCorr + age_s) parse into sbas::LtCorr exactly the
+    /// way the main-path loop does, and vc=1 rows propagate per DO-229D
+    /// A.4.4.7 eq. (A-18)/(A-19): correction(t) = base + rate·(t − t_lt).
+    #[test]
+    fn lt_corr_row_json_parse_and_propagate() {
+        let j = serde_json::json!({
+            "prn": 7, "dx": 10.0, "dy": 0.0, "dz": 0.0, "daf0": 1e-6,
+            "ddx": 0.01, "ddy": null, "ddz": null, "daf1": null,
+            "t_lt_s": 3600, "iod": 42, "age_s": 12.5,
+        });
+        let c: hackrf_gnss::sbas::LtCorr = serde_json::from_value(j).unwrap();
+        assert_eq!(c.prn, 7);
+        assert_eq!(c.t_lt_s, Some(3600));
+        assert_eq!(c.iod, 42);
+        // dt = +120 s: dx grows by ddx·120, daf0 unchanged (daf1 null)
+        let (x, _, _, a) = c.propagate(3720.0);
+        assert!((x - 11.2).abs() < 1e-12, "{x}");
+        assert_eq!(a, 1e-6);
+        // a vc=0 row (null rates, null t_lt) parses and is constant
+        let j0 = serde_json::json!({
+            "prn": 3, "dx": 1.0, "dy": 0.0, "dz": 0.0, "daf0": 0.0,
+            "ddx": null, "ddy": null, "ddz": null, "daf1": null,
+            "t_lt_s": null, "iod": 7, "age_s": 3.0,
+        });
+        let c0: hackrf_gnss::sbas::LtCorr = serde_json::from_value(j0).unwrap();
+        assert_eq!(c0.propagate(123_456.0), (1.0, 0.0, 0.0, 0.0));
     }
 }

@@ -345,10 +345,11 @@ pub struct Channel {
     /// against this mask — DO-229 addresses their entries by ORDINAL of
     /// the set bits and gates them on IODP match. Cleared on reseed.
     sbas_mask: Option<(Vec<u8>, u8)>,
-    /// Latest per-PRN long-term corrections (dx, dy, dz m, daf0 s, IOD,
-    /// insert stream-time s), from MT24/25 halves decoded by this channel.
-    /// Cleared on reseed and on an MT1 mask-generation change (IODP).
-    sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, u8, f64)>,
+    /// Latest per-PRN long-term corrections (LtCorr in physical units —
+    /// vc=1 rows carry rates and t_lt, insert stream-time s), from MT24/25
+    /// halves decoded by this channel. Cleared on reseed and on an MT1
+    /// mask-generation change (IODP).
+    sbas_lt: std::collections::BTreeMap<u8, (crate::sbas::LtCorr, f64)>,
     /// Latest iono grid masks by band (iodi, IGP list, insert stream-time
     /// s), from MT18. Cleared on reseed.
     sbas_igpmask: std::collections::BTreeMap<u8, (u8, Vec<u16>, f64)>,
@@ -874,11 +875,14 @@ impl Channel {
         // Table 2-1 gives a 360 s timeout for MT24/25 (en-route/terminal;
         // 240 s on approach) — the 60 s fast-corr window would drop
         // still-valid LT data
-        let lt_corr: Vec<(u8, f64, f64, f64, f64, u8, f64)> = self
+        let lt_corr: Vec<LtCorrReport> = self
             .sbas_lt
             .iter()
-            .filter(|(_, (_, _, _, _, _, t))| now - t < 360.0)
-            .map(|(&prn, &(dx, dy, dz, daf0, iod, t))| (prn, dx, dy, dz, daf0, iod, now - t))
+            .filter(|(_, (_, t))| now - t < 360.0)
+            .map(|(_, (corr, t))| LtCorrReport {
+                corr: corr.clone(),
+                age_s: now - t,
+            })
             .collect();
         // iono data has a longer life than fast corrections (DO-229
         // timeouts: 5 min for MT26, 10 min for the MT18 mask — 300 s is
@@ -976,28 +980,24 @@ impl Channel {
                 }
             }
             // harvest long-term corrections (MT25 halves; MT24 long-term
-            // slot): corrected sat position/clock = broadcast + delta;
-            // same ordinal-through-mask addressing and IODP gate as the
-            // fast corrections (DO-229D A.4.4.7)
+            // slot): corrected sat position/clock = broadcast + delta
+            // propagated to the current epoch (the consumer runs
+            // LtCorr::propagate; DO-229D A.4.4.7 eq. A-18/A-19); same
+            // ordinal-through-mask addressing and IODP gate as the fast
+            // corrections (DO-229D A.4.4.7)
             crate::sbas::Message::LongTerm { a, b } => {
                 if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
                     for h in [a, b] {
-                        for (prn, dx, dy, dz, daf0, iod) in
-                            crate::sbas::lt_corrections(mask_slots, *mask_iodp, h)
-                        {
-                            self.sbas_lt
-                                .insert(prn, (dx, dy, dz, daf0, iod, t_s));
+                        for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, h) {
+                            self.sbas_lt.insert(corr.prn, (corr, t_s));
                         }
                     }
                 }
             }
             crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
                 if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
-                    for (prn, dx, dy, dz, daf0, iod) in
-                        crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt)
-                    {
-                        self.sbas_lt
-                            .insert(prn, (dx, dy, dz, daf0, iod, t_s));
+                    for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt) {
+                        self.sbas_lt.insert(corr.prn, (corr, t_s));
                     }
                 }
             }
@@ -1138,6 +1138,18 @@ impl Channel {
     }
 }
 
+/// One published long-term correction row: the harvested LtCorr (physical
+/// units — serde-flattened into the same JSON object) plus the insert age
+/// in seconds of stream time. vc=1 rows carry the rates and t_lt the
+/// consumer needs for solve-time propagation (DO-229D A.4.4.7 eq.
+/// A-18/A-19); for vc=0 rows those fields serialize as null.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LtCorrReport {
+    #[serde(flatten)]
+    pub corr: crate::sbas::LtCorr,
+    pub age_s: f64,
+}
+
 /// Compact SBAS/WAAS decode summary, published on Sys::Sbas SatReports.
 /// tracker_producer.py passes per-PRN report dicts straight through into
 /// state.tracker.json, so this rides along with no producer change.
@@ -1159,16 +1171,20 @@ pub struct SbasSummary {
     /// dropped (conservative vs the MT7 degradation model, not yet
     /// implemented). Empty when none decoded.
     pub fast_corr: Vec<(u8, f64, u8, f64)>,
-    /// Latest long-term corrections (MT24/25) held by this channel:
-    /// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD, insert age in
-    /// seconds of stream time). Corrected satellite
-    /// position = broadcast + (dx, dy, dz); corrected satellite clock
-    /// offset = broadcast + daf0. IOD is the GPS IODE of the ephemeris
-    /// the correction was generated against (DO-229D Table A-10 Note 3) —
-    /// apply only when it matches the ephemeris in use. Velocity-code-1
-    /// halves are never published (their rates are not propagated).
-    /// 360 s freshness window (DO-229D Table 2-1 MT24/25 timeout).
-    pub lt_corr: Vec<(u8, f64, f64, f64, f64, u8, f64)>,
+    /// Latest long-term corrections (MT24/25) held by this channel, one
+    /// JSON object per row: the flattened sbas::LtCorr (GPS PRN; dx, dy,
+    /// dz metres and daf0 seconds at t_lt; vc=1 rates ddx/ddy/ddz in m/s
+    /// and daf1 in s/s plus the t_lt_s time-of-day applicability — null
+    /// for vc=0; IOD) plus age_s (insert age in seconds of stream time).
+    /// The consumer propagates at solve time: corrected satellite
+    /// position = broadcast + (δx + δẋ·(t−t_lt), ...) and corrected
+    /// satellite clock offset = broadcast + δaf0 + δaf1·(t−t_lt)
+    /// (DO-229D A.4.4.7 eq. A-18/A-19; vc=0 rows are constants). IOD is
+    /// the GPS IODE of the ephemeris the correction was generated against
+    /// (DO-229D Table A-10 Note 3) — apply only when it matches the
+    /// ephemeris in use. 360 s freshness window (DO-229D Table 2-1
+    /// MT24/25 timeout).
+    pub lt_corr: Vec<LtCorrReport>,
     /// Latest iono grid masks (MT18): (band, iodi, IGP numbers). 300 s
     /// freshness (DO-229 mask timeout is 10 min).
     pub igp_mask: Vec<(u8, u8, Vec<u16>)>,
@@ -3423,6 +3439,39 @@ mod tests {
         p
     }
 
+    /// MT25 payload: first half velocity-code-1 (one satellite with rates
+    /// and t_lt — the live WAAS case), second half velocity-code-0 (two
+    /// satellites, dx = +1 m like mt25_payload). IOD 42, t_lt = 3600 s.
+    fn mt25_vc1_payload(mask_no1: u8, mask_nos0: [u8; 2], iodp: u8) -> Vec<u8> {
+        let mut p = Vec::with_capacity(212);
+        push_bits(&mut p, 1, 1); // velocity code 1
+        push_bits(&mut p, mask_no1 as u64, 6);
+        push_bits(&mut p, 42, 8); // IOD
+        push_sbits(&mut p, 8, 11); // dx = +1.0 m
+        push_sbits(&mut p, 0, 11);
+        push_sbits(&mut p, 0, 11);
+        push_sbits(&mut p, 16, 11); // daf0
+        push_sbits(&mut p, 16, 8); // ddx = 16 * 2^-11 m/s
+        push_sbits(&mut p, 0, 8);
+        push_sbits(&mut p, 0, 8);
+        push_sbits(&mut p, 32, 8); // daf1 = 32 * 2^-39 s/s
+        push_bits(&mut p, 225, 13); // t_lt = 225 * 16 = 3600 s
+        push_bits(&mut p, iodp as u64, 2);
+        push_bits(&mut p, 0, 1); // second half: velocity code 0
+        for &mn in mask_nos0.iter() {
+            push_bits(&mut p, mn as u64, 6);
+            push_bits(&mut p, 42, 8); // IOD
+            push_sbits(&mut p, 8, 9); // dx = +1.0 m
+            push_sbits(&mut p, 0, 9);
+            push_sbits(&mut p, 0, 9);
+            push_sbits(&mut p, 16, 10); // daf0
+        }
+        push_bits(&mut p, iodp as u64, 2);
+        push_bits(&mut p, 0, 1); // pad
+        assert_eq!(p.len(), 212);
+        p
+    }
+
     /// Feed SBAS blocks into the channel as noiseless prompt-I pairs (two
     /// identical 1 ms prompts per 2 ms symbol — exactly what process_epoch
     /// produces on a clean capture), one block per simulated second, with
@@ -3543,6 +3592,59 @@ mod tests {
         );
         assert!(ch.sbas_prc.contains_key(&3), "unaffected rows stay");
         assert!(ch.sbas_lt.contains_key(&3), "unaffected rows stay");
+    }
+
+    /// REGRESSION (dead-LT finding): a decoded velocity-code-1 MT25 half
+    /// must reach the published lt_corr rows — vc=1 is what WAAS broadcasts
+    /// in practice, and skipping it left n_lt_corr = 0 in every live solve.
+    /// DO-229D A.4.4.7 eq. (A-18)/(A-19): the application propagates
+    /// base + rate·(t − t_lt) at solve time, so the rates and t_lt must
+    /// ride along to the consumer.
+    #[test]
+    fn sbas_vc1_lt_rows_publish() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            // vc=1 half: ordinal 2 -> slot 7; vc=0 half: ordinals 1, 3
+            sbas_block(3, 25, &mt25_vc1_payload(2, [1, 3], 0)),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        let s = sums.last().unwrap();
+        let row = s
+            .lt_corr
+            .iter()
+            .find(|r| r.corr.prn == 7)
+            .expect("vc=1 LT row for PRN 7 must publish (the live WAAS case)");
+        assert_eq!(row.corr.iod, 42);
+        assert_eq!(row.corr.dx, 1.0);
+        assert_eq!(row.corr.t_lt_s, Some(3600));
+        assert_eq!(row.corr.ddx, Some(16.0 * 2.0f64.powi(-11)));
+        assert_eq!(row.corr.daf1, Some(32.0 * 2.0f64.powi(-39)));
+        assert!(row.age_s >= 0.0);
+        // the vc=0 half of the same message still publishes, with no rates
+        let row0 = s
+            .lt_corr
+            .iter()
+            .find(|r| r.corr.prn == 3)
+            .expect("vc=0 row still publishes");
+        assert_eq!(row0.corr.t_lt_s, None);
+        assert_eq!(row0.corr.daf1, None);
+        // JSON contract (live_fix.rs is the consumer): one object per row,
+        // rates/t_lt numbers for vc=1, null for vc=0, age_s present
+        let v = serde_json::to_value(&s.lt_corr).unwrap();
+        let arr = v.as_array().unwrap();
+        let j1 = arr.iter().find(|r| r["prn"].as_u64() == Some(7)).unwrap();
+        assert!(j1["ddx"].is_number() && j1["daf1"].is_number());
+        assert_eq!(j1["t_lt_s"].as_u64(), Some(3600));
+        assert!(j1["age_s"].is_number());
+        let j0 = arr.iter().find(|r| r["prn"].as_u64() == Some(3)).unwrap();
+        assert!(j0["ddx"].is_null() && j0["t_lt_s"].is_null());
+        // the consumer's typed parse of a row round-trips the correction
+        let back: crate::sbas::LtCorr = serde_json::from_value(j1.clone()).unwrap();
+        assert_eq!(&back, &row.corr);
     }
 
     /// Correction freshness is measured on stream time (t_proc), which

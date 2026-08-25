@@ -299,29 +299,100 @@ pub fn fast_corrections(
         .collect()
 }
 
+/// One harvested long-term correction (MT25 half / MT24 long-term slot),
+/// physical units. Velocity-code-0 rows carry no rates and no time of
+/// applicability (their t of applicability is the message transmission
+/// time, DO-229D A.4.4.7) — the Option fields are None and the row
+/// propagates as a constant.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LtCorr {
+    /// GPS PRN (absolute mask slot 1..=37).
+    pub prn: u8,
+    /// Position correction, metres (WGS-84 ECEF), at t_lt.
+    pub dx: f64,
+    pub dy: f64,
+    pub dz: f64,
+    /// Clock correction δaf0, seconds, at t_lt.
+    pub daf0: f64,
+    /// Velocity-code-1 only: position rate corrections, m/s (8-bit, 2^-11
+    /// m/s LSB — DO-229D Table A-11).
+    pub ddx: Option<f64>,
+    pub ddy: Option<f64>,
+    pub ddz: Option<f64>,
+    /// Velocity-code-1 only: clock drift δaf1, s/s (8-bit, 2^-39 s/s LSB —
+    /// DO-229D Table A-11).
+    pub daf1: Option<f64>,
+    /// Velocity-code-1 only: time-of-day applicability t0, seconds of the
+    /// GPS day (13-bit, 16 s LSB, range 0..=86384 — DO-229D Table A-11
+    /// "Time-of-Day Applicability t0"; it is a time of day, NOT a GPS
+    /// time-of-week).
+    pub t_lt_s: Option<u32>,
+    /// GPS IODE of the ephemeris the correction was generated against
+    /// (DO-229D Table A-10 Note 3 / A.4.4.7: it must match the broadcast
+    /// IODC's low 8 bits AND the IODE) — the application must match it
+    /// against the ephemeris in use.
+    pub iod: u8,
+}
+
+impl LtCorr {
+    /// Propagate to the current epoch per DO-229D A.4.4.7: position
+    /// eq. (A-19) [δxk δyk δzk] = [δx δy δz] + [δẋ δẏ δż]·(t − t0), clock
+    /// eq. (A-18) δΔtSV(t) = δaf0 + δaf1·(t − t0) (+ δafG0, which is 0 for
+    /// GPS satellites). Returns (dx, dy, dz metres, daf0 seconds) at t.
+    ///
+    /// `tow_s` is GPS time (seconds-of-week is fine — it is folded to
+    /// time-of-day). t0 is a time-of-DAY (Table A-11), so the difference is
+    /// taken on seconds-of-day, "correcting for rollover if needed"
+    /// (A.4.4.7): wrapped into ±43200 s, the end-of-day cross-over. t0 is
+    /// "usually approximately 2 minutes in the future of the transmission
+    /// time ... [but] may be in the past if the prior long-term message is
+    /// missed" (A.4.4.7), so dt is small and signed. Velocity-code-0 rows
+    /// (t_lt None) propagate as constants: the rates are 0 and the time of
+    /// applicability is the message transmission time (A.4.4.7).
+    pub fn propagate(&self, tow_s: f64) -> (f64, f64, f64, f64) {
+        let dt = match self.t_lt_s {
+            Some(t_lt) => {
+                let mut d = tow_s.rem_euclid(86_400.0) - t_lt as f64;
+                if d > 43_200.0 {
+                    d -= 86_400.0;
+                } else if d < -43_200.0 {
+                    d += 86_400.0;
+                }
+                d
+            }
+            None => 0.0,
+        };
+        (
+            self.dx + self.ddx.unwrap_or(0.0) * dt,
+            self.dy + self.ddy.unwrap_or(0.0) * dt,
+            self.dz + self.ddz.unwrap_or(0.0) * dt,
+            self.daf0 + self.daf1.unwrap_or(0.0) * dt,
+        )
+    }
+}
+
 /// Harvest a long-term half message (MT25 halves, MT24 long-term slot) as
-/// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD) rows. The 6-bit PRN
-/// mask number is an ORDINAL into the mask, exactly like the MT2-5
-/// entries: DO-229D A.4.4.7 — "The PRN Mask No. is the sequence number of
-/// the bits set in the 210 bit mask (that is, between 1 and 51)" (Table
-/// A-10 Note 2: the count of 1's in the mask up to the subject
-/// satellite's bit; 0 = no satellite, ignore the entry). The half's IODP
-/// must match the mask's IODP (A.4.4.2/A.4.4.7). Velocity-code-1 halves
-/// are skipped: their base terms are defined at t_lt with rates we don't
-/// propagate, and applying them frozen across the 360 s validity window
-/// is worse than skipping (vc=0 is what EGNOS/WAAS predominantly
-/// broadcast). Absolute slots 1..=37 are GPS. dx/dy/dz scale 0.125 m;
-/// daf0 scale 2^-31 s. DO-229 convention: corrected satellite position =
-/// broadcast + (dx, dy, dz) and corrected satellite clock offset =
-/// broadcast + daf0. The returned IOD is the GPS IODE of the ephemeris
-/// the correction was generated against (Table A-10 Note 3) — the
-/// application must match it against the ephemeris in use.
+/// one `LtCorr` row per satellite (physical units). The 6-bit PRN mask
+/// number is an ORDINAL into the mask, exactly like the MT2-5 entries:
+/// DO-229D A.4.4.7 — "The PRN Mask No. is the sequence number of the bits
+/// set in the 210 bit mask (that is, between 1 and 51)" (Table A-10 Note 2:
+/// the count of 1's in the mask up to the subject satellite's bit; 0 = no
+/// satellite, ignore the entry). The half's IODP must match the mask's
+/// IODP (A.4.4.2/A.4.4.7). Velocity-code-1 halves (one satellite with
+/// rates and a t_lt — what WAAS broadcasts in practice) are carried WITH
+/// their rates; the application propagates them at solve time
+/// (LtCorr::propagate, A.4.4.7 eq. A-18/A-19). Velocity-code-0 rows carry
+/// rates/t_lt as None and apply as constants. Absolute slots 1..=37 are
+/// GPS. Scales (Tables A-10/A-11): dx/dy/dz 0.125 m; daf0 2^-31 s; rates
+/// 2^-11 m/s; daf1 2^-39 s/s. DO-229 sign convention (A.4.4.7): the
+/// position correction vector is ADDED to the broadcast satellite
+/// coordinates and δΔtSV is ADDED to the broadcast clock offset.
 pub fn lt_corrections(
     mask_slots: &[u8],
     mask_iodp: u8,
     half: &LongTermHalf,
-) -> Vec<(u8, f64, f64, f64, f64, u8)> {
-    if half.velocity_code != 0 || half.iodp != mask_iodp {
+) -> Vec<LtCorr> {
+    if half.iodp != mask_iodp {
         return Vec::new();
     }
     half.sats
@@ -329,14 +400,19 @@ pub fn lt_corrections(
         .filter_map(|s| {
             let slot = *mask_slots.get((s.mask as usize).checked_sub(1)?)?;
             if (1..=37).contains(&slot) {
-                Some((
-                    slot,
-                    s.dx as f64 * 0.125,
-                    s.dy as f64 * 0.125,
-                    s.dz as f64 * 0.125,
-                    s.daf0 as f64 * 2.0f64.powi(-31),
-                    s.iod,
-                ))
+                Some(LtCorr {
+                    prn: slot,
+                    dx: s.dx as f64 * 0.125,
+                    dy: s.dy as f64 * 0.125,
+                    dz: s.dz as f64 * 0.125,
+                    daf0: s.daf0 as f64 * 2.0f64.powi(-31),
+                    ddx: s.ddx.map(|v| v as f64 * 2.0f64.powi(-11)),
+                    ddy: s.ddy.map(|v| v as f64 * 2.0f64.powi(-11)),
+                    ddz: s.ddz.map(|v| v as f64 * 2.0f64.powi(-11)),
+                    daf1: s.daf1.map(|v| v as f64 * 2.0f64.powi(-39)),
+                    t_lt_s: half.t_lt_s,
+                    iod: s.iod,
+                })
             } else {
                 None
             }
@@ -1936,19 +2012,23 @@ mod tests {
         };
         let rows = lt_corrections(&mask, 0, &half);
         assert_eq!(rows.len(), 1);
-        let (prn, dx, dy, dz, daf0, iod) = rows[0];
-        assert_eq!(prn, 5);
-        assert_eq!(dx, 1.0);
-        assert_eq!(dy, -2.0);
-        assert_eq!(dz, 0.0);
-        assert!((daf0 - 1024.0 * 2.0f64.powi(-31)).abs() < 1e-15);
-        assert_eq!(iod, 42, "the IOD must ride along for the ephemeris gate");
+        let r = &rows[0];
+        assert_eq!(r.prn, 5);
+        assert_eq!(r.dx, 1.0);
+        assert_eq!(r.dy, -2.0);
+        assert_eq!(r.dz, 0.0);
+        assert!((r.daf0 - 1024.0 * 2.0f64.powi(-31)).abs() < 1e-15);
+        assert_eq!(r.iod, 42, "the IOD must ride along for the ephemeris gate");
+        // velocity-code-0 rows carry no rates and no t_lt (they apply as
+        // constants — A.4.4.7: t of applicability = transmission time)
+        assert_eq!((r.ddx, r.ddy, r.ddz, r.daf1), (None, None, None, None));
+        assert_eq!(r.t_lt_s, None);
     }
 
     /// LT half messages address satellites by ordinal through the mask
     /// (DO-229D A.4.4.7: "The PRN Mask No. is the sequence number of the
     /// bits set in the 210 bit mask (that is, between 1 and 51)") and are
-    /// gated on the mask IODP; velocity-code-1 halves are skipped.
+    /// gated on the mask IODP — for both velocity codes.
     #[test]
     fn lt_corrections_ordinal_iodp_and_vc_gate() {
         let sat = |mask_no: u8, iod: u8| LongTermSat {
@@ -1974,8 +2054,8 @@ mod tests {
         };
         let rows = lt_corrections(&mask, 1, &half);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, 5);
-        assert_eq!(rows[0].5, 200);
+        assert_eq!(rows[0].prn, 5);
+        assert_eq!(rows[0].iod, 200);
         // IODP mismatch: the corrections belong to another mask generation
         assert!(lt_corrections(&mask, 2, &half).is_empty());
         // non-GPS slots (GLONASS 38-61) are excluded
@@ -1986,15 +2066,192 @@ mod tests {
             iodp: 0,
         };
         assert!(lt_corrections(&[38u8], 0, &glo).is_empty());
-        // velocity code 1: base terms are defined at t_lt with rates we
-        // don't propagate — skipped rather than applied frozen
+        // velocity code 1 (what WAAS broadcasts in practice): the row is
+        // carried WITH its rates and t_lt for solve-time propagation
+        // (A.4.4.7 eq. A-18/A-19), not skipped
         let vc1 = LongTermHalf {
             velocity_code: 1,
-            sats: vec![sat(1, 7)],
+            sats: vec![LongTermSat {
+                ddx: Some(16),
+                ddy: Some(-8),
+                ddz: Some(0),
+                daf1: Some(32),
+                ..sat(1, 7)
+            }],
             t_lt_s: Some(16),
             iodp: 1,
         };
-        assert!(lt_corrections(&mask, 1, &vc1).is_empty());
+        let rows = lt_corrections(&mask, 1, &vc1);
+        assert_eq!(rows.len(), 1, "vc=1 halves must propagate, not vanish");
+        assert_eq!(rows[0].prn, 1);
+        assert_eq!(rows[0].iod, 7);
+        assert_eq!(rows[0].t_lt_s, Some(16));
+        assert_eq!(rows[0].ddx, Some(16.0 * 2.0f64.powi(-11)));
+        assert_eq!(rows[0].ddy, Some(-8.0 * 2.0f64.powi(-11)));
+        // the IODP gate applies to vc=1 halves too
+        assert!(lt_corrections(&mask, 2, &vc1).is_empty());
+    }
+
+    /// REGRESSION (dead-LT finding): WAAS broadcasts velocity-code-1 MT25
+    /// halves in practice; skipping them under a "rates not propagated"
+    /// premise left n_lt_corr = 0 in every live solve. A vc=1 half must
+    /// yield a row — DO-229D A.4.4.7 eq. (A-18)/(A-19) define the
+    /// propagation the application performs at solve time.
+    #[test]
+    fn lt_corrections_vc1_half_yields_a_row() {
+        let mask: Vec<u8> = (1..=37).collect();
+        let half = LongTermHalf {
+            velocity_code: 1,
+            sats: vec![LongTermSat {
+                mask: 5,
+                iod: 42,
+                dx: 8,
+                dy: -16,
+                dz: 0,
+                daf0: 1024,
+                ddx: Some(16),
+                ddy: Some(-8),
+                ddz: Some(0),
+                daf1: Some(32),
+            }],
+            t_lt_s: Some(3600),
+            iodp: 0,
+        };
+        let rows = lt_corrections(&mask, 0, &half);
+        assert_eq!(
+            rows.len(),
+            1,
+            "vc=1 halves must no longer be skipped (the live WAAS case)"
+        );
+        assert_eq!(rows[0].prn, 5);
+        assert!(
+            rows[0].ddx.is_some() && rows[0].daf1.is_some() && rows[0].t_lt_s.is_some(),
+            "the rates and t_lt must ride along for solve-time propagation"
+        );
+    }
+
+    /// vc=1 scale factors, pinned to DO-229D Table A-11: dx/dy/dz 11-bit
+    /// at 0.125 m, daf0 11-bit at 2^-31 s, rates 8-bit at 2^-11 m/s, daf1
+    /// 8-bit at 2^-39 s/s, t_lt 13-bit at 16 s (0..=86384 s of the day).
+    #[test]
+    fn lt_corrections_vc1_scales_and_t_lt() {
+        let mask: Vec<u8> = (1..=37).collect();
+        let half = LongTermHalf {
+            velocity_code: 1,
+            sats: vec![LongTermSat {
+                mask: 5,
+                iod: 42,
+                dx: 1024, // 128.0 m (Table A-11 range is ±128 m)
+                dy: -8,   // -1.0 m
+                dz: 0,
+                daf0: 1024, // 1024 * 2^-31 s
+                ddx: Some(16),
+                ddy: Some(-1),
+                ddz: Some(-128), // full-scale negative: -0.0625 m/s
+                daf1: Some(64),
+            }],
+            t_lt_s: Some(86384), // end of the Table A-11 range
+            iodp: 0,
+        };
+        let rows = lt_corrections(&mask, 0, &half);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.prn, 5);
+        assert_eq!(r.dx, 128.0);
+        assert_eq!(r.dy, -1.0);
+        assert_eq!(r.dz, 0.0);
+        assert!((r.daf0 - 1024.0 * 2.0f64.powi(-31)).abs() < 1e-15);
+        assert_eq!(r.ddx, Some(16.0 * 2.0f64.powi(-11)));
+        assert_eq!(r.ddy, Some(-2.0f64.powi(-11)));
+        assert_eq!(r.ddz, Some(-0.0625));
+        assert_eq!(r.daf1, Some(64.0 * 2.0f64.powi(-39)));
+        assert_eq!(r.t_lt_s, Some(86384));
+        assert_eq!(r.iod, 42);
+    }
+
+    /// DO-229D A.4.4.7 eq. (A-18)/(A-19): correction(t) = base +
+    /// rate·(t − t_lt), with t and t_lt time-of-day. t_lt "may be in the
+    /// past if the prior long-term message is missed" (signed dt).
+    #[test]
+    fn ltcorr_propagate_linear_law() {
+        let c = LtCorr {
+            prn: 5,
+            dx: 10.0,
+            dy: -5.0,
+            dz: 1.0,
+            daf0: 2.0e-6,
+            ddx: Some(0.01),
+            ddy: Some(-0.02),
+            ddz: Some(0.0),
+            daf1: Some(1.0e-9),
+            t_lt_s: Some(3600),
+            iod: 7,
+        };
+        // dt = +120 s
+        let (x, y, z, a) = c.propagate(3720.0);
+        assert!((x - 11.2).abs() < 1e-12, "{x}");
+        assert!((y - (-7.4)).abs() < 1e-12, "{y}");
+        assert_eq!(z, 1.0);
+        assert!((a - (2.0e-6 + 1.2e-7)).abs() < 1e-18, "{a}");
+        // dt = −60 s (t_lt in the future is the usual case, A.4.4.7)
+        let (x, ..) = c.propagate(3540.0);
+        assert!((x - 9.4).abs() < 1e-12, "{x}");
+        // a time-of-WEEK input is folded to time-of-day — t_lt is not TOW
+        let (x2, ..) = c.propagate(3.0 * 86_400.0 + 3720.0);
+        assert!((x2 - 11.2).abs() < 1e-12, "{x2}");
+    }
+
+    /// "correcting for rollover if needed" (DO-229D A.4.4.7): t and t_lt
+    /// are time-of-day, so across midnight the difference wraps to the
+    /// nearest day (±43200 s), not a −86400 s cliff.
+    #[test]
+    fn ltcorr_propagate_day_rollover() {
+        let base = LtCorr {
+            prn: 5,
+            dx: 0.0,
+            dy: 0.0,
+            dz: 0.0,
+            daf0: 0.0,
+            ddx: Some(1.0), // dx reads out dt directly
+            ddy: None,
+            ddz: None,
+            daf1: None,
+            t_lt_s: Some(86384),
+            iod: 0,
+        };
+        // 48 s past midnight, t_lt 16 s before midnight: dt = +64, not
+        // −86336
+        let (x, ..) = base.propagate(86_400.0 + 48.0);
+        assert_eq!(x, 64.0);
+        // the other direction: t just before midnight, t_lt just after
+        let c2 = LtCorr {
+            t_lt_s: Some(16),
+            ..base.clone()
+        };
+        let (x, ..) = c2.propagate(86_400.0 - 16.0);
+        assert_eq!(x, -32.0);
+    }
+
+    /// Velocity-code-0 rows propagate as constants: rates are 0 and the
+    /// time of applicability is the message transmission time
+    /// (DO-229D A.4.4.7), so the correction never drifts.
+    #[test]
+    fn ltcorr_propagate_vc0_is_constant() {
+        let c = LtCorr {
+            prn: 5,
+            dx: 1.0,
+            dy: -2.0,
+            dz: 0.5,
+            daf0: 1.0e-6,
+            ddx: None,
+            ddy: None,
+            ddz: None,
+            daf1: None,
+            t_lt_s: None,
+            iod: 3,
+        };
+        assert_eq!(c.propagate(12_345.0), (1.0, -2.0, 0.5, 1.0e-6));
+        assert_eq!(c.propagate(600_000.0), (1.0, -2.0, 0.5, 1.0e-6));
     }
 
     /// The forced-parity variant: a locked decoder keeps its pairing even

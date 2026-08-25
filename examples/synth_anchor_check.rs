@@ -86,6 +86,8 @@ fn main() {
                 af2: e["af2"].as_f64().unwrap(),
                 tgd: e["TGD"].as_f64().unwrap(),
                 sys: 0,
+                // sim truth carries no IODE — None, as for BRDC-loaded eph
+                iode: None,
             },
         );
     }
