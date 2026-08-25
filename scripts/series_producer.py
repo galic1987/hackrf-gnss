@@ -95,6 +95,14 @@ def main():
             if s.get("kind") == "ClockDriftPpm" and s.get("value") is not None:
                 if now - s.get("epoch", 0) < 900:          # live rows only
                     add(s["band"], s["epoch"], s["value"])
+            if s.get("kind") == "ClockDriftPpmComponent" and s.get("value") is not None:
+                # observe-only diagnostics (e.g. the carrier-phase chain):
+                # the CONSENSUS trace is charted so it stays visible, but
+                # components never vote and never join the divergence alarm.
+                # Per-satellite component rows are skipped — they would flood
+                # the legend with near-identical traces from one instrument.
+                if "consensus" in (s.get("name") or "") and now - s.get("epoch", 0) < 900:
+                    add(s["band"], s["epoch"], s["value"])
             if s.get("kind") == "Presence" and s.get("sats"):
                 if now - s.get("epoch", 0) < 3600:
                     add("n:" + s["band"], s["epoch"], float(len(s["sats"])))

@@ -118,15 +118,15 @@ paints this antenna's true window-shaped sky over days.</span>
     <tr><td>40-bit tick counter @ 32 MHz</td><td class="num">31.25 ns</td><td class="num">9.4 m</td>
         <td class="ok">live &mdash; counts adclk cycles</td></tr>
     <tr><td>Nibble-embedded timestamps</td><td class="num">25&ndash;31.25 ns, 0 jitter</td><td class="num">7.5&ndash;9.4 m</td>
-        <td class="ok">LIVE &mdash; verified on hardware 2026-08-23: 2.84M sequence-validated anchors, exact 40 MHz tick recovery from the stream (ext 12-bit mode; 8 Msps boost in test)</td></tr>
-    <tr><td>Clock correction register</td><td class="num">currently 0 ppm (flash reset)</td><td class="num" id="correq">&mdash;</td>
-        <td class="warn">register cleared by today's reflash; residual = raw TCXO drift, see live number above</td></tr>
+        <td class="ok">LIVE &mdash; verified on hardware 2026-08-23: 2.84M sequence-validated anchors, exact tick recovery from the stream (ext 12-bit mode incl. 8 Msps boost; slot-2 streams only, not 8-bit)</td></tr>
+    <tr><td>Clock correction register</td><td class="num">fp_1_63, &plusmn;1% window</td><td class="num" id="correq">&mdash;</td>
+        <td class="warn">live value above; auto re-applied after bitstream load. CAUTION (P0c open): a correction write reprograms Si5351 MS0/MS1 with an SGPIO stream restart &mdash; treat corrections as capture-boundary operations until phase continuity is proven</td></tr>
     <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;9.4 m</td>
         <td class="ok">live &mdash; awaiting PPS source (ZED-F9T)</td></tr>
-    <tr><td>Carry-chain TDC (48-tap, rev3b)</td><td class="num">499 ps RMS single-shot (worst bin 911 ps)</td><td class="num">15 cm</td>
-        <td class="ok">CALIBRATED 2026-08-24 — absolute scale from on-fabric RO (T_ro 8762.0±16.5 ps) + measured adclk 32.000162 MHz; chain spans the full 31.25 ns period; DNL ±2.2 LSB</td></tr>
-    <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps</td><td class="num">~1&ndash;1.5 cm</td>
-        <td class="dim">design target &mdash; needs the ZED-F9T PPS on the trigger pin (hardware anchor not yet connected)</td></tr>
+    <tr><td>Carry-chain TDC (48-tap, rev3b)</td><td class="num">&asymp;0.5 ns provisional self-test estimate</td><td class="num">~15 cm</td>
+        <td class="warn">PROVISIONAL &mdash; on-die RO stimulus with ~3.6 edges in flight breaks the single-edge popcount model; external trigger input not yet wired in gateware (Task-6 hook). External single-edge calibration with atomic coarse+fine capture = P2a</td></tr>
+    <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps (projection)</td><td class="num">~1&ndash;1.5 cm</td>
+        <td class="dim">unvalidated projection &mdash; needs ZED-F9T PPS on the trigger pin AND the P2a external calibration first</td></tr>
     <tr><td>ATSC pilot carrier PLL</td><td class="num">~1 mm @ 60 Hz</td><td class="num">relative displacement</td>
         <td class="ok">live &mdash; see chart</td></tr>
     <tr><td>Cross-radio interferometer</td><td class="num">~0.1 mm, clock-free</td><td class="num">differential path</td>
@@ -156,7 +156,13 @@ function fmtDur(s) {
   return (s / 3600).toFixed(1) + " h";
 }
 function driftCell(s) {
-  if (s.kind !== "ClockDriftPpm" || s.value === null || s.value === undefined) return '<td class="dim">—</td>';
+  if (s.value === null || s.value === undefined) return '<td class="dim">—</td>';
+  if (s.kind === "ClockDriftPpmComponent") {
+    // observe-only (non-voting) rows: show the value, marked as diagnostic
+    return '<td class="num dim">' + sgn(s.value) + Math.abs(s.value).toFixed(3) +
+           " ppm<br><span class=\"dim\">observe-only · " + age(s.epoch) + "</span></td>";
+  }
+  if (s.kind !== "ClockDriftPpm") return '<td class="dim">—</td>';
   var cls = s.value < 0 ? "neg" : "pos";
   var hz = s.ref_hz ? " (" + sgn(s.value) + Math.abs(s.value * s.ref_hz / 1e6).toFixed(0) + " Hz)" : "";
   var sig = (s.sigma !== null && s.sigma !== undefined) ? " ± " + s.sigma : "";
@@ -511,7 +517,7 @@ var GLOSSARY = {
   "PRN": "Pseudo-Random Noise code number — a satellite's CDMA identity. Each satellite repeats its own public code; receivers separate satellites by correlating against it.",
   "TCXO": "Temperature-Compensated Crystal Oscillator — the HackRF's 10 MHz master clock. Good (±0.5 ppm) but not atomic; everything here exists to measure and correct it.",
   "FPGA": "Field-Programmable Gate Array — the iCE40UP5K chip on the HackRF Pro whose logic we reprogram: the timestamp counter, notch filter and TDC all live here.",
-  "TDC": "Time-to-Digital Converter — a carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period. Target ~150 ps single-shot.",
+  "TDC": "Time-to-Digital Converter — a carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period. Current figure (~0.5 ns) is a provisional ring-oscillator self-test estimate; external single-edge calibration is pending (P2a).",
   "PPS": "Pulse Per Second — a timing receiver's hardware UTC mark, accurate to ~ns. The planned absolute anchor for this station.",
   "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. The HackRF One is slaved to the Pro this way.",
   "CLKOUT": "clock output SMA: the Pro exports its disciplined 10 MHz here.",
@@ -574,7 +580,7 @@ var GLOSSARY = {
   "EKF": "Extended Kalman Filter — the incremental estimator: fuses every measurement into position+clock state at 20 Hz without re-solving from scratch.",
   "C/N₀": "carrier-to-noise density in dB-Hz — the fundamental signal-quality currency of GNSS.",
   "SAW": "Surface Acoustic Wave filter — the AA.250's built-in bandpass; why cellular doesn't desense it (and why Iridium rolls off).",
-  "SOF": "Start of Frame — a USB heartbeat every 1 ms from the host; repurposed here as a free 1 kHz TDC calibration source.",
+  "SOF": "Start of Frame — a USB heartbeat from the host (1 ms frames; 125 µs microframes at high-speed). Planned use: an M4 software latch for host↔device time transfer at ~10–50 µs — NOT a TDC calibration source.",
   "DNL": "Differential Non-Linearity — per-bin width error of the TDC delay chain; measured by code-density calibration.",
   "nibble": "4 bits. In ext-precision mode, the top nibble of each 12-bit sample carries the FPGA timestamp INSIDE the data stream — zero-jitter timing.",
   "cycle slip": "when the PLL loses count of whole carrier cycles (deep fade) — shows as a phase jump; flagged, not hidden.",
@@ -695,8 +701,8 @@ function render(st) {
       " = " + sgn(res) + Math.abs(res * 1000).toFixed(0) +
       " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
-      "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today, " +
-      "~150 ps = <b>4.5 cm</b> once the TDC is calibrated. " +
+      "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
+      "the TDC adds sub-tick phase at a provisional ~0.5 ns (15 cm) self-test estimate, pending external calibration (P2a). " +
       "The HackRF One is slaved to this same reference via CLKOUT→CLKIN, so every row above measures one clock.";
   }
   if (st.atsc_spread_ppm !== undefined) {
