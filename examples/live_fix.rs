@@ -590,7 +590,7 @@ fn main() {
                     "gdop": f.gdop,
                     "n_sat": f.n_sat,
                     "gate": gate,
-                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "corr_note": "code-phase snapshot path — WAAS corrections not applicable to this measurement model",
                     "source": "live tracker code phases + BRDC ephemeris",
                 }
             });
