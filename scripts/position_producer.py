@@ -19,7 +19,10 @@ import urllib.request
 OBS = "/Volumes/Radiator 8TB/gnss/observations"
 RINEX = f"{OBS}/brdc_latest.rnx"
 LIVE_FIX = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/target/release/examples/live_fix"
-SOLVE_EVERY_S = 300
+# Solve cadence: 60 s default (was 300 — the station is going mobile, where
+# 5-min fixes are useless; a car wants POSITION_SOLVE_EVERY_S=5..10). The
+# solve itself is cheap; the panel glides between fixes.
+SOLVE_EVERY_S = float(os.environ.get("POSITION_SOLVE_EVERY_S", "60"))
 # BKG updates the world rapid BRDC ~hourly and GPS ephemeris fit windows are
 # ~4 h: a 6-hourly refresh guaranteed a modeled-sky collapse at the end of
 # every cycle (seen live 2026-08-25 20:00 UTC). Refresh hourly instead.

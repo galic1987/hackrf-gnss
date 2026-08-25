@@ -14,10 +14,28 @@ use hackrf_gnss::gps::snapshot::{snapshot_fix, Obs};
 const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
 const OUT: &str = "/Volumes/Radiator 8TB/gnss/observations/state.position.json";
 const RINEX: &str = "/Volumes/Radiator 8TB/gnss/observations/brdc_latest.rnx";
-// surveyed site (NYC), matches --approx-lat/lon defaults in main.rs
-const APPROX_LLA: [f64; 3] = [39.0032, -77.6058, 20.0];
+const SITE_JSON: &str = "/Volumes/Radiator 8TB/gnss/observations/site.json";
 const GPS_UNIX_EPOCH: f64 = 315_964_800.0;
 const LEAP_S: f64 = 18.0;
+
+/// Plausibility band on altitude (km): outside this a fix is physically
+/// impossible for this station (roof/road) and must not publish — such
+/// solves historically reached position_history ungated (review round 4).
+const ALT_SANE_KM: (f64, f64) = (-1.0, 30.0);
+
+fn alt_sane(alt_km: f64) -> bool {
+    alt_km.is_finite() && alt_km >= ALT_SANE_KM.0 && alt_km <= ALT_SANE_KM.1
+}
+
+/// Canonical site anchor (observations/site.json) — NO hardcoded
+/// coordinates. Only a coarse (~150 km) guess is needed for the light-time
+/// anchor / snapshot solver, but even that must come from the one file.
+fn site_lla() -> [f64; 3] {
+    hackrf_gnss::site::load_site(std::path::Path::new(SITE_JSON)).unwrap_or_else(|| {
+        eprintln!("live_fix: no site anchor — provide {SITE_JSON}");
+        std::process::exit(2);
+    })
+}
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -118,7 +136,7 @@ fn main() {
     // Mobile station: the reference/guess is the latest GATED fix when one
     // is fresh, not a constant — the station is going in a car, and a stale
     // constant would bias every light-time anchor after a move. Falls back
-    // to APPROX_LLA only on cold start.
+    // to the canonical site.json anchor only on cold start.
     let dyn_lla: [f64; 3] = std::fs::read_to_string(OUT)
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -136,7 +154,7 @@ fn main() {
                 None
             }
         })
-        .unwrap_or(APPROX_LLA);
+        .unwrap_or_else(site_lla);
     let site_m = {
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
             dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
@@ -397,6 +415,13 @@ fn main() {
                 );
                 std::process::exit(5);
             }
+            if !alt_sane(f.alt_km) {
+                eprintln!(
+                    "live_fix: impossible altitude {:.1} km — not publishing (mixed solve)",
+                    f.alt_km
+                );
+                std::process::exit(5);
+            }
             // honesty gate: the mixed solve has 5 unknowns, so n_sat <= 5
             // is an EXACT solve — rms is zero by construction and the fix
             // can be arbitrarily wrong. Publish, but say so.
@@ -471,6 +496,9 @@ fn main() {
                     sub.remove(i);
                     sub.push(alt_hold());
                     if let Some(fi) = hackrf_gnss::gps::pvt::solve(&sub, g) {
+                        if !alt_sane(fi.alt_km) {
+                            continue; // impossible LOO subset solves don't count
+                        }
                         let d = ((fi.ecef[0] - full.ecef[0]).powi(2)
                             + (fi.ecef[1] - full.ecef[1]).powi(2)
                             + (fi.ecef[2] - full.ecef[2]).powi(2))
@@ -527,13 +555,39 @@ fn main() {
             meas.push(alt_hold());
             mode = "2D(alt-hold)";
         }
-        if let Some(f) = hackrf_gnss::gps::pvt::solve(&meas, g) {
+        // RAIM: with >= 5 sats the solve is redundant — police outliers
+        // (review round 4: this path produces most published fixes and had
+        // zero production callers of solve_with_rejection). Exact solves
+        // (4 rows) keep the LOO procedure above; nothing independent to
+        // test against there.
+        let solved = if meas.len() >= 5 {
+            hackrf_gnss::gps::pvt::solve_with_rejection(&meas, g, 2).map(|(f, dropped)| {
+                if !dropped.is_empty() {
+                    let names: Vec<String> = dropped
+                        .iter()
+                        .map(|&i| format!("G{}", gps_prns.get(i).copied().unwrap_or(0)))
+                        .collect();
+                    eprintln!("live_fix: RAIM dropped outlier channels {names:?} (>1 km residual)");
+                }
+                f
+            })
+        } else {
+            hackrf_gnss::gps::pvt::solve(&meas, g)
+        };
+        if let Some(f) = solved {
             if f.residual_rms_m > 2000.0 {
                 // same publish gate as the snapshot path: a fix this loose
                 // is meaningless — keep showing the previous good fix
                 eprintln!(
                     "live_fix: anchored fix rms {:.0} m — too coarse to publish ({} sats, {mode})",
                     f.residual_rms_m, f.n_sat
+                );
+                std::process::exit(5);
+            }
+            if !alt_sane(f.alt_km) {
+                eprintln!(
+                    "live_fix: impossible altitude {:.1} km — not publishing ({} sats, {mode})",
+                    f.alt_km, f.n_sat
                 );
                 std::process::exit(5);
             }
@@ -570,7 +624,7 @@ fn main() {
         eprintln!("live_fix: only {} fresh GPS channels — need 4", obs.len());
         std::process::exit(3);
     }
-    match snapshot_fix(&obs, &ephs, APPROX_LLA, tow) {
+    match snapshot_fix(&obs, &ephs, site_lla(), tow) {
         Some(f) => {
             if f.residual_rms_m > 2000.0 {
                 // a coarse-snapshot fix this loose is meaningless — don't
@@ -578,6 +632,13 @@ fn main() {
                 eprintln!(
                     "live_fix: fix rms {:.0} m — too coarse to publish ({} sats)",
                     f.residual_rms_m, f.n_sat
+                );
+                std::process::exit(5);
+            }
+            if !alt_sane(f.alt_km) {
+                eprintln!(
+                    "live_fix: impossible altitude {:.1} km — not publishing (snapshot)",
+                    f.alt_km
                 );
                 std::process::exit(5);
             }

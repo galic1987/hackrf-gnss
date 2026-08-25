@@ -31,8 +31,35 @@ POLL_S = 30
 WINDOW_S = 3 * 3600          # keep what the panel draws: last 3 h of fixes
 TTL_S = 15 * 60              # panel drops us 15 min after our last heartbeat
 
-# surveyed site (Virginia); the panel converts fixes to ENU relative to this
-SITE = {"lat": 39.0032, "lon": -77.6058, "alt_m": 20.0}
+# Canonical site anchor (observations/site.json), re-read on every state
+# write; the panel converts fixes to ENU relative to it. NO hardcoded
+# coordinates: a missing anchor omits the site key (the panel shows its
+# no-site state) rather than publishing a guessed location.
+def load_site():
+    try:
+        with open(f"{OBS}/site.json") as f:
+            s = json.load(f)
+        return {"lat": float(s["lat"]), "lon": float(s["lon"]),
+                "alt_m": float(s.get("h_m", 20.0))}
+    except Exception:
+        return None
+
+
+# Plausibility gate: fixes outside this altitude band are physically
+# impossible for this station (roof / road) and historically entered
+# position_history ungated (review round 4). Applied at INGEST so the
+# durable log never records them.
+ALT_MIN_KM, ALT_MAX_KM = -1.0, 30.0
+
+
+def fix_sane(fix):
+    """True unless the fix is physically impossible for this station."""
+    alt = fix.get("alt_km")
+    if alt is None or not isinstance(alt, (int, float)):
+        return False
+    if not (ALT_MIN_KM <= alt <= ALT_MAX_KM):
+        return False
+    return abs(fix.get("lat", 999.0)) <= 90.0 and abs(fix.get("lon", 999.0)) <= 180.0
 
 
 def log(msg):
@@ -94,13 +121,16 @@ def load_window(now):
 
 def write_state(fixes):
     tmp = STATE_OUT + ".tmp"
+    doc = {
+        "position_history": fixes,
+        "epoch": time.time(),
+        "ttl_s": TTL_S,
+    }
+    site = load_site()
+    if site:
+        doc["site"] = site
     with open(tmp, "w") as f:
-        json.dump({
-            "position_history": fixes,
-            "site": SITE,
-            "epoch": time.time(),
-            "ttl_s": TTL_S,
-        }, f)
+        json.dump(doc, f)
     os.replace(tmp, STATE_OUT)
 
 
@@ -108,11 +138,16 @@ def cycle(seen_epoch):
     """One poll. Returns the epoch now considered seen (unchanged if none)."""
     fix = read_fix()
     if fix and fix["epoch"] and fix["epoch"] != seen_epoch:
-        with open(HISTORY, "a") as f:
-            f.write(json.dumps(fix) + "\n")
-        log(f"fix {fix['mode']} gate={fix['gate']} "
-            f"lat={fix['lat']:.6f} lon={fix['lon']:.6f} "
-            f"alt={fix['alt_km'] * 1000:.0f} m -> history")
+        if not fix_sane(fix):
+            # physically impossible for this station: logged, NOT ingested
+            log(f"fix REJECTED as impossible (alt={fix.get('alt_km')} km, "
+                f"gate={fix.get('gate')}) — kept out of history")
+        else:
+            with open(HISTORY, "a") as f:
+                f.write(json.dumps(fix) + "\n")
+            log(f"fix {fix['mode']} gate={fix['gate']} "
+                f"lat={fix['lat']:.6f} lon={fix['lon']:.6f} "
+                f"alt={fix['alt_km'] * 1000:.0f} m -> history")
         seen_epoch = fix["epoch"]
     write_state(load_window(time.time()))
     return seen_epoch
