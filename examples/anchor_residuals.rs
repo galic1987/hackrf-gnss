@@ -57,8 +57,29 @@ fn main() {
 
     let text = std::fs::read_to_string(TRACKER_STATE).expect("tracker state");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    // Site override: SITE_LL="lat,lon[,h_m]" (the station moved once already —
-    // a hardcoded site makes every residual a lie after a relocation).
+    // Site reference priority: SITE_LL env > latest GATED published fix
+    // (mobile station: the reference IS the current fix, not a constant —
+    // the old hardcoded site made every residual a lie after relocation,
+    // and the station is going in a car) > APPROX_LLA cold-start fallback.
+    let fix_ref: Option<[f64; 3]> = std::fs::read_to_string(
+        "/Volumes/Radiator 8TB/gnss/observations/state.position.json",
+    )
+    .ok()
+    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    .and_then(|p| {
+        let pos = &p["position"];
+        let fresh = now - p["epoch"].as_f64().unwrap_or(0.0) < 900.0;
+        let gated = pos["gate"].as_str().unwrap_or("") == "redundant";
+        if fresh && gated {
+            Some([
+                pos["lat"].as_f64()?,
+                pos["lon"].as_f64()?,
+                pos["alt_km"].as_f64()? * 1000.0,
+            ])
+        } else {
+            None
+        }
+    });
     let lla: [f64; 3] = std::env::var("SITE_LL")
         .ok()
         .and_then(|s| {
@@ -69,11 +90,23 @@ fn main() {
                 None
             }
         })
+        .or(fix_ref)
         .unwrap_or(APPROX_LLA);
     let site = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
         lla[0], lla[1], lla[2] / 1000.0,
     ); // km
-    println!("site: {:.5}, {:.5}", lla[0], lla[1]);
+    println!(
+        "site: {:.5}, {:.5} ({})",
+        lla[0],
+        lla[1],
+        if std::env::var("SITE_LL").is_ok() {
+            "env"
+        } else if fix_ref.is_some() {
+            "latest gated fix"
+        } else {
+            "fallback constant"
+        }
+    );
 
     // (prn, raw residual in km before clock removal)
     let mut raw: Vec<(u8, f64)> = Vec::new();

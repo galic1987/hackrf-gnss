@@ -115,9 +115,31 @@ fn main() {
     // that wandered the anchored fix around by hundreds of metres. The
     // approx-site anchor is fine: a 1 km site error changes tau by ~3 us,
     // i.e. millimetres of evaluated position.
+    // Mobile station: the reference/guess is the latest GATED fix when one
+    // is fresh, not a constant — the station is going in a car, and a stale
+    // constant would bias every light-time anchor after a move. Falls back
+    // to APPROX_LLA only on cold start.
+    let dyn_lla: [f64; 3] = std::fs::read_to_string(OUT)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|p| {
+            let pos = &p["position"];
+            let fresh = now - p["epoch"].as_f64().unwrap_or(0.0) < 900.0;
+            let gated = pos["gate"].as_str().unwrap_or("") == "redundant";
+            if fresh && gated {
+                Some([
+                    pos["lat"].as_f64()?,
+                    pos["lon"].as_f64()?,
+                    pos["alt_km"].as_f64()? * 1000.0,
+                ])
+            } else {
+                None
+            }
+        })
+        .unwrap_or(APPROX_LLA);
     let site_m = {
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
-            APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
+            dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
         );
         g.map(|x| x * 1000.0)
     };
@@ -191,7 +213,7 @@ fn main() {
     // solve x,y,z,dt_gps,dt_bds. The inter-system clock offset (isx_km)
     // doubles as a spoof-detection observable.
     let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
-        APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
+        dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
     );
     if gps_meas.len() >= 3 && bds_meas.len() >= 2 {
         let mut rows: Vec<hackrf_gnss::gps::pvt::MeasSys> = gps_meas
@@ -294,7 +316,7 @@ fn main() {
             .filter(|m| m.pseudorange.abs() < 5000.0)
             .collect();
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
-            APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
+            dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
         );
         let r0 = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
         let alt_hold = || hackrf_gnss::gps::pvt::Meas {
