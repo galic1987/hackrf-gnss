@@ -336,6 +336,9 @@ pub struct Channel {
     /// (review round 5: re-picking by energy every second lets a noisy
     /// flip insert/delete a coded symbol mid-stream). None = probing.
     sbas_par: Option<usize>,
+    /// Latest per-PRN fast corrections (PRC m, UDREI, insert lock_s),
+    /// from MT2-5 messages decoded by this channel. Cleared on reseed.
+    sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -427,6 +430,7 @@ impl Channel {
             eph: None,
             sbas_dec: crate::sbas::Decoder::new(),
             sbas_par: None,
+            sbas_prc: std::collections::BTreeMap::new(),
         }
     }
 
@@ -810,6 +814,7 @@ impl Channel {
                 locked: false,
                 n_msgs: 0,
                 types: std::collections::BTreeMap::new(),
+                fast_corr: Vec::new(),
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
@@ -823,11 +828,30 @@ impl Channel {
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
             *types.entry(dm.message.mt()).or_insert(0usize) += 1;
+            // harvest fast corrections (MT2-5): GPS PRNs live in slots
+            // 1..=37 of the MT1 mask; PRC scale 0.125 m; UDREI >= 14 means
+            // not-monitored/don't-use and is never published
+            if let crate::sbas::Message::Fast { first_slot, prc, udrei, .. } = &dm.message {
+                for (prn, prc_m, u) in
+                    crate::sbas::fast_corrections(*first_slot, prc, udrei)
+                {
+                    self.sbas_prc.insert(prn, (prc_m, u, self.lock_s));
+                }
+            }
         }
+        // publish only fresh entries (<= 60 s of lock time)
+        let now_ls = self.lock_s;
+        let fast_corr: Vec<(u8, f64, u8)> = self
+            .sbas_prc
+            .iter()
+            .filter(|(_, (_, _, ls))| now_ls - ls < 60.0)
+            .map(|(&prn, &(prc_m, udrei, _))| (prn, prc_m, udrei))
+            .collect();
         Some(SbasSummary {
             locked: rep.sync.locked,
             n_msgs: rep.messages.len(),
             types,
+            fast_corr,
         })
     }
 
@@ -938,6 +962,7 @@ impl Channel {
         // otherwise decode across the break)
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
+        self.sbas_prc.clear();
     }
 
     /// Shift the carrier loops by `df` Hz WITHOUT touching lock state.
@@ -957,12 +982,18 @@ impl Channel {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SbasSummary {
     /// frame sync locked on the current decode window (>= SBAS_MIN_BLOCKS
-    /// CRC-valid 250-bit blocks)
+    /// consecutive, correctly-rotating CRC-valid blocks)
     pub locked: bool,
     /// WAAS messages decoded from the current window
     pub n_msgs: usize,
     /// per-message-type counts in the current window (DO-229 MT -> n)
     pub types: std::collections::BTreeMap<u8, usize>,
+    /// Latest fast corrections (MT2-5) held by this channel:
+    /// (GPS PRN, PRC metres, UDREI). UDREI >= 14 rows are never included
+    /// (not-monitored/don't-use). Entries older than 60 s of lock time are
+    /// dropped (conservative vs the MT7 degradation model, not yet
+    /// implemented). Empty when none decoded.
+    pub fast_corr: Vec<(u8, f64, u8)>,
 }
 
 /// Per-PRN 1 Hz report — serialized to JSON by the front end.

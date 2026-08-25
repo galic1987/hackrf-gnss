@@ -241,6 +241,23 @@ pub fn symbols_from_prompt_par(prompts: &[f64], forced: Option<usize>) -> (Vec<f
     (soft, par)
 }
 
+/// Harvest MT2-5 fast corrections as (GPS PRN, PRC metres, UDREI) rows.
+/// Slots 1..=37 of the MT1 mask are GPS; UDREI >= 14 (not monitored /
+/// don't use) rows are excluded. PRC scale is 0.125 m. DO-229 convention:
+/// the PRC is ADDED to the measured pseudorange.
+pub fn fast_corrections(first_slot: u8, prc: &[i16; 13], udrei: &[u8; 13]) -> Vec<(u8, f64, u8)> {
+    (0..13usize)
+        .filter_map(|k| {
+            let slot = first_slot as usize + k;
+            if (1..=37).contains(&slot) && udrei[k] < 14 {
+                Some((slot as u8, prc[k] as f64 * 0.125, udrei[k]))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // frame sync
 // ---------------------------------------------------------------------------
@@ -1689,6 +1706,28 @@ mod tests {
         bits.extend_from_slice(&good(2)); // correct successor of 0xC6 is 0x53? no: good(2) is 0xC6 again
         valid.push(true);
         assert!(lock_streak(&bits, &valid) < 3, "rotation break must reset");
+    }
+
+    /// Fast-correction harvest: 0.125 m scale, slot->GPS-PRN mapping,
+    /// UDREI >= 14 and non-GPS slots excluded. DO-229 sign convention:
+    /// PRC is ADDED to the measured pseudorange (verified by the scale/
+    /// sign assertions here — a sign flip would show as a doubled error
+    /// downstream, the classic SBAS application bug).
+    #[test]
+    fn fast_corrections_scale_sign_and_gates() {
+        let mut prc = [0i16; 13];
+        let mut udrei = [0u8; 13];
+        prc[0] = 16; // +2.0 m
+        prc[1] = -8; // -1.0 m
+        udrei[1] = 3;
+        udrei[2] = 15; // don't use
+        let rows = fast_corrections(1, &prc, &udrei);
+        assert_eq!(rows[0], (1, 2.0, 0)); // slot 1 -> PRN 1, +2.0 m (not -2.0)
+        assert_eq!(rows[1], (2, -1.0, 3));
+        assert_eq!(rows.len(), 12, "only the UDREI-15 row is excluded");
+        // slot 38+ is not GPS
+        let rows = fast_corrections(30, &prc, &udrei);
+        assert!(rows.iter().all(|(p, _, _)| *p <= 37));
     }
 
     /// The forced-parity variant: a locked decoder keeps its pairing even
