@@ -24,7 +24,7 @@ use hackrf_gnss::gps::broadcast::BrdcEph;
 
 const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
 const EPH: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
-const APPROX_LLA: [f64; 3] = [39.0042, -77.6095, 20.0];
+const APPROX_LLA: [f64; 3] = [39.0032, -77.6058, 20.0];
 const C_KM_S: f64 = 299_792.458;
 
 fn main() {

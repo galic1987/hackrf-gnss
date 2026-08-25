@@ -15,7 +15,7 @@ const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.track
 const OUT: &str = "/Volumes/Radiator 8TB/gnss/observations/state.position.json";
 const RINEX: &str = "/Volumes/Radiator 8TB/gnss/observations/brdc_latest.rnx";
 // surveyed site (NYC), matches --approx-lat/lon defaults in main.rs
-const APPROX_LLA: [f64; 3] = [39.0042, -77.6095, 20.0];
+const APPROX_LLA: [f64; 3] = [39.0032, -77.6058, 20.0];
 const GPS_UNIX_EPOCH: f64 = 315_964_800.0;
 const LEAP_S: f64 = 18.0;
 
