@@ -216,6 +216,11 @@ fn main() {
         for m in rows.iter_mut() {
             m.pseudorange -= med;
         }
+        // pre-solve sanity: after median normalization, honest channels sit
+        // within a few thousand km of the median; a garbage-frame anchor
+        // (observed live: a 2.1e10 km residual class) poisons every residual
+        // and exhausts the drop budget. Drop those rows BEFORE solving.
+        rows.retain(|m| m.pseudorange.abs() < 5000.0);
         if let Some((f, dropped)) = hackrf_gnss::gps::pvt::solve_mixed_with_rejection(&rows, g, 3) {
             if !dropped.is_empty() {
                 // rows = GPS first, then BDS; a dropped row is a >=1 km
@@ -284,6 +289,9 @@ fn main() {
                 m.pseudorange -= med;
                 m
             })
+            // pre-solve sanity, same as the mixed path: a garbage-frame
+            // anchor sits ~1e10 km out and must never reach the solver
+            .filter(|m| m.pseudorange.abs() < 5000.0)
             .collect();
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
             APPROX_LLA[0], APPROX_LLA[1], APPROX_LLA[2] / 1000.0,
