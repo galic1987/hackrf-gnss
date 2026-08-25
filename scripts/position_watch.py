@@ -32,7 +32,7 @@ WINDOW_S = 3 * 3600          # keep what the panel draws: last 3 h of fixes
 TTL_S = 15 * 60              # panel drops us 15 min after our last heartbeat
 
 # surveyed site (Virginia); the panel converts fixes to ENU relative to this
-SITE = {"lat": 39.0042, "lon": -77.6095, "alt_m": 20.0}
+SITE = {"lat": 39.0032, "lon": -77.6058, "alt_m": 20.0}
 
 
 def log(msg):

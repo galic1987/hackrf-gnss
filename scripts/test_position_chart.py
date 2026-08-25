@@ -30,7 +30,7 @@ CRATE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SYNC_HTML = f"{CRATE}/web/sync.html"
 sys.path.insert(0, f"{CRATE}/scripts")
 
-SITE = {"lat": 39.0042, "lon": -77.6095, "alt_m": 20.0}
+SITE = {"lat": 39.0032, "lon": -77.6058, "alt_m": 20.0}
 
 JS_FUNCS = ["geodeticToEcef", "ecefToEnu", "fixToEnu",
             "medianOf", "madLimits", "posEnuScale"]
@@ -150,14 +150,14 @@ var document = { getElementById: function (id) {
 var fixes = [], now = Date.now() / 1000;
 for (var i = 0; i < 35; i++) {
   fixes.push({ epoch: now - (34 - i) * 300,
-    lat: 39.0042 + 0.00002 * Math.sin(i * 2.3), lon: -77.6095 + 0.00002 * Math.cos(i * 1.7),
+    lat: 39.0032 + 0.00002 * Math.sin(i * 2.3), lon: -77.6058 + 0.00002 * Math.cos(i * 1.7),
     alt_km: 0.020 + 0.000003 * Math.sin(i),
     mode: i % 7 === 0 ? "3D(mixed GPS+BDS)" : "3D",
     gate: i % 5 === 0 ? "ungated — exact solve, unverifiable" : "redundant",
     gdop: 2.5, n_sats: 6, isx_km: i % 7 === 0 ? 12 + 0.5 * Math.sin(i) : null });
 }
 // injected 500 km blip (north), gated — must be marked, not stretch the axis
-fixes.push({ epoch: now - 150, lat: 39.0042 + 4.5, lon: -77.6095, alt_km: 0.02,
+fixes.push({ epoch: now - 150, lat: 39.0032 + 4.5, lon: -77.6058, alt_km: 0.02,
   mode: "3D", gate: "redundant", gdop: 3, n_sats: 5, isx_km: null });
 drawPosEnu(fixes); drawPosIsx(fixes);
 var calls = __els["posenu"]._ctx.calls;

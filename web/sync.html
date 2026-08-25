@@ -94,6 +94,18 @@ being nailed down.</span>
 per component, so a bad fix is marked at the edge instead of flattening the rest. The small strip under the chart is the
 mixed solve's GPS&minus;BDS inter-system clock (isx_km) &mdash; its stability is the anti-spoof observable.</span>
 
+<h2>Position scatter &mdash; per-constellation projections</h2>
+<div style="display:flex;gap:8px;">
+  <canvas id="scat_xy" style="flex:1;height:220px;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
+  <canvas id="scat_xz" style="flex:1;height:220px;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
+  <canvas id="scat_yz" style="flex:1;height:220px;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
+</div>
+<div id="scatlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
+<span class="dim">Every fix as ENU metres, projected East&ndash;North, East&ndash;Up, North&ndash;Up. Color = solve class:
+<span style="color:#90caf9">blue</span> = pure GPS, <span style="color:#ce93d8">purple</span> = mixed GPS+BDS, <span style="color:#9e9e9e">gray</span> = 2D alt-hold.
+Older pins fade out over 3 h. Massive outliers (&gt;2 km) are dropped so the structure shows.
+The <b>+</b> marker is the per-class mean; hover the legend for mean &plusmn; <span class="tip" data-tip="standard deviation of the class along each axis — the honest scatter of that solve class over the window">σ</span> per class.</span>
+
 <h2>Sky visibility &mdash; expected vs observed</h2>
 <div id="sky"><span class="dim">waiting for sky producer&hellip;</span></div>
 <span class="dim">Broadcast-ephemeris az/el for every GPS + BeiDou satellite, diffed against the live tracker
@@ -245,7 +257,7 @@ function drawPhase(series) {
   ctx.stroke();
 }
 // --- Position ENU-in-time (position_watch.py -> state.position_history.json) ---
-var POS_SITE = { lat: 39.0042, lon: -77.6095, alt_m: 20.0 };  // surveyed site (Virginia)
+var POS_SITE = { lat: 39.0032, lon: -77.6058, alt_m: 20.0 };  // re-sited 2026-08-25: fixed-solver cluster center
 function geodeticToEcef(latDeg, lonDeg, hM) {
   // WGS84 geodetic -> ECEF, metres; mirrors geodetic_to_ecef in src/gps/ephemeris.rs
   var a = 6378137.0, f = 1 / 298.257223563, e2 = f * (2 - f);
@@ -424,6 +436,110 @@ function drawPosIsx(fixes) {
     " fixes · robust axis " + lo.toFixed(1) + " … " + hi.toFixed(1) + " km" +
     ' · <span class="dim">a spoofer faking one constellation breaks this line</span>';
 }
+// --- Position scatter: per-constellation 2D projections (X-Y, X-Z, Y-Z) ---
+var SCAT_CLASSES = [
+  { key: "gps",   color: "#90caf9", label: "pure GPS" },
+  { key: "mixed", color: "#ce93d8", label: "mixed GPS+BDS" },
+  { key: "2d",    color: "#9e9e9e", label: "2D alt-hold" },
+];
+function scatClass(f) {
+  if (f.mode && f.mode.indexOf("mixed") >= 0) return "mixed";
+  if (f.mode && f.mode.indexOf("2D") >= 0) return "2d";
+  return "gps";
+}
+function drawScatterOne(cid, fixes, ai, bi, xlabel, ylabel) {
+  var cv = document.getElementById(cid);
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  var now = Date.now() / 1000;
+  // drop massive outliers (>2 km from the median on either axis) so structure shows
+  var xs = fixes.map(function (f) { return f.enu[ai]; });
+  var ys = fixes.map(function (f) { return f.enu[bi]; });
+  var mxx = medianOf(xs), myy = medianOf(ys);
+  var pts = fixes.filter(function (f) {
+    return Math.abs(f.enu[ai] - mxx) < 2000 && Math.abs(f.enu[bi] - myy) < 2000;
+  });
+  if (!pts.length) return 0;
+  // robust shared-ish axis per projection
+  var lx = madLimits(pts.map(function (f) { return f.enu[ai]; }));
+  var ly = madLimits(pts.map(function (f) { return f.enu[bi]; }));
+  function sx(v) { return (v - lx[0]) / (lx[1] - lx[0]) * W; }
+  function sy(v) { return H - (v - ly[0]) / (ly[1] - ly[0]) * H; }
+  ctx.font = "10px Menlo, monospace";
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  ctx.fillText(xlabel, 4, H - 4);
+  ctx.fillText(ly[1].toFixed(0) + " m", 4, 10);
+  ctx.fillText(ly[0].toFixed(0) + " m", 4, H - 12);
+  SCAT_CLASSES.forEach(function (cl) {
+    pts.forEach(function (f) {
+      if (scatClass(f) !== cl.key) return;
+      var ageh = (now - f.epoch) / 3600;
+      var alpha = Math.max(0.12, 1 - ageh / 3);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = cl.color;
+      ctx.beginPath();
+      ctx.arc(sx(f.enu[ai]), sy(f.enu[bi]), 3, 0, 6.2832);
+      ctx.fill();
+    });
+    // per-class mean marker
+    var mine = pts.filter(function (f) { return scatClass(f) === cl.key; });
+    if (mine.length) {
+      var mx = 0, my = 0;
+      mine.forEach(function (f) { mx += f.enu[ai]; my += f.enu[bi]; });
+      mx /= mine.length; my /= mine.length;
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = cl.color; ctx.lineWidth = 1.6;
+      var cx = sx(mx), cy = sy(my);
+      ctx.beginPath();
+      ctx.moveTo(cx - 6, cy); ctx.lineTo(cx + 6, cy);
+      ctx.moveTo(cx, cy - 6); ctx.lineTo(cx, cy + 6);
+      ctx.stroke();
+    }
+  });
+  ctx.globalAlpha = 1;
+  return pts.length;
+}
+function drawScatter(fixes) {
+  var lg = document.getElementById("scatlegend");
+  var now = Date.now() / 1000, t0 = now - 3 * 3600;
+  var enud = (fixes || []).filter(function (f) {
+    return f.epoch >= t0 && f.lat !== undefined && f.lat !== null;
+  }).map(function (f) {
+    return { epoch: f.epoch, mode: f.mode || "", enu: fixToEnu(f, POS_SITE) };
+  });
+  if (enud.length < 2) {
+    lg.textContent = "waiting for fix history…";
+    return;
+  }
+  var n = 0;
+  n += drawScatterOne("scat_xy", enud, 0, 1, "East →", "N");
+  n += drawScatterOne("scat_xz", enud, 0, 2, "East →", "U");
+  n += drawScatterOne("scat_yz", enud, 1, 2, "North →", "U");
+  // per-class stats for the legend (with hover text)
+  var parts = SCAT_CLASSES.map(function (cl) {
+    var mine = enud.filter(function (f) { return scatClass(f) === cl.key; });
+    if (!mine.length) return "";
+    var mx = 0, my = 0, mz = 0;
+    mine.forEach(function (f) { mx += f.enu[0]; my += f.enu[1]; mz += f.enu[2]; });
+    mx /= mine.length; my /= mine.length; mz /= mine.length;
+    var varr = 0;
+    mine.forEach(function (f) {
+      varr += (f.enu[0] - mx) * (f.enu[0] - mx) + (f.enu[1] - my) * (f.enu[1] - my);
+    });
+    var sig = Math.sqrt(varr / mine.length);
+    return '<span class="tip" style="color:' + cl.color + '" data-tip="' + cl.label +
+      ": mean E " + mx.toFixed(1) + " m, N " + my.toFixed(1) + " m, U " + mz.toFixed(1) +
+      " m; horizontal σ " + sig.toFixed(1) + " m over " + mine.length + ' fixes">' +
+      "● " + cl.label + " (" + mine.length + ", σ " + sig.toFixed(0) + " m)</span>";
+  }).filter(function (s) { return s !== ""; });
+  lg.innerHTML = parts.join(" · ") +
+    ' · <span class="dim">fade = age (3 h to transparent) · + = class mean · >2 km outliers dropped</span>';
+}
 var PALETTE = ["#80cbc4", "#ffcc80", "#ef9a9a", "#a5d6a7", "#90caf9", "#ce93d8", "#fff59d", "#ffab91", "#b0bec5"];
 function drawSeries(cid, legendId, series, prefix, unit) {
   var cv = document.getElementById(cid);
@@ -486,7 +602,15 @@ function drawSeries(cid, legendId, series, prefix, unit) {
       ctx.globalAlpha = 1;
       return;
     }
-    legend.push('<span style="color:' + col + '">●</span> ' + esc(label));
+    var mean = 0;
+    fresh.forEach(function (p) { mean += p[1]; });
+    mean /= fresh.length;
+    var va = 0;
+    fresh.forEach(function (p) { va += (p[1] - mean) * (p[1] - mean); });
+    var sd = Math.sqrt(va / fresh.length);
+    legend.push('<span style="color:' + col + '">●</span> <span class="tip" data-tip="' +
+      esc(label) + ": mean " + mean.toFixed(3) + " " + unit + ", σ " + sd.toFixed(3) +
+      " over " + fresh.length + ' samples in the last hour">' + esc(label) + "</span>");
     if (k === "consensus") {                    // consensus as a line
       ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath();
       var started = false;
@@ -850,6 +974,7 @@ function render(st) {
   if (st.site && st.site.lat !== undefined) POS_SITE = st.site;
   drawPosEnu(st.position_history);
   drawPosIsx(st.position_history);
+  drawScatter(st.position_history);
 
   // sky-visibility section (sky_producer.py, 30 s): expected vs observed
   var skyEl = document.getElementById("sky");

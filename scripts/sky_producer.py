@@ -49,7 +49,7 @@ TRACKER_STATE = os.path.join(OBS, "state.tracker.json")
 TRACKER_EPH = os.path.join(OBS, "tracker_eph.json")
 BRDC = os.path.join(OBS, "brdc_latest.rnx")
 
-SITE_LAT, SITE_LON, SITE_H = 39.0042, -77.6095, 20.0  # mast by the window
+SITE_LAT, SITE_LON, SITE_H = 39.0032, -77.6058, 20.0  # mast by the window
 CADENCE_S = 30.0
 TTL_S = 90.0                       # 3 missed cycles before we tombstone out
 EL_MASK_DEG = 5.0                  # static horizon mask until learned
