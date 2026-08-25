@@ -222,11 +222,10 @@ def main():
           abs(cons["value"] - raw_ppm) < 1e-9, f"value={cons['value']}")
     check("e2e: honest small sigma", cons["sigma"] < 1e-6,
           f"sigma={cons['sigma']}")
-    check("e2e: kind/ref/fields", cons["kind"] == "ClockDriftPpm"
+    check("e2e: kind/ref/fields", cons["kind"] == "ClockDriftPpmComponent"
           and cons["ref_hz"] == pd.L1_HZ and cons["n_sats"] == 2)
-    check("e2e: per-sat rows are non-voting components",
-          all(r["kind"] == "ClockDriftPpmComponent"
-              for r in rows if r["band"] != pd.MY_BAND))
+    check("e2e: ALL phase rows are non-voting components",
+          all(r["kind"] == "ClockDriftPpmComponent" for r in rows))
 
     # missing carrier-phase fields (pre-dcfcfaa state): skipped, no crash
     rows2, diag2 = pd.process_state(

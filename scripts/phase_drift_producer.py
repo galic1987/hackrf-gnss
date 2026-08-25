@@ -16,10 +16,11 @@ row ("L1 / WAAS (live)") derives from the instantaneous PLL doppler_hz,
 but at carrier-phase precision: live, the per-second NCO-advance noise
 is ~1 cycle (the reported doppler_hz itself jitters +/-15 Hz — the
 accumulator is the quiet observable), so the slope sigma over a 40 s
-window is ~0.02 Hz = 1e-8 ppm class — 6 orders of magnitude finer than
-the code Doppler's 0.01-0.05 ppm. TCXO wander over the window shows up
-in the fit residuals, so the honest fit sigma lands above the thermal
-floor — still orders of magnitude below any code-class voter.
+window is ~0.02 Hz = 1.27e-5 ppm class (0.02 / 1575.42e6 * 1e6) — ~3
+orders of magnitude finer than the code Doppler's 0.01-0.05 ppm. TCXO
+wander over the window shows up in the fit residuals, so the honest fit
+sigma lands above the thermal floor — still well below any code-class
+voter.
 
 Convention (mirrors tracker_producer's WAAS ClockDriftPpm row exactly):
 the measured slope is taken AFTER the hardware clock-correction register
@@ -30,10 +31,16 @@ making the row a RAW-TCXO measurement comparable to every other voter
 motion Doppler is NOT subtracted (the tracker publishes no sat velocity;
 the code row absorbs it in its sigma floor). The honest fit sigma is
 published as-is; inter-source systematics (GEO motion ±0.025 ppm, CLKOUT
-chain) are the consensus floor's business — series_producer floors
-voting sigmas at 0.05 ppm by design, so a tight honest sigma cannot
-make the spoof alarm cry wolf, and this row joins the consensus at the
-top weight tier automatically.
+chain) are visible in the scatter.
+
+NON-VOTING (systems review 2026-08-25, finding 6): this chain is an
+implemented DIAGNOSTIC, not a discipline voter. It shares the radio and
+the GEOs with the WAAS code row (one instrument must not vote twice),
+GEO line-of-sight range rate is not yet removed, and the uncertainty is
+white-noise OLS rather than correlated-residual. The consensus row is
+therefore published as ClockDriftPpmComponent — visible in the merged
+sources table, excluded from series_producer's voting consensus — until
+geometry correction and real uncertainty land (P0b).
 
 Continuity guards (a window is only as good as its phase chain):
   - slip=true on any report -> the chain broke that second (watchdog or
@@ -66,17 +73,17 @@ just heartbeats its file with no rows — rows vanish rather than freeze
 (the tombstone class).
 
 Publishes:
-  one consensus sources row (band "L1 / WAAS GEO (phase)",
-  kind ClockDriftPpm) = sigma-weighted median across GEOs, sigma =
+  one consensus row (band "L1 / WAAS GEO (phase)") = sigma-weighted
+  median across GEOs, sigma =
   max(formal 1/sqrt(Σw), weighted scatter) — the scatter term keeps the
   consensus honest when GEOs disagree (their line-of-sight rates differ
   by m/s class; live, the three visible WAAS GEOs spread ~0.002 ppm and
   the consensus sigma correctly reports that, not the 1e-4-ppm formal).
-  Per-satellite rows (band "L1 / WAAS <prn> (phase)") are published as
-  kind ClockDriftPpmComponent — visible in the merged sources table but
-  NON-VOTING: one instrument must vote once in series_producer's
-  cross-producer consensus, and N near-identical rows from the same
-  phase chain would outvote every independent path.
+  ALL rows (per-satellite and consensus) are kind ClockDriftPpmComponent
+  — visible in the merged sources table but NON-VOTING (see the
+  NON-VOTING note above): one instrument must vote once in
+  series_producer's cross-producer consensus, and this chain shares the
+  radio with the WAAS code row.
   state["phase_drift"] — diagnostics: per-sat slope/fit sigma/n/gates.
 
 Unit tests: scripts/test_phase_drift_producer.py (synthetic fixtures,
@@ -295,12 +302,18 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
     if votes:
         med, sig = weighted_median([(v, s) for v, s, _, _ in votes])
         t = max(t for _, _, _, t in votes)
+        # Consensus is a component too (systems review 2026-08-25 #6):
+        # observe-only until GEO range-rate removal and correlated-
+        # residual uncertainty land; it must not double-vote the radio
+        # it shares with the WAAS code row.
         rows.append(row(MY_BAND,
                         f"WAAS GEO carrier-phase consensus ({len(votes)} sats, "
-                        f"{window_s:.0f} s slope) + corr register · Pro+AA.250",
+                        f"{window_s:.0f} s slope) + corr register · Pro+AA.250 "
+                        f"· observe-only",
                         med, sig, t,
                         [f"PRN {prn}" for _, _, prn, _ in votes],
-                        extra={"n_sats": len(votes)}))
+                        extra={"n_sats": len(votes)},
+                        kind="ClockDriftPpmComponent"))
     return rows, diag
 
 
