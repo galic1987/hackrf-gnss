@@ -15,7 +15,16 @@ This wrapper maintains per-satellite state and publishes ONLY its own file,
 observations/state.tracker.json (tmp + os.replace; the Rust server
 deep-merges all observations/state.*.json at /api/sync read time):
   state["tracker"] = {"sats": [{prn, sys, doppler_hz, ppm, vs_ppm,
-                                cn0_proxy, code_phase, lock_s, epoch}, ...]}
+                                cn0_proxy, code_phase, lock_s, epoch,
+                                carrier_cycles, phase_frac, slip}, ...]}
+  carrier phase fields (from live.rs, passed through verbatim):
+    carrier_cycles — integrated replica carrier phase in cycles, zero at
+      channel (re)seed; continuous while locked; rate == Doppler; the
+      absolute value carries the Costas 180 deg ambiguity
+    phase_frac — fractional phase at the report instant, cycles, modulo
+      the data-bit half-cycle (Costas), always in [0, 0.5)
+    slip — a phase break happened this second (lock watchdog fired or the
+      channel re-seeded and carrier_cycles re-zeroed)
   state["discipline"] = latest discipline line (forwarded verbatim)
   sources row: WAAS GEO mean Doppler as a ClockDriftPpm row with band
   "L1 / WAAS (live)" (distinct from band_producer's snapshot row

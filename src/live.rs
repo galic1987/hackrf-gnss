@@ -264,6 +264,19 @@ pub struct Channel {
     above: u32,
     below: u32,
     last_cn0: f64,
+    // carrier phase observable
+    /// Integrated replica carrier phase in cycles, zero at channel (re)seed.
+    /// Advances by the exact per-epoch NCO increment (carrier_phase is the
+    /// same quantity wrapped to 2*pi), so it is continuous across reports
+    /// while the loop holds. The absolute value carries the Costas 180
+    /// degree ambiguity — only differences (rates) are physical.
+    carr_cycles: f64,
+    /// Phase break in the in-progress report second: set by the lock
+    /// watchdog on lock loss and by reseed (the phase chain is broken and
+    /// carr_cycles restarts at zero). Cleared when the report is emitted.
+    slip: bool,
+    /// total phase breaks since channel creation (diagnostic)
+    pub slip_count: u32,
     // nav demod state (GPS LNAV 50 bps): prompt-I per 1 ms epoch, the
     // discovered 20 ms bit boundary, and the emitted bit stream
     nav_ms: Vec<f64>,
@@ -378,6 +391,9 @@ impl Channel {
             above: 0,
             below: 0,
             last_cn0: 0.0,
+            carr_cycles: 0.0,
+            slip: false,
+            slip_count: 0,
             nav_ms: Vec::new(),
             bit_off: None,
             nav_bits: Vec::new(),
@@ -569,6 +585,9 @@ impl Channel {
         }
         self.code_phase = cp;
         self.carrier_phase = (self.carrier_phase + dphi * ns as f64).rem_euclid(2.0 * PI);
+        // integrated carrier phase (the SatReport observable): the exact
+        // NCO advance in cycles, unwrapped — carrier_phase is this mod 1.
+        self.carr_cycles += dphi * ns as f64 / (2.0 * PI);
 
         // FLL aid: cross-product frequency discriminator. The seeds/aligns
         // refine Doppler to ±25 Hz but the Costas PLL's pull-in is ~10 Hz,
@@ -801,6 +820,10 @@ impl Channel {
                     self.locked = false;
                     self.lock_s = 0.0;
                     self.below = 0;
+                    // lock watchdog fired: the phase chain is broken — flag
+                    // a slip for this report second
+                    self.slip = true;
+                    self.slip_count += 1;
                 }
             } else {
                 self.below = 0;
@@ -826,6 +849,12 @@ impl Channel {
         (self.cn0_ema, self.carrier_freq, self.code_phase)
     }
 
+    /// Take the slip flag for the report being emitted (clears it for the
+    /// next second).
+    fn take_slip(&mut self) -> bool {
+        std::mem::take(&mut self.slip)
+    }
+
     /// Re-seed the loops from a re-acquisition (keeps identity + lock stats
     /// reset; called after a long unlock).
     fn reseed(&mut self, dopp0: f64, code_phase0: f64) {
@@ -834,6 +863,14 @@ impl Channel {
         self.carr_nco = 0.0;
         self.old_carr_err = 0.0;
         self.code_phase = code_phase0.rem_euclid(self.code_len);
+        // the phase chain is broken: the accumulator re-zeros (zero is
+        // defined at channel start) and the break is flagged — but not on
+        // the initial install right after Channel::new (no phase existed)
+        if self.carr_cycles != 0.0 {
+            self.slip = true;
+            self.slip_count += 1;
+        }
+        self.carr_cycles = 0.0;
         self.above = 0;
         self.below = 0;
     }
@@ -867,6 +904,19 @@ pub struct SatReport {
     pub rho_m: Option<f64>,
     /// GPS transmit time-of-week of the anchor (s)
     pub t_tx: Option<f64>,
+    /// Integrated replica carrier phase in cycles, zero at channel (re)seed.
+    /// Continuous across reports while the loop holds; its rate IS the
+    /// Doppler. The absolute value carries the Costas 180 deg ambiguity —
+    /// only differences between reports are physical. Meaningless while
+    /// unlocked (the loop free-runs); check lock_s / slip.
+    pub carrier_cycles: f64,
+    /// Fractional carrier phase at the report instant in cycles, published
+    /// modulo the data-bit half-cycle (the Costas 180 deg ambiguity makes
+    /// the full cycle unobservable): always in [0, 0.5).
+    pub phase_frac: f64,
+    /// A phase break happened this second (lock watchdog fired or the
+    /// channel was re-seeded — carrier_cycles re-zeroed).
+    pub slip: bool,
 }
 
 /// Acquisition runs on a WORKER THREAD, never on the consumer: any
@@ -1327,6 +1377,13 @@ impl Band {
         let t_proc = self.in_t - self.remaining().len() as f64 / self.fs;
         for ch in &mut self.channels {
             let (cn0, dopp, cp) = ch.end_second();
+            // carrier phase observable: carr_cycles is the unwrapped
+            // replica phase in cycles (carrier_phase is it mod 1); the
+            // Costas 180 deg ambiguity caps the publishable fractional
+            // phase at the data-bit half-cycle
+            let carrier_cycles = (ch.carr_cycles * 1e6).round() / 1e6;
+            let phase_frac = (ch.carr_cycles.rem_euclid(0.5) * 1e9).round() / 1e9;
+            let slip = ch.take_slip();
             ch.track_comb(t_proc);
             ch.nav_tick();
             // scan for new subframes since the last scan (the overlap keeps
@@ -1420,6 +1477,9 @@ impl Band {
                 } else {
                     None
                 },
+                carrier_cycles,
+                phase_frac,
+                slip,
                 epoch,
             });
         }
@@ -2661,5 +2721,132 @@ mod tests {
             "edge in last epoch must bias the snap down, got {}",
             ch.edge_off_s
         );
+    }
+
+    /// Single-PRN synthetic GPS signal: C/A code + alternating 20 ms data
+    /// bits on a carrier at `dopp` Hz, light noise, code phase 0 at sample
+    /// 0 (the same generator shape as tests/live_track.rs's fallback).
+    fn synth_gps(prn: usize, dopp: f64, secs: usize, fs: f64) -> Vec<Complex<f32>> {
+        let n = (fs as usize) * secs;
+        let code = gps_ca(prn);
+        let code_len = code.len();
+        let ns_ms = (fs / 1000.0) as usize;
+        let mut sig = vec![Complex::new(0.0f32, 0.0); n];
+        let mut st = 0x243f_6a88_85a3_08d3u64;
+        let mut nxt = || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            ((st >> 40) as f32 / 8_388_608.0) - 1.0
+        };
+        for (k, s) in sig.iter_mut().enumerate() {
+            let t = k as f64 / fs;
+            let ci = (k as f64 * 1.023e6 * (1.0 + dopp / F_L1) / fs) as usize;
+            let c = code[ci % code_len];
+            let bit = if (k / ns_ms) / 20 % 2 == 0 { 1.0f32 } else { -1.0 };
+            let ph = 2.0 * PI * dopp * t;
+            let v = c * bit;
+            s.re += v * ph.cos() as f32 + 0.05 * nxt();
+            s.im += v * ph.sin() as f32 + 0.05 * nxt();
+        }
+        sig
+    }
+
+    /// The integrated carrier phase must accumulate at the true Doppler
+    /// rate: a channel driven with a known-frequency synthetic, settled,
+    /// must match truth to < 0.1 cycle/s.
+    #[test]
+    fn carrier_phase_integrates_known_doppler() {
+        let fs = 4.0e6;
+        let dopp = 800.0;
+        let secs = 6;
+        let sig = synth_gps(11, dopp, secs, fs);
+        let mut ch = Channel::new(Sys::Gps, 11, fs, dopp, 0.0);
+        let ns = (fs / 1000.0) as usize;
+        let mut cyc = Vec::new();
+        for (i, chunk) in sig.chunks(ns).enumerate() {
+            ch.process_epoch(chunk);
+            if (i + 1) % 1000 == 0 {
+                ch.end_second();
+                cyc.push(ch.carr_cycles);
+            }
+        }
+        assert_eq!(cyc.len(), secs);
+        // the loop locks with an arbitrary constant phase offset (and the
+        // Costas 180 deg ambiguity), so compare RATES after a 3 s settle
+        let rate = (cyc[5] - cyc[2]) / 3.0;
+        assert!(
+            (rate - dopp).abs() < 0.1,
+            "phase rate {rate} cycles/s vs truth {dopp}"
+        );
+        assert!(ch.locked, "strong synthetic must lock");
+        assert!(!ch.take_slip(), "no slip on a clean track");
+        // fractional phase is published modulo the data-bit half-cycle
+        let frac = ch.carr_cycles.rem_euclid(0.5);
+        assert!((0.0..0.5).contains(&frac), "phase_frac out of [0, 0.5)");
+        // and carrier_phase really is carr_cycles mod 1 (same accumulator)
+        let frac1 = ch.carr_cycles.rem_euclid(1.0);
+        assert!(
+            (frac1 - ch.carrier_phase / (2.0 * PI)).abs() < 1e-6,
+            "carrier_phase disagrees with carr_cycles mod 1"
+        );
+    }
+
+    /// The slip flag must fire on exactly the report second the lock
+    /// watchdog drops the channel, and on a reseed with a phase history.
+    #[test]
+    fn slip_flag_fires_on_lock_loss_and_reseed() {
+        let fs = 4.0e6;
+        let dopp = 800.0;
+        let ns = (fs / 1000.0) as usize;
+        let mut ch = Channel::new(Sys::Gps, 11, fs, dopp, 0.0);
+        let sig = synth_gps(11, dopp, 5, fs);
+        for sec in sig.chunks(1000 * ns) {
+            for chunk in sec.chunks(ns) {
+                ch.process_epoch(chunk);
+            }
+            ch.end_second();
+            assert!(!ch.take_slip(), "no slip while the signal holds");
+        }
+        assert!(ch.locked, "strong synthetic must lock");
+        // cut the signal: pure noise. The watchdog (UNLOCK_SECS consecutive
+        // seconds below threshold) must drop lock and flag the slip on
+        // exactly that second.
+        let mut st = 0x1b87_3593_u64;
+        let mut slip_at = None;
+        for s in 0..12 {
+            for _ in 0..1000 {
+                let noise: Vec<Complex<f32>> = (0..ns)
+                    .map(|_| {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        let v = ((st >> 40) as f32 / 8_388_608.0) - 1.0;
+                        Complex::new(0.05 * v, 0.05 * v)
+                    })
+                    .collect();
+                ch.process_epoch(&noise);
+            }
+            ch.end_second();
+            if ch.take_slip() {
+                slip_at = Some(s);
+                assert!(!ch.locked, "slip must coincide with lock loss");
+                break;
+            }
+        }
+        let s = slip_at.expect("watchdog must fire within 12 s of noise");
+        assert!(
+            s + 1 >= UNLOCK_SECS as usize,
+            "slip fired before the watchdog could: second {s}"
+        );
+        // reseed semantics: no phase history -> silent install; with a
+        // phase history -> flagged break, accumulator re-zeros
+        let mut ch2 = Channel::new(Sys::Gps, 11, fs, dopp, 0.0);
+        ch2.reseed(900.0, 100.0);
+        assert!(!ch2.take_slip(), "initial install is not a slip");
+        ch2.carr_cycles = 123.0;
+        ch2.reseed(900.0, 100.0);
+        assert!(ch2.take_slip(), "reseed with a phase history must flag");
+        assert_eq!(ch2.carr_cycles, 0.0, "zero is defined at (re)seed");
     }
 }

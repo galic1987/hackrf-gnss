@@ -777,6 +777,9 @@ function render(st) {
         driftCell + vsCell +
         '<td class="num">' + (locked ? fmtDur(s.lock_s) : "—") + "</td>" +
         '<td class="num">' + s.cn0_proxy.toFixed(1) + "</td>" +
+        '<td class="num" title="fractional carrier phase at the report instant, cycles modulo the data-bit half-cycle (Costas)">' +
+        (s.phase_frac === undefined ? "—" : s.phase_frac.toFixed(3) +
+          (s.slip ? ' <span class="warn" title="phase break this second: lock watchdog fired or channel re-seeded; carrier_cycles re-zeroed">slip</span>' : "")) + "</td>" +
         '<td class="' + (locked ? "ok" : "dim") + '">' + (locked ? "LOCKED" : "searching") +
         (s.nav_subs > 0 ? ' <span class="ok" title="parity-valid LNAV subframes decoded live">⬇' + s.nav_subs + "sf</span>" : "") +
         "</td></tr>";
@@ -785,7 +788,7 @@ function render(st) {
     lt.innerHTML = "<table><thead><tr><th>Constellation</th><th>PRN</th><th>Doppler</th>" +
       '<th><span class="tip" data-tip="' + esc(GLOSSARY["drift"] || "") + '">drift, ppm of carrier</span></th>' +
       '<th><span class="tip" data-tip="' + esc(GLOSSARY["vs consensus"] || "") + '">vs consensus</span> <span class="dim">(GEO only)</span></th>' +
-      "<th>Lock</th><th>C/N₀ proxy</th><th>State</th></tr></thead><tbody>" +
+      "<th>Lock</th><th>C/N₀ proxy</th><th>φ frac <span class=\"dim\">(½-cyc)</span></th><th>State</th></tr></thead><tbody>" +
       ltRows.join("") + "</tbody></table>" +
       '<span class="dim">' + trk.sats.length + " channels · updated " + age(ltEpoch) +
       " · SBAS rows: green = within 0.1 ppm of consensus; MEO rows include orbital Doppler, clock not separable yet" +
