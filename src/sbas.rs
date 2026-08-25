@@ -810,29 +810,16 @@ pub struct DecodeReport {
 
 /// One-shot decode of a soft-symbol buffer: tries both symbol-pair phases and
 /// both G2 conventions (the 180 deg carrier ambiguity needs no separate
-/// decode — it only complements bits and is resolved per block by CRC),
-/// picks the hypothesis with the most CRC-valid blocks, then parses.
+/// decode — it only complements bits and is resolved per block by CRC).
+/// Hypotheses are scored by their CURRENT rotating-block streak first
+/// (review round 6): a hypothesis with many scattered CRC passes but no
+/// consecutive run is noise; a clean streak is signal. Total CRC count is
+/// only the tiebreaker.
 pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
-    let mut best: Option<(usize, bool, Vec<u8>, SyncResult)> = None;
-    for off in 0..2 {
-        for inv in [false, true] {
-            let bits = viterbi(&soft[off.min(soft.len())..], inv);
-            let sync = frame_sync(&bits, min_blocks);
-            let score = (sync.npass, sync.nblocks);
-            if best.as_ref().map(|b| score > (b.3.npass, b.3.nblocks)).unwrap_or(true) {
-                best = Some((off, inv, bits, sync));
-            }
-        }
-    }
-    let (off, inv, bits, sync) = best.unwrap();
-    let mut sync = sync;
-    let mut preamble = (0, 0, 0);
-    let mut streak = 0usize;
-    let mut messages = Vec::new();
-    if let Some(o) = sync.offset {
+    // Polarity-resolve a hypothesis' framed blocks and return (streak, corr).
+    fn resolve(bits: &[u8], sync: &SyncResult) -> (usize, Vec<u8>) {
+        let Some(o) = sync.offset else { return (0, Vec::new()) };
         let mut corr = bits[o..o + sync.nblocks * BLOCK_BITS].to_vec();
-        // Resolve each block's carrier polarity from its CRC before use;
-        // hold the last known polarity across invalid blocks.
         let mut cur_inv = false;
         for i in 0..sync.nblocks {
             if sync.valid[i] {
@@ -844,8 +831,30 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
                 }
             }
         }
+        (lock_streak(&corr, &sync.valid), corr)
+    }
+    let mut best: Option<(usize, bool, SyncResult, usize, Vec<u8>)> = None;
+    for off in 0..2 {
+        for inv in [false, true] {
+            let bits = viterbi(&soft[off.min(soft.len())..], inv);
+            let sync = frame_sync(&bits, min_blocks);
+            let (streak, corr) = resolve(&bits, &sync);
+            let score = (streak, sync.npass);
+            if best
+                .as_ref()
+                .map(|b| score > (b.3, b.2.npass))
+                .unwrap_or(true)
+            {
+                best = Some((off, inv, sync, streak, corr));
+            }
+        }
+    }
+    let (off, inv, sync, streak, corr) = best.unwrap();
+    let mut sync = sync;
+    let mut preamble = (0, 0, 0);
+    let mut messages = Vec::new();
+    if let Some(_o) = sync.offset {
         preamble = preamble_phase(&corr, &sync.valid);
-        streak = lock_streak(&corr, &sync.valid);
         // Lock means a CURRENT streak of consecutive, correctly-rotating,
         // nondegenerate CRC-valid blocks — not scattered passes anywhere in
         // the window (review round 5).

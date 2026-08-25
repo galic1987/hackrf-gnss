@@ -405,7 +405,13 @@ fn main() {
                         note = format!("clock-corr write FAILED ({e}) — software state not advanced");
                         eprintln!("live_radio: {note}");
                     } else if let Err(e) = radio_ctrl.tune(FC) {
-                        note = format!("retune after clock-corr FAILED ({e}) — software state not advanced");
+                        // the correction WRITE already landed in hardware —
+                        // software must adopt it even though the retune
+                        // failed, or the loop's belief diverges from the
+                        // radio (review round 6). Log loudly; the failed
+                        // retune only means the LO may not have re-synced.
+                        corr = new_corr;
+                        note = format!("retune FAILED ({e}) after successful write — adopted {corr:+.4} ppm to match hardware");
                         eprintln!("live_radio: {note}");
                     } else {
                         corr = new_corr;
