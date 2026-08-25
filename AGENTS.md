@@ -41,7 +41,7 @@ class). Producers with nothing to report must still heartbeat their file.
 | producer | file | notes |
 |---|---|---|
 | tracker_producer + live_radio | state.tracker.json | 1 Hz channels, discipline loop (in-process, steers clock-corr via control handle), tick counter reads |
-| phase_producer | state.phase.json | 20 Hz carrier phase; heartbeats `lock:false` when dark; re-acquires after 60 s dark |
+| phase_producer | state.phase.json | 60 Hz carrier phase; heartbeats `lock:false` when dark; re-acquires after 60 s dark |
 | series_producer | state.series.json | 30 s; rolling 1-h band series, consensus, spoof z-alerts (sigma floor 0.05 ppm) |
 | band_producer | state.band.json | snapshot rotation — CANNOT snapshot while tracker owns the Pro; rows age, file heartbeats |
 | position_producer | state.position.json | runs examples/live_fix every 5 min |

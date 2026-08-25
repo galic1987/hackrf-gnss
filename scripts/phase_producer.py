@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""20 Hz carrier-phase producer for the /sync panel ("phase producer").
+"""60 Hz carrier-phase producer for the /sync panel ("phase producer").
 
 Tracks the ATSC ch35 pilot (true 602.30944 MHz, GPS-disciplined Tx,
 ~+43 dB over noise on the ClearStream) on the HackRF One, which is
@@ -9,7 +9,22 @@ hackrf_transfer is held for the producer's whole lifetime, tuned
 Samples arrive over a FIFO (mkfifo) — never a spooling file — so disk
 usage is zero regardless of run length.
 
-Per 50 ms block (400k samples, 20 epochs/s):
+Epoch rate: 60 Hz (was 20 Hz). FS dropped 8 -> 6 Msps so a 60 Hz epoch is
+an integer 100000-sample block (16.67 ms); USB load drops 25% as a bonus.
+Per-epoch noise bandwidth: one epoch is a coherent average over
+T_b = 1/60 s -> equivalent noise bandwidth B = 1/(2 T_b) = 30 Hz. With the
+ch35 pilot at C/N0 ~ 54-55 dB-Hz (58 dB over the median 0.36 Hz acquire-FFT
+bin), sigma_phi = sqrt(B / (C/N0)) ~ sqrt(30 / 3e5) ~ 0.010 rad ->
+sigma_d = 0.010 / (2 pi) * 497.7 mm ~ 0.8 mm per epoch (thermal). The
+robust 2nd-difference sigma reported live adds the mm-class multipath
+jiggle on top. Dynamics are not a constraint: multipath/Tx wander is
+<< 1 Hz, far inside a 30 Hz ENBW; the 2-s phase-slope integral steer
+(1 Hz updates) keeps the derotation centered on the wandering reference
+chain. Validated offline by scripts/test_phase_tracker.py (synthetic
+known-truth motion + a recorded ch35 capture) — see that harness's
+numbers before trusting a deploy.
+
+Per 16.67 ms block (100k samples, 60 epochs/s):
   - derotate the pilot to baseband with a continuous phase accumulator
     (block boundaries are seamless),
   - block-average to one complex point, atan2 -> phase, unwrap across
@@ -39,6 +54,7 @@ read time, so no shared-file race is possible):
   state["clock"]["residual_ppm"] — kept live from this measurement.
 Appends observations/phase_history.jsonl at ~1 Hz.
 """
+import argparse
 import json
 import os
 import signal
@@ -56,21 +72,18 @@ ENV = dict(os.environ,
 ONE = "0000000000000000922c63dc21748847"
 F_PILOT = 602.30944e6
 F_TUNE = F_PILOT + 500e3          # pilot line lands at -500 kHz
-FS = 8e6
-BLOCK = 400000                    # 50 ms -> 20 epochs/s
-BLK_BYTES = BLOCK * 2             # interleaved int8 I/Q
+FS = 6e6
+EPOCH_HZ = 60                     # epochs/s; FS / EPOCH_HZ must be integral
 C_MPS = 299792458.0
 LAMBDA_MM = C_MPS / F_PILOT * 1000.0
+DEC = 50                          # segment decimation; must divide the block
 FIFO = "/tmp/phase_producer.iq"
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.phase.json"
 HIST = "/Volumes/Radiator 8TB/gnss/observations/phase_history.jsonl"
 MY_BAND = "ATSC ch35"
-EST_SAMPLES = 1 << 24             # 2.1 s coherent FFT for initial freq
+EST_SAMPLES = 1 << 24             # 2.8 s coherent FFT @ 6 Msps for initial freq
 AMP_DROP = 0.35                   # epoch low-flag: amp < 35% of running median
 AMP_LOST = 0.20                   # sustained below 20% of median -> lock lost
-LOST_BLOCKS = 100                 # 5 s of collapse before lock drops
-LOCK_BLOCKS = 40                  # 2 s of stable amplitude to (re)lock
-DARK_REACQ_BLOCKS = 1200          # 60 s dark -> full FFT re-acquire
 
 _proc = None                      # current hackrf_transfer child
 
@@ -105,7 +118,7 @@ def open_stream():
     except FileExistsError:
         pass
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", ONE, "-f", str(int(F_TUNE)),
-           "-s", "8000000", "-l", "40", "-g", "44", "-a", "0", "-r", FIFO]
+           "-s", str(int(FS)), "-l", "40", "-g", "44", "-a", "0", "-r", FIFO]
     log("launching: " + " ".join(cmd))
     proc = subprocess.Popen(cmd, env=ENV,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -155,7 +168,7 @@ def to_iq(raw):
     return d[0::2] + 1j * d[1::2]
 
 
-def estimate_freq(fd, buf):
+def estimate_freq(fd, buf, blk_bytes):
     """Coherent FFT of the first EST_SAMPLES: precise pilot line frequency
     in baseband (nominally -500 kHz). Also discards 0.5 s of AGC settling.
 
@@ -191,9 +204,9 @@ def estimate_freq(fd, buf):
 
     threading.Thread(target=work, daemon=True).start()
     while not result:
-        if not read_into(fd, buf, BLK_BYTES):
+        if not read_into(fd, buf, blk_bytes):
             raise StreamDead("FIFO EOF during initial estimate")
-        del buf[:BLK_BYTES]
+        del buf[:blk_bytes]
     if "err" in result:
         raise RuntimeError(f"estimate FFT failed: {result['err']}")
     f_line, snr_db = result["f"], result["snr"]
@@ -201,6 +214,168 @@ def estimate_freq(fd, buf):
         f"(offset {f_line + 500e3:+.2f} Hz = {(f_line + 500e3) / F_PILOT * 1e6:+.4f} ppm), "
         f"SNR {snr_db:.0f} dB")
     return f_line, snr_db
+
+
+class Tracker:
+    """Stream-IO-free ch35 pilot carrier-phase tracker: one process() call
+    per epoch block. The live FIFO loop below and the offline harness
+    (scripts/test_phase_tracker.py) drive the IDENTICAL code path, so the
+    harness validates exactly what gets deployed.
+
+    Two-stage derotation (fast path, ~1 ms/block vs ~15 ms for a full-rate
+    complex128 exp — the consumer must stay well under the 16.67 ms block
+    budget or the FIFO backpressures the USB stream and drops samples):
+      1. coarse mix with ONE precomputed block-length complex64 LUT at
+         f_coarse = round(-500 kHz / rate) * rate — an integer number of
+         cycles per block BY CONSTRUCTION, so the same LUT is seamless at
+         block boundaries for any epoch rate that divides FS. (The old
+         16-entry-tile trick only worked because 500 kHz * 16 / 8 MHz == 1
+         exactly; at 6 Msps it would slip 1/3 cycle per 16 samples.)
+         report_offset shifts the reported freq_off back into the
+         nominal -500 kHz frame (20 Hz at 60 Hz/6 Msps, 0 at 20 Hz/8 Msps).
+      2. decimate by DEC (segment means), fine-rotate at the residual
+         f_res (~-305 Hz, steered) with a float64 phase accumulator.
+    """
+
+    def __init__(self, f_line, fs=FS, rate_hz=EPOCH_HZ, dec=DEC,
+                 warmup_s=2.0, lock_s=2.0, lost_s=5.0, dark_s=60.0):
+        blk = fs / rate_hz
+        if blk != int(blk):
+            raise ValueError(f"rate {rate_hz} Hz at FS {fs}: block "
+                             f"{blk} samples not integral")
+        blk = int(blk)
+        if blk % dec:
+            raise ValueError(f"block {blk} not a multiple of DEC={dec}")
+        self.fs = float(fs)
+        self.rate = rate_hz
+        self.block = blk
+        self.dec = dec
+        self.nseg = blk // dec
+        self.f_coarse = round(-500e3 / rate_hz) * rate_hz
+        self.report_offset = 500e3 + self.f_coarse
+        self.f_res = f_line - self.f_coarse
+        self.fine_step = 2 * np.pi * self.f_res / (self.fs / dec)
+        self.phi0f = 0.0
+        self.lut = np.exp(-1j * 2 * np.pi * self.f_coarse / self.fs
+                          * np.arange(blk)).astype(np.complex64)
+        self.seg_ar = np.arange(self.nseg, dtype=np.float64) + 0.5
+        self.warmup_blocks = max(1, int(round(warmup_s * rate_hz)))
+        self.lock_blocks = max(1, int(round(lock_s * rate_hz)))
+        self.lost_blocks = max(1, int(round(lost_s * rate_hz)))
+        self.dark_reacq_blocks = max(1, int(round(dark_s * rate_hz)))
+        self.amps = deque(maxlen=10 * rate_hz)      # 10 s amplitude history
+        self.amp_med = None
+        self.unwrapped = 0.0                # radians
+        self.prev_phi = None
+        self.unwrap_ref = None              # radians at lock moment
+        self.locked = False
+        self.stable = 0                     # consecutive good-amplitude blocks
+        self.collapsed = 0                  # consecutive collapsed blocks
+        self.dark_blocks = 0                # consecutive not-good blocks
+        self.phase10 = deque()              # (t, cycles) for slope, 10 s
+        self.disp10 = deque()               # (t, disp_mm) for sigma, 10 s
+        self.last_steer = 0.0
+
+    def process(self, iq, t):
+        """One block of complex64 samples (len == self.block) at epoch time
+        t (block center, seconds). Returns a per-epoch dict; disp_mm is
+        None on dark/pre-lock epochs (caller heartbeats those)."""
+        mixed = iq * self.lut                       # pilot -> ~f_res
+        seg = mixed.reshape(self.nseg, self.dec).mean(axis=1)
+        ang = (self.phi0f + self.fine_step * self.seg_ar) % (2 * np.pi)
+        self.phi0f = float((self.phi0f + self.fine_step * self.nseg)
+                           % (2 * np.pi))
+        z = np.mean(seg * np.exp(-1j * ang))
+        amp = float(abs(z))
+        phi = float(np.arctan2(z.imag, z.real))
+
+        if self.prev_phi is not None:
+            self.unwrapped += (phi - self.prev_phi + np.pi) % (2 * np.pi) - np.pi
+        self.prev_phi = phi
+
+        amps = self.amps
+        amps.append(amp)
+        if self.amp_med is None and len(amps) >= self.warmup_blocks:
+            self.amp_med = float(np.median(amps))
+        elif (self.amp_med is not None and len(amps) >= amps.maxlen
+                and amp > AMP_LOST * self.amp_med):
+            # adapt only from healthy blocks — following a collapse
+            # down to 0 makes `good`/`collapsed` vacuous (0 > 0.6*0)
+            # and the loop "locks" on noise forever (the 2026-08-24
+            # stall: amp 0.0/0.0 with lock True for 40+ min)
+            self.amp_med = float(np.median(amps))
+
+        good = self.amp_med is None or amp > AMP_DROP * self.amp_med
+        if self.amp_med is not None and amp < AMP_LOST * self.amp_med:
+            self.collapsed += 1
+        else:
+            self.collapsed = 0
+        event = None
+        if self.locked and self.collapsed >= self.lost_blocks:
+            self.locked = False
+            self.stable = 0
+            self.unwrap_ref = None
+            event = "lost"
+        if not self.locked and self.amp_med is not None:
+            self.stable = self.stable + 1 if good else 0
+            if self.stable >= self.lock_blocks:
+                self.locked = True
+                self.unwrap_ref = self.unwrapped
+                event = "lock"
+
+        # 60 s of dark with a live stream means the TRACKING state is
+        # lost (mis-steered derotation), not the signal — the pilot is
+        # 58 dB SNR; only a full FFT re-acquisition recovers. The caller
+        # forces it through the outer reopen loop (stream keeps running).
+        self.dark_blocks = self.dark_blocks + 1 if not good else 0
+        dark_reacq = self.dark_blocks >= self.dark_reacq_blocks
+
+        ep = {"t": t, "amp": amp, "good": good, "locked": self.locked,
+              "event": event, "dark_reacq": dark_reacq,
+              "disp_mm": None, "sigma_mm": None,
+              "freq_off_hz": None, "ppm": None}
+        if not good or self.unwrap_ref is None:
+            return ep
+
+        disp_mm = (self.unwrapped - self.unwrap_ref) / (2 * np.pi) * LAMBDA_MM
+        cycles = self.unwrapped / (2 * np.pi)
+        self.phase10.append((t, cycles))
+        self.disp10.append((t, disp_mm))
+        while self.phase10 and t - self.phase10[0][0] > 10.5:
+            self.phase10.popleft()
+        while self.disp10 and t - self.disp10[0][0] > 10.5:
+            self.disp10.popleft()
+
+        # residual frequency: steer the fine derotation with the
+        # 2-s phase slope once a second (the reference chain wanders
+        # ~1 Hz/min and multipath jitters the phase at the 1-s scale;
+        # a fixed derotation would integrate that into a runaway
+        # displacement ramp and eventually break the unwrap).
+        # Reported freq_off = the steered residual itself.
+        recent = [p for p in self.phase10 if t - p[0] <= 2.5]
+        if len(recent) >= int(2.0 * self.rate) and t - self.last_steer >= 1.0:
+            self.last_steer = t
+            tt = np.array([p[0] for p in recent])
+            cc = np.array([p[1] for p in recent])
+            slope2 = float(np.polyfit(tt - tt[0], cc, 1)[0])
+            self.f_res += slope2
+            self.fine_step = 2 * np.pi * self.f_res / (self.fs / self.dec)
+        freq_off_hz = self.f_res + self.report_offset
+        ppm = freq_off_hz / F_PILOT * 1e6
+
+        # per-epoch sensitivity: robust std of the 2nd difference
+        # (kills drift/curvature, immune to fade cycle-slips);
+        # for white per-epoch noise std(d2)/sqrt(6) = sigma_epoch
+        sigma_mm = None
+        if len(self.disp10) >= max(100, int(2.0 * self.rate)):
+            dd = np.array([p[1] for p in self.disp10])
+            d2 = np.diff(dd, 2)
+            sigma_mm = float(1.4826 * np.median(np.abs(d2 - np.median(d2)))
+                             / np.sqrt(6))
+
+        ep.update(disp_mm=disp_mm, sigma_mm=sigma_mm,
+                  freq_off_hz=freq_off_hz, ppm=ppm, f_res=self.f_res)
+        return ep
 
 
 def merge_state(phase, row, ppm):
@@ -232,48 +407,34 @@ def shutdown(*_):
 
 
 def main():
+    ap = argparse.ArgumentParser(description="ch35 pilot carrier-phase producer")
+    ap.add_argument("--rate-hz", type=int, default=EPOCH_HZ,
+                    help=f"epochs/s (must divide FS={int(FS)} with a "
+                         f"DEC={DEC}-multiple block; default {EPOCH_HZ})")
+    args = ap.parse_args()
+    rate = args.rate_hz
+    blk = FS / rate
+    if blk != int(blk) or int(blk) % DEC:
+        sys.exit(f"--rate-hz {rate}: block {blk} samples at FS {int(FS)} "
+                 f"is not integral or not a multiple of DEC={DEC}")
+    blk = int(blk)
+    blk_bytes = blk * 2               # interleaved int8 I/Q
+
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     log(f"phase producer starting — ch35 pilot {F_PILOT/1e6:.5f} MHz, "
-        f"lambda {LAMBDA_MM:.2f} mm, One {ONE}")
-    # two-stage derotation (fast path, ~4 ms/block vs ~35 ms for a full-rate
-    # complex128 exp — the consumer must stay well under the 50 ms block
-    # budget or the FIFO backpressures the USB stream and drops samples):
-    #   1. coarse mix with a tiled 16-entry LUT at exactly -500 kHz
-    #      (BLOCK % 16 == 0, so block boundaries are seamless),
-    #   2. decimate by 64 (segment means), fine-rotate at the residual
-    #      f_res (~-285 Hz, steered) with a float64 phase accumulator.
-    DEC = 64
-    NSEG = BLOCK // DEC
-    lut = np.exp(-1j * 2 * np.pi * (-500e3) / FS
-                 * np.arange(16)).astype(np.complex64)
-    lut_tile = np.tile(lut, BLOCK // 16)
-    seg_ar = np.arange(NSEG, dtype=np.float64) + 0.5   # segment centers
+        f"lambda {LAMBDA_MM:.2f} mm, {rate} epochs/s, One {ONE}")
 
     while True:
         proc, fd, buf = None, None, None
         try:
             proc, fd = open_stream()
             buf = bytearray()
-            f_line, snr_db = estimate_freq(fd, buf)    # baseband pilot Hz
-            f_res = f_line + 500e3                     # residual vs -500 kHz
-            fine_step = 2 * np.pi * f_res / (FS / DEC)
-            phi0f = 0.0
+            f_line, snr_db = estimate_freq(fd, buf, blk_bytes)
+            tracker = Tracker(f_line, rate_hz=rate)
             t0 = time.time()                # wall clock at estimate end
             n_done = 0                      # samples tracked since t0
-
-            locked = False
-            stable = 0                      # consecutive good-amplitude blocks
-            collapsed = 0                   # consecutive collapsed blocks
-            dark_blocks = 0                 # consecutive not-good blocks
-            unwrapped = 0.0                 # radians
-            prev_phi = None
-            unwrap_ref = None               # radians at lock moment
-            amps = deque(maxlen=200)        # 10 s amplitude history
-            amp_med = None
-            phase10 = deque()               # (t, cycles) for slope, 10 s
-            disp10 = deque()                # (t, disp_mm) for sigma, 10 s
-            ring = deque(maxlen=1200)       # 60 s of (t, disp_mm) @ 20 Hz
+            ring = deque(maxlen=60 * rate)  # 60 s of (t, disp_mm)
             last_pub = 0.0
             last_row = None                 # last published drift row (heartbeat)
             last_ppm = 0.0
@@ -281,62 +442,22 @@ def main():
             while True:
                 if proc.poll() is not None:
                     raise StreamDead(f"transfer exited rc={proc.returncode}")
-                if not read_into(fd, buf, BLK_BYTES):
+                if not read_into(fd, buf, blk_bytes):
                     raise StreamDead("FIFO EOF — writer died")
-                iq = to_iq(take(buf, BLK_BYTES))
+                iq = to_iq(take(buf, blk_bytes))
+                t = t0 + (n_done + blk / 2) / FS
+                n_done += blk
+                ep = tracker.process(iq, t)
 
-                mixed = iq * lut_tile                       # pilot -> ~f_res
-                seg = mixed.reshape(NSEG, DEC).mean(axis=1)
-                ang = (phi0f + fine_step * seg_ar) % (2 * np.pi)
-                phi0f = float((phi0f + fine_step * NSEG) % (2 * np.pi))
-                z = np.mean(seg * np.exp(-1j * ang))
-                amp = float(abs(z))
-                phi = float(np.arctan2(z.imag, z.real))
-                t = t0 + (n_done + BLOCK / 2) / FS
-                n_done += BLOCK
-
-                if prev_phi is not None:
-                    unwrapped += (phi - prev_phi + np.pi) % (2 * np.pi) - np.pi
-                prev_phi = phi
-
-                amps.append(amp)
-                if amp_med is None and len(amps) >= 40:
-                    amp_med = float(np.median(amps))
-                elif (amp_med is not None and len(amps) >= 200
-                        and amp > AMP_LOST * amp_med):
-                    # adapt only from healthy blocks — following a collapse
-                    # down to 0 makes `good`/`collapsed` vacuous (0 > 0.6*0)
-                    # and the loop "locks" on noise forever (the 2026-08-24
-                    # stall: amp 0.0/0.0 with lock True for 40+ min)
-                    amp_med = float(np.median(amps))
-
-                good = amp_med is None or amp > AMP_DROP * amp_med
-                if amp_med is not None and amp < AMP_LOST * amp_med:
-                    collapsed += 1
-                else:
-                    collapsed = 0
-                if locked and collapsed >= LOST_BLOCKS:
-                    locked = False
-                    stable = 0
-                    unwrap_ref = None
-                    log(f"LOCK LOST — pilot amplitude collapsed "
-                        f"(amp {amp:.1f} vs median {amp_med:.1f})")
-                if not locked and amp_med is not None:
-                    stable = stable + 1 if good else 0
-                    if stable >= LOCK_BLOCKS:
-                        locked = True
-                        unwrap_ref = unwrapped
-                        log(f"LOCK — amp median {amp_med:.1f}, phase ref reset")
-
-                # 60 s of dark with a live stream means the TRACKING state is
-                # lost (mis-steered derotation), not the signal — the pilot is
-                # 58 dB SNR; only a full FFT re-acquisition recovers. Force it
-                # through the outer reopen loop (stream keeps running).
-                dark_blocks = dark_blocks + 1 if not good else 0
-                if dark_blocks >= DARK_REACQ_BLOCKS:
+                if ep["dark_reacq"]:
                     raise StreamDead("pilot dark 60 s — full re-acquire")
+                if ep["event"] == "lost":
+                    log(f"LOCK LOST — pilot amplitude collapsed "
+                        f"(amp {ep['amp']:.1f} vs median {tracker.amp_med:.1f})")
+                elif ep["event"] == "lock":
+                    log(f"LOCK — amp median {tracker.amp_med:.1f}, phase ref reset")
 
-                if not good or unwrap_ref is None:
+                if ep["disp_mm"] is None:
                     # heartbeat while dark: a monitor that goes silent
                     # exactly when the signal is lost displays its last
                     # "LOCKED" epoch forever. Publish lock:false with a
@@ -345,7 +466,7 @@ def main():
                     if t - last_pub >= 1.0 and last_row is not None:
                         last_pub = t
                         phase = {
-                            "epoch": round(t, 2), "rate_hz": 20,
+                            "epoch": round(t, 2), "rate_hz": rate,
                             "lambda_mm": round(LAMBDA_MM, 1),
                             "disp_mm": None, "sigma_mm": None,
                             "freq_off_hz": None, "lock": False,
@@ -357,55 +478,25 @@ def main():
                             log(f"heartbeat publish failed: {e}")
                     continue
 
-                disp_mm = (unwrapped - unwrap_ref) / (2 * np.pi) * LAMBDA_MM
-                cycles = unwrapped / (2 * np.pi)
+                disp_mm = ep["disp_mm"]
                 ring.append((t, disp_mm))
-                phase10.append((t, cycles))
-                disp10.append((t, disp_mm))
-                while phase10 and t - phase10[0][0] > 10.5:
-                    phase10.popleft()
-                while disp10 and t - disp10[0][0] > 10.5:
-                    disp10.popleft()
-
-                # residual frequency: steer the fine derotation with the
-                # 2-s phase slope once a second (the reference chain wanders
-                # ~1 Hz/min and multipath jitters the phase at the 1-s scale;
-                # a fixed derotation would integrate that into a runaway
-                # displacement ramp and eventually break the unwrap).
-                # Reported freq_off = the steered residual itself.
-                recent = [p for p in phase10 if t - p[0] <= 2.5]
-                if len(recent) >= 40 and t - last_pub >= 1.0:
-                    tt = np.array([p[0] for p in recent])
-                    cc = np.array([p[1] for p in recent])
-                    slope2 = float(np.polyfit(tt - tt[0], cc, 1)[0])
-                    f_res += slope2
-                    fine_step = 2 * np.pi * f_res / (FS / DEC)
-                freq_off_hz = f_res
-                ppm = freq_off_hz / F_PILOT * 1e6
-
-                # per-epoch sensitivity: robust std of the 2nd difference
-                # (kills drift/curvature, immune to fade cycle-slips);
-                # for white per-epoch noise std(d2)/sqrt(6) = sigma_epoch
-                sigma_mm = None
-                if len(disp10) >= 100:
-                    dd = np.array([p[1] for p in disp10])
-                    d2 = np.diff(dd, 2)
-                    sigma_mm = float(1.4826 * np.median(np.abs(d2 - np.median(d2)))
-                                     / np.sqrt(6))
 
                 if t - last_pub >= 1.0:
                     last_pub = t
+                    step = max(1, rate // 5)        # series at ~5 points/s
                     series = [[round(pt, 1), round(pd, 3)]
-                              for pt, pd in list(ring)[::4][-300:]]
+                              for pt, pd in list(ring)[::step][-300:]]
                     phase = {
-                        "epoch": round(t, 2), "rate_hz": 20,
+                        "epoch": round(t, 2), "rate_hz": rate,
                         "lambda_mm": round(LAMBDA_MM, 1),
                         "disp_mm": round(disp_mm, 3),
-                        "sigma_mm": round(sigma_mm, 3) if sigma_mm is not None else None,
-                        "freq_off_hz": round(freq_off_hz, 3),
-                        "lock": locked,
+                        "sigma_mm": round(ep["sigma_mm"], 3)
+                                    if ep["sigma_mm"] is not None else None,
+                        "freq_off_hz": round(ep["freq_off_hz"], 3),
+                        "lock": ep["locked"],
                         "series": series,
                     }
+                    ppm = ep["ppm"]
                     row = {
                         "band": MY_BAND,
                         "name": f"TV pilot {F_PILOT/1e6:.5f} MHz · carrier-phase "
@@ -424,14 +515,15 @@ def main():
                         with open(HIST, "a") as fh:
                             fh.write(json.dumps({
                                 "t": round(t, 2), "disp_mm": round(disp_mm, 3),
-                                "freq_off_hz": round(freq_off_hz, 3),
+                                "freq_off_hz": round(ep["freq_off_hz"], 3),
                                 "sigma_mm": phase["sigma_mm"],
-                                "lock": locked}) + "\n")
+                                "lock": ep["locked"]}) + "\n")
                     except Exception as e:
                         log(f"publish error: {e}")
                     log(f"disp {disp_mm:+9.3f} mm  sigma {phase['sigma_mm']} mm  "
-                        f"foff {freq_off_hz:+8.3f} Hz ({ppm:+.4f} ppm)  "
-                        f"amp {amp:.1f}/{amp_med:.1f}  lock {locked}")
+                        f"foff {ep['freq_off_hz']:+8.3f} Hz ({ppm:+.4f} ppm)  "
+                        f"amp {ep['amp']:.1f}/{tracker.amp_med:.1f}  "
+                        f"lock {ep['locked']}")
 
         except StreamDead as e:
             log(f"stream died: {e} — reopening, phase will re-lock")

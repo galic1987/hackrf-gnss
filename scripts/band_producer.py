@@ -12,7 +12,7 @@ Sources, all against the Pro's disciplined 10 MHz reference:
     prefixed "~" in the sats list.
 
 The ATSC pilot measurements on the HackRF One were RETIRED: the One is
-owned full-time by phase_producer.py (20 Hz carrier-phase track of the
+owned full-time by phase_producer.py (60 Hz carrier-phase track of the
 ch35 pilot), which writes the "ATSC ch35" row and keeps
 clock.residual_ppm live. Do not add One-side transfers back here.
 

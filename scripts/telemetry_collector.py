@@ -61,7 +61,7 @@ def snapshot(now=None):
             if isinstance(d.get("discipline"), dict):
                 row["discipline"] = d["discipline"]
         elif name == "phase" and isinstance(d.get("phase"), dict):
-            # drop the embedded 20 Hz series — phase_history.jsonl has it
+            # drop the embedded 60 Hz series — phase_history.jsonl has it
             row["phase"] = {k: v for k, v in d["phase"].items() if k != "series"}
         elif name == "tick":
             row["tick_hz"] = (d.get("clock") or {}).get("live_tick_hz")
