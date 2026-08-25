@@ -42,6 +42,65 @@ def add(label, t, v):
         pts.pop(0)
 
 
+# --- consensus election (pure; unit-tested by test_series_producer.py) --------
+
+SIGMA_FLOOR = 0.05    # inter-path systematics (CLKOUT chain, GEO motion)
+                      # exceed any instrument's short-term precision — a
+                      # tight per-instrument sigma makes the alarm cry wolf
+
+def elect(voters):
+    """Cross-producer consensus with outlier arbitration.
+
+    voters: [(band, value_ppm, sigma_ppm)]. Returns (consensus, alerts,
+    suspect). >= 3 voters: a |z|>3 outlier is QUARANTINED (named in the
+    alert) and the consensus recomputes without it — a divergent voter must
+    not pull the reference it is measured against. Exactly 2 voters in
+    disagreement: nobody can be arbitrated — the midpoint is published (the
+    chart must show something) but flagged suspect, and the alert says
+    trust neither. (F2, 2026-08-25: an 8.7-sigma disagreement sat
+    unarbitrated while the actuator followed the midpoint.)
+    """
+    if len(voters) < 2:
+        return (voters[0][1] if voters else None, [], False)
+
+    def wmean(vs):
+        w = [1.0 / max(s, SIGMA_FLOOR) ** 2 for _, _, s in vs]
+        return sum(v * wi for (_, v, _), wi in zip(vs, w)) / sum(w)
+
+    cons = wmean(voters)
+    z = {b: (v - cons) / max(s, SIGMA_FLOOR) for b, v, s in voters}
+    out = [b for b, zi in z.items() if abs(zi) > 3]
+    alerts, suspect = [], False
+    if out and len(voters) >= 3:
+        worst = max(out, key=lambda b: abs(z[b]))
+        diff = dict((b, v) for b, v, _ in voters)[worst] - cons
+        cons = wmean([v for v in voters if v[0] != worst])
+        alerts.append(f"{worst}: {diff:+.3f} ppm from cross-producer consensus "
+                      f"({z[worst]:+.1f} sigma) — QUARANTINED from the vote; spoof/fault candidate")
+    elif out:
+        suspect = True
+        for b in out:
+            diff = dict((b, v) for b, v, _ in voters)[b] - cons
+            alerts.append(f"{b}: {diff:+.3f} ppm vs the only other voter "
+                          f"({z[b]:+.1f} sigma) — 2-voter midpoint meaningless, trust neither")
+    return cons, alerts, suspect
+
+
+ALERT_HIST = f"{OBS}/alert_history.jsonl"
+_last_alert_key = None
+
+def persist_alerts(alerts, now, path=ALERT_HIST):
+    """Durable alert record: sigma events must not vanish with a state
+    file's ttl (F2, 2026-08-25). Appends only when the alert SET changes."""
+    global _last_alert_key
+    key = "\n".join(sorted(alerts))
+    if not alerts or key == _last_alert_key:
+        return
+    _last_alert_key = key
+    with open(path, "a") as f:
+        f.write(json.dumps({"t": now, "alerts": alerts}) + "\n")
+
+
 def backfill():
     try:
         with open(HIST) as f:
@@ -124,37 +183,17 @@ def main():
                 add("n:" + label.get(sysname, sysname) + " (live)", now, float(n))
 
         # cross-producer consensus: weighted mean over ALL live drift rows,
-        # regardless of which producer wrote them
-        voters = [(s["value"], max(s.get("sigma") or 0.05, 0.05))
+        # regardless of which producer wrote them — with outlier arbitration
+        # (quarantine when arbitrable, suspect-midpoint when not)
+        voters = [(s["band"], s["value"], max(s.get("sigma") or 0.05, 0.05))
                   for s in st.get("sources", [])
                   if s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
                   and s.get("band") != "PC clock"      # client of the reference, not a voter
                   and now - s.get("epoch", 0) < 1800]  # rotation-slowed voter window
-        cons = None
-        if len(voters) >= 2:
-            w = [1.0 / (sig * sig) for _, sig in voters]
-            cons = sum(v * wi for (v, _), wi in zip(voters, w)) / sum(w)
-            add("consensus", now, cons)
-
-        # cross-producer divergence alarm: the ONLY voter-wide integrity check
-        # (band_producer can only see its own rows). PC clock is a client of
-        # the reference, not a reference — it always "diverges", so it's out.
-        xalerts = []
+        cons, xalerts, suspect = elect(voters)
         if cons is not None:
-            for s in st.get("sources", []):
-                if (s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
-                        and s.get("band") != "PC clock"
-                        and now - s.get("epoch", 0) < 1800):
-                    # sigma floor 0.05 ppm for the z-test: inter-PATH
-                    # systematics (CLKOUT chain vs internal, GEO motion) are
-                    # larger than any single instrument's short-term
-                    # precision — a tight per-instrument sigma makes the
-                    # spoof alarm fire on honest disagreement
-                    sig = max(s.get("sigma") or 0.05, 0.05)
-                    z = (s["value"] - cons) / sig
-                    if abs(z) > 3:
-                        xalerts.append(f"{s['band']}: {s['value']-cons:+.3f} ppm from "
-                                       f"cross-producer consensus ({z:+.1f} sigma) — spoof/fault candidate")
+            add("consensus", now, cons)
+        persist_alerts(xalerts, now)
 
         # PC clock drift: the 2-s SPI tick polls are a transfer oscillator.
         # tick rate error over the last hour = tcxo_drift - pc_drift, so
@@ -187,6 +226,9 @@ def main():
         }
         if cons is not None:
             out["consensus_ppm"] = round(cons, 4)
+        if suspect:
+            # the panel must show the midpoint is unarbitrated, not a number
+            out["consensus_suspect"] = True
         if pc_row is not None:
             out["sources"] = [pc_row]
         tmp = STATE + ".series.tmp"

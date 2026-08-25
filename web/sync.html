@@ -1571,6 +1571,10 @@ function render(st) {
       : (disc.note && disc.note.indexOf("deadband") >= 0
         ? '<span class="pill ok">HOLDING</span> '
         : '<span class="pill info">STEERING</span> ');
+    // shadow is a published runtime state: the loop computes but never
+    // writes — never let HOLDING/STEERING imply actuation
+    if (disc.actuate === false)
+      discPill = '<span class="pill warn" title="Corrections are computed and logged but NEVER written to hardware (HACKRF_GNSS_ACTUATE unset) — every write was proven to collapse all tracker locks ~1 min">SHADOW</span> ';
   }
   // headline = the REAL clock number (consensus of independent references);
   // the SPI-poll tick rate is PC-read jitter — diagnostics, demoted below.
@@ -1579,6 +1583,11 @@ function render(st) {
     document.getElementById("livedata").textContent =
       "consensus " + sgn(cp) + Math.abs(cp).toFixed(3) + " ppm" +
       "  (" + sgn(cp * 1000) + Math.abs(cp * 1000).toFixed(0) + " ns/s)";
+    // F2: a 2-voter disagreement publishes a midpoint that means nothing —
+    // say so at the headline, not just in the alerts array
+    if (st.consensus_suspect)
+      document.getElementById("livedata").innerHTML +=
+        ' <span class="pill warn">UNARBITRATED</span>';
   }
   if (c.live_tick_hz) {
     var drift = c.tick_rate_drift_ppm_vs_session_ref;
