@@ -150,6 +150,8 @@ fn main() {
     // SBAS channel's published fast_corr: GPS PRN -> PRC metres. DO-229
     // convention: the PRC is ADDED to the measured pseudorange.
     let mut sbas_prc: std::collections::HashMap<u8, f64> = std::collections::HashMap::new();
+    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64)> =
+        std::collections::HashMap::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if s["sys"].as_str() != Some("sbas") {
             continue;
@@ -162,8 +164,23 @@ fn main() {
                 sbas_prc.insert(prn as u8, prc);
             }
         }
+        // SBAS long-term corrections (MT24/25): GPS PRN -> (dx, dy, dz m,
+        // daf0 s). Corrected sat position = broadcast + delta, corrected
+        // sat clock offset = broadcast + daf0 (DO-229).
+        for row in s["sbas_msgs"]["lt_corr"].as_array().into_iter().flatten() {
+            if let (Some(prn), Some(dx), Some(dy), Some(dz), Some(daf0)) = (
+                row[0].as_u64(),
+                row[1].as_f64(),
+                row[2].as_f64(),
+                row[3].as_f64(),
+                row[4].as_f64(),
+            ) {
+                sbas_lt.insert(prn as u8, (dx, dy, dz, daf0));
+            }
+        }
     }
     let mut n_sbas_corr = 0usize;
+    let mut n_lt_corr = 0usize;
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if now - s["epoch"].as_f64().unwrap_or(0.0) > 10.0 {
             continue;
@@ -203,9 +220,14 @@ fn main() {
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
+                let (dx, dy, dz, daf0) = sbas_lt.get(&prn).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
+                if dx != 0.0 || dy != 0.0 || dz != 0.0 || daf0 != 0.0 {
+                    n_lt_corr += 1;
+                }
+                let sat_m = [sat_m[0] + dx, sat_m[1] + dy, sat_m[2] + dz];
                 gps_meas.push(hackrf_gnss::gps::pvt::Meas {
                     sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
-                    pseudorange: (rho_m + prc) / 1000.0 + dt_sv * 299_792.458, // SBAS PRC added, sat clock removed
+                    pseudorange: (rho_m + prc) / 1000.0 + (dt_sv + daf0) * 299_792.458, // SBAS PRC added, sat clock + LT daf0 removed
                     clock_free: false,
                 });
                 gps_prns.push(prn);
@@ -297,8 +319,8 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             println!(
-                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, gate
+                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -434,8 +456,8 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             println!(
-                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, gate
+                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,

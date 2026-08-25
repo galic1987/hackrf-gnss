@@ -339,6 +339,10 @@ pub struct Channel {
     /// Latest per-PRN fast corrections (PRC m, UDREI, insert lock_s),
     /// from MT2-5 messages decoded by this channel. Cleared on reseed.
     sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
+    /// Latest per-PRN long-term corrections (dx, dy, dz m, daf0 s,
+    /// insert lock_s), from MT24/25 halves decoded by this channel.
+    /// Cleared on reseed.
+    sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, f64)>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -431,6 +435,7 @@ impl Channel {
             sbas_dec: crate::sbas::Decoder::new(),
             sbas_par: None,
             sbas_prc: std::collections::BTreeMap::new(),
+            sbas_lt: std::collections::BTreeMap::new(),
         }
     }
 
@@ -815,6 +820,7 @@ impl Channel {
                 n_msgs: 0,
                 types: std::collections::BTreeMap::new(),
                 fast_corr: Vec::new(),
+                lt_corr: Vec::new(),
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
@@ -838,6 +844,23 @@ impl Channel {
                     self.sbas_prc.insert(prn, (prc_m, u, self.lock_s));
                 }
             }
+            // harvest long-term corrections (MT25 halves; MT24 long-term
+            // slot): corrected sat position/clock = broadcast + delta
+            match &dm.message {
+                crate::sbas::Message::LongTerm { a, b } => {
+                    for h in [a, b] {
+                        for (prn, dx, dy, dz, daf0) in crate::sbas::lt_corrections(h) {
+                            self.sbas_lt.insert(prn, (dx, dy, dz, daf0, self.lock_s));
+                        }
+                    }
+                }
+                crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
+                    for (prn, dx, dy, dz, daf0) in crate::sbas::lt_corrections(lt) {
+                        self.sbas_lt.insert(prn, (dx, dy, dz, daf0, self.lock_s));
+                    }
+                }
+                _ => {}
+            }
         }
         // publish only fresh entries (<= 60 s of lock time)
         let now_ls = self.lock_s;
@@ -847,11 +870,18 @@ impl Channel {
             .filter(|(_, (_, _, ls))| now_ls - ls < 60.0)
             .map(|(&prn, &(prc_m, udrei, _))| (prn, prc_m, udrei))
             .collect();
+        let lt_corr: Vec<(u8, f64, f64, f64, f64)> = self
+            .sbas_lt
+            .iter()
+            .filter(|(_, (_, _, _, _, ls))| now_ls - ls < 60.0)
+            .map(|(&prn, &(dx, dy, dz, daf0, _))| (prn, dx, dy, dz, daf0))
+            .collect();
         Some(SbasSummary {
             locked: rep.sync.locked,
             n_msgs: rep.messages.len(),
             types,
             fast_corr,
+            lt_corr,
         })
     }
 
@@ -963,6 +993,7 @@ impl Channel {
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
         self.sbas_prc.clear();
+        self.sbas_lt.clear();
     }
 
     /// Shift the carrier loops by `df` Hz WITHOUT touching lock state.
@@ -994,6 +1025,12 @@ pub struct SbasSummary {
     /// dropped (conservative vs the MT7 degradation model, not yet
     /// implemented). Empty when none decoded.
     pub fast_corr: Vec<(u8, f64, u8)>,
+    /// Latest long-term corrections (MT24/25) held by this channel:
+    /// (GPS PRN, dx, dy, dz metres, daf0 seconds). Corrected satellite
+    /// position = broadcast + (dx, dy, dz); corrected satellite clock
+    /// offset = broadcast + daf0. Velocity-code-1 rates are not yet
+    /// extrapolated. Same 60 s freshness window as fast_corr.
+    pub lt_corr: Vec<(u8, f64, f64, f64, f64)>,
 }
 
 /// Per-PRN 1 Hz report — serialized to JSON by the front end.

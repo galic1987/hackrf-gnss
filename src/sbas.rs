@@ -258,9 +258,31 @@ pub fn fast_corrections(first_slot: u8, prc: &[i16; 13], udrei: &[u8; 13]) -> Ve
         .collect()
 }
 
+/// Harvest a long-term half message (MT25 halves, MT24 long-term slot) as
+/// (GPS PRN, dx, dy, dz metres, daf0 seconds) rows. Slots 1..=37 of the
+/// PRN mask are GPS. dx/dy/dz scale 0.125 m; daf0 scale 2^-31 s.
+/// Velocity-code-1 rates (ddx/daf1, t_lt) are not yet extrapolated — the
+/// base correction is applied as-of its issue time. DO-229 convention:
+/// corrected satellite position = broadcast + (dx, dy, dz) and corrected
+/// satellite clock offset = broadcast + daf0.
+pub fn lt_corrections(half: &LongTermHalf) -> Vec<(u8, f64, f64, f64, f64)> {
+    half.sats
+        .iter()
+        .filter(|s| (1..=37).contains(&s.mask))
+        .map(|s| {
+            (
+                s.mask,
+                s.dx as f64 * 0.125,
+                s.dy as f64 * 0.125,
+                s.dz as f64 * 0.125,
+                s.daf0 as f64 * 2.0f64.powi(-31),
+            )
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // frame sync
-// ---------------------------------------------------------------------------
 
 /// Result of a frame-sync search over a decoded bit stream.
 #[derive(Debug, Clone, Default)]
@@ -1728,6 +1750,53 @@ mod tests {
         // slot 38+ is not GPS
         let rows = fast_corrections(30, &prc, &udrei);
         assert!(rows.iter().all(|(p, _, _)| *p <= 37));
+    }
+
+    /// lt_corrections: raw->physical scaling and slot filtering. A sign or
+    /// scale slip here silently corrupts satellite position/clock in the
+    /// solver (same failure class as the PRC sign bug the fast-corr test
+    /// guards).
+    #[test]
+    fn lt_corrections_scale_and_slots() {
+        let half = LongTermHalf {
+            velocity_code: 0,
+            sats: vec![
+                LongTermSat {
+                    mask: 5,
+                    iod: 0,
+                    dx: 8,   // +1.0 m
+                    dy: -16, // -2.0 m
+                    dz: 0,
+                    daf0: 1024, // 1024 * 2^-31 s
+                    ddx: None,
+                    ddy: None,
+                    ddz: None,
+                    daf1: None,
+                },
+                LongTermSat {
+                    mask: 40, // not GPS — filtered
+                    iod: 0,
+                    dx: 100,
+                    dy: 100,
+                    dz: 100,
+                    daf0: 100,
+                    ddx: None,
+                    ddy: None,
+                    ddz: None,
+                    daf1: None,
+                },
+            ],
+            t_lt_s: None,
+            iodp: 0,
+        };
+        let rows = lt_corrections(&half);
+        assert_eq!(rows.len(), 1);
+        let (prn, dx, dy, dz, daf0) = rows[0];
+        assert_eq!(prn, 5);
+        assert_eq!(dx, 1.0);
+        assert_eq!(dy, -2.0);
+        assert_eq!(dz, 0.0);
+        assert!((daf0 - 1024.0 * 2.0f64.powi(-31)).abs() < 1e-15);
     }
 
     /// The forced-parity variant: a locked decoder keeps its pairing even
