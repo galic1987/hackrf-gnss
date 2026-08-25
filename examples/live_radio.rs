@@ -387,6 +387,9 @@ fn main() {
                 if let Err(reason) = gate.check(r, &waas_locks, now_wall - last_report_wall) {
                     note = format!("gate: {reason} — suppressed write (residual {r:+.4} ppm)");
                     eprintln!("live_radio: {note}");
+                } else if gate.recovered {
+                    note = format!("GATE RECOVERY — slew reference re-anchored after latch-up (residual {r:+.4} ppm)");
+                    eprintln!("live_radio: {note}");
                 } else if r.abs() < DEADBAND_PPM {
                     note = format!("in deadband ({r:+.4} ppm) — loop closed");
                 } else {

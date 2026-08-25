@@ -98,6 +98,14 @@ pub const GATE_STALE_S: f64 = 10.0;
 /// that still rejects NaN-adjacent garbage and unit bugs outright.
 pub const GATE_ABS_BOUND_PPM: f64 = 2.0;
 
+/// Bounded latch-up recovery: after this many CONSECUTIVE slew
+/// suppressions whose values agree among themselves, re-anchor the
+/// reference to their median — loudly. (2026-08-25 latch-up: 276
+/// suppressed writes over 4.6 h after the true residual had legitimately
+/// drifted past the slew bound; prev_resid only updated on accepts, so
+/// every later sample failed against the stale reference forever.)
+pub const GATE_RECOVER_N: usize = 5;
+
 /// Residual-plausibility gate for the in-process discipline loop
 /// (examples/live_radio.rs): suppresses a correction write when the
 /// measurement context is untrustworthy. Added after the 2026-08-24/25
@@ -115,6 +123,11 @@ pub struct PlausibilityGate {
     /// residual never becomes the reference, or a bogus value would
     /// legitimize the next bogus one
     prev_resid: Option<f64>,
+    /// recent slew-suppressed residuals (the recovery candidate pool)
+    suppressed: std::collections::VecDeque<f64>,
+    /// true when this check() recovered the slew reference — the caller
+    /// must log it loudly (a recovery means the loop was latched)
+    pub recovered: bool,
 }
 
 impl PlausibilityGate {
@@ -141,10 +154,13 @@ impl PlausibilityGate {
         waas_lock_s: &[f64],
         inputs_age_s: f64,
     ) -> Result<(), &'static str> {
+        self.recovered = false;
         if !resid.is_finite() {
+            self.suppressed.clear();
             return Err("non-finite residual");
         }
         if resid.abs() > GATE_ABS_BOUND_PPM {
+            self.suppressed.clear();
             return Err("residual beyond absolute sanity bound");
         }
         let locked_now = self.sbas_hist.back().copied().unwrap_or(0);
@@ -153,21 +169,43 @@ impl PlausibilityGate {
         // only a count BELOW the window max can be a collapse — a healthy
         // low-count track (e.g. one GEO all night) is not one
         if locked_now < win_max && (locked_now as f64) < floor {
+            self.suppressed.clear();
             return Err("WAAS locked-channel count collapsing");
         }
         if let Some(freshest) = waas_lock_s.iter().copied().reduce(f64::min) {
             if freshest < GATE_FRESH_LOCK_S {
+                self.suppressed.clear();
                 return Err("WAAS/GEO channel below fresh-lock threshold");
             }
         }
         if let Some(prev) = self.prev_resid {
             if (resid - prev).abs() > GATE_MAX_SLEW_PPM {
+                // latch-up recovery: N consecutive slew suppressions that
+                // agree among themselves mean the TRUE residual moved and
+                // the reference is stale — re-anchor to their median,
+                // loudly (the 4.6 h / 276-write latch-up of 2026-08-25).
+                self.suppressed.push_back(resid);
+                while self.suppressed.len() > GATE_RECOVER_N {
+                    self.suppressed.pop_front();
+                }
+                if self.suppressed.len() >= GATE_RECOVER_N {
+                    let mut pool: Vec<f64> = self.suppressed.iter().copied().collect();
+                    pool.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    if pool[pool.len() - 1] - pool[0] <= GATE_MAX_SLEW_PPM {
+                        self.prev_resid = Some(pool[pool.len() / 2]);
+                        self.suppressed.clear();
+                        self.recovered = true;
+                        return Ok(());
+                    }
+                }
                 return Err("residual jump beyond plausible TCXO slew");
             }
         }
         if inputs_age_s > GATE_STALE_S {
+            self.suppressed.clear();
             return Err("measurement inputs stale");
         }
+        self.suppressed.clear();
         self.prev_resid = Some(resid);
         Ok(())
     }
@@ -287,5 +325,38 @@ mod tests {
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
         assert!(g.check(1.9, &[45.0], 1.0).is_ok());
+    }
+
+    /// (f) latch-up recovery: N consecutive slew suppressions that agree
+    /// among themselves re-anchor the reference (the 2026-08-25 latch-up:
+    /// 276 suppressed writes over 4.6 h with no recovery path).
+    #[test]
+    fn gate_recovers_from_latchup() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        for _ in 0..GATE_RECOVER_N - 1 {
+            assert_eq!(
+                g.check(-0.70, &[45.0], 1.0),
+                Err("residual jump beyond plausible TCXO slew")
+            );
+            assert!(!g.recovered);
+        }
+        assert!(g.check(-0.70, &[45.0], 1.0).is_ok());
+        assert!(g.recovered);
+        // the re-anchored reference accepts values near the new level
+        assert!(g.check(-0.72, &[45.0], 1.0).is_ok());
+    }
+
+    /// (g) disagreement among suppressed values never recovers.
+    #[test]
+    fn gate_no_recovery_on_disagreement() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        for r in [-0.70, -1.30, -0.65, -1.35, -0.75, -1.25] {
+            assert!(g.check(r, &[45.0], 1.0).is_err());
+            assert!(!g.recovered);
+        }
     }
 }
