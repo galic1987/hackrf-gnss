@@ -82,6 +82,18 @@ duration every second. The locked WAAS GEOs' mean Doppler feeds the &ldquo;L1 / 
 5 min. Residual RMS tells you how much to trust it: metres = honest fix, kilometres = the phase convention is still
 being nailed down.</span>
 
+<h2>Position &mdash; ENU in time</h2>
+<canvas id="posenu" style="width:100%;height:150px;display:block;background:#141d24;border:1px solid #2a3540;border-radius:6px;"></canvas>
+<div id="posenulegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
+<canvas id="posisx" style="width:100%;height:56px;display:block;background:#141d24;border:1px solid #2a3540;border-radius:6px;margin-top:0.6em;"></canvas>
+<div id="posisxlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
+<span class="dim">Every 5-min snapshot fix, converted to <b>ENU</b> metres relative to the surveyed site, last 3 h.
+<span class="ok">teal</span> = East, <span class="warn">amber</span> = North, <span style="color:#90caf9">blue</span> = Up.
+<b>Filled</b> markers = gated (redundant) fixes; <b>open</b> = ungated exact solves (unverifiable &mdash; honesty stays visible);
+<span style="color:#ce93d8">purple edge</span> = mixed GPS+BDS solve. The y axis is robust: median &plusmn; 8&times;<span class="tip" data-tip="Median Absolute Deviation — the median of |value − median|. Robust to outliers the way the plain standard deviation is not: one 500 km blip cannot stretch this axis.">MAD</span>
+per component, so a bad fix is marked at the edge instead of flattening the rest. The small strip under the chart is the
+mixed solve's GPS&minus;BDS inter-system clock (isx_km) &mdash; its stability is the anti-spoof observable.</span>
+
 <h2>Sky visibility &mdash; expected vs observed</h2>
 <div id="sky"><span class="dim">waiting for sky producer&hellip;</span></div>
 <span class="dim">Broadcast-ephemeris az/el for every GPS + BeiDou satellite, diffed against the live tracker
@@ -225,6 +237,186 @@ function drawPhase(series) {
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
+}
+// --- Position ENU-in-time (position_watch.py -> state.position_history.json) ---
+var POS_SITE = { lat: 39.0042, lon: -77.6095, alt_m: 20.0 };  // surveyed site (Virginia)
+function geodeticToEcef(latDeg, lonDeg, hM) {
+  // WGS84 geodetic -> ECEF, metres; mirrors geodetic_to_ecef in src/gps/ephemeris.rs
+  var a = 6378137.0, f = 1 / 298.257223563, e2 = f * (2 - f);
+  var la = latDeg * Math.PI / 180, lo = lonDeg * Math.PI / 180;
+  var sl = Math.sin(la), n = a / Math.sqrt(1 - e2 * sl * sl);
+  return [(n + hM) * Math.cos(la) * Math.cos(lo),
+          (n + hM) * Math.cos(la) * Math.sin(lo),
+          (n * (1 - e2) + hM) * Math.sin(la)];
+}
+function ecefToEnu(xyz, refXyz, latDeg, lonDeg) {
+  // ECEF delta -> local East/North/Up metres at the reference geodetic point
+  var la = latDeg * Math.PI / 180, lo = lonDeg * Math.PI / 180;
+  var dx = xyz[0] - refXyz[0], dy = xyz[1] - refXyz[1], dz = xyz[2] - refXyz[2];
+  var sl = Math.sin(la), cl = Math.cos(la), so = Math.sin(lo), co = Math.cos(lo);
+  return [-so * dx + co * dy,
+          -sl * co * dx - sl * so * dy + cl * dz,
+           cl * co * dx + cl * so * dy + sl * dz];
+}
+function fixToEnu(fix, site) {
+  var ref = geodeticToEcef(site.lat, site.lon, site.alt_m);
+  var p = geodeticToEcef(fix.lat, fix.lon, (fix.alt_km || 0) * 1000);
+  return ecefToEnu(p, ref, site.lat, site.lon);
+}
+function medianOf(vals) {
+  if (!vals.length) return 0;
+  var s = vals.slice().sort(function (a, b) { return a - b; });
+  var m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+function madLimits(vals) {
+  // robust axis: median ± 8×MAD; degenerate (MAD 0) falls back to ±1 m
+  if (!vals.length) return null;
+  var med = medianOf(vals);
+  var mad = medianOf(vals.map(function (v) { return Math.abs(v - med); }));
+  if (!(mad > 0)) return [med - 1, med + 1];
+  return [med - 8 * mad, med + 8 * mad];
+}
+function posEnuScale(comps) {
+  // comps: array of per-component value arrays -> one shared robust [lo, hi]
+  var lo = Infinity, hi = -Infinity;
+  comps.forEach(function (vals) {
+    var l = madLimits(vals);
+    if (l) { lo = Math.min(lo, l[0]); hi = Math.max(hi, l[1]); }
+  });
+  if (!isFinite(lo)) return null;
+  if (hi - lo < 2) { var m = (lo + hi) / 2; lo = m - 1; hi = m + 1; }
+  return [lo, hi];
+}
+var ENU_COLORS = ["#80cbc4", "#ffcc80", "#90caf9"];   // East, North, Up
+var ENU_NAMES = ["East", "North", "Up"];
+var MIXED_EDGE = "#ce93d8";
+function drawPosEnu(fixes) {
+  var cv = document.getElementById("posenu");
+  var lg = document.getElementById("posenulegend");
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  var now = Date.now() / 1000, t0 = now - 3 * 3600;
+  var pts = (fixes || []).filter(function (f) {
+    return f.epoch >= t0 && f.lat !== undefined && f.lat !== null;
+  }).map(function (f) {
+    return { epoch: f.epoch, enu: fixToEnu(f, POS_SITE),
+             gated: !(f.gate && f.gate.indexOf("ungated") === 0),
+             mixed: !!(f.mode && f.mode.indexOf("mixed") >= 0) };
+  });
+  if (pts.length < 2) {
+    lg.textContent = pts.length ? "one fix so far — need two to draw" :
+      "waiting for position history (position_watch.py appends each 5-min fix)";
+    return;
+  }
+  var scale = posEnuScale([0, 1, 2].map(function (c) {
+    return pts.map(function (p) { return p.enu[c]; });
+  }));
+  var lo = scale[0], hi = scale[1];
+  var X = function (t) { return (t - t0) / (3 * 3600) * W; };
+  var Y = function (v) { return H - (v - lo) / (hi - lo) * H; };
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.font = "10px Menlo, monospace";
+  ctx.lineWidth = 1;
+  [lo, (lo + hi) / 2, hi].forEach(function (v) {
+    var y = Y(v);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(1) + " m", 4, Math.min(Math.max(y - 2, 10), H - 2));
+  });
+  if (lo < 0 && hi > 0) {           // zero line: the surveyed site itself
+    ctx.strokeStyle = "#37474f"; ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(W, Y(0)); ctx.stroke();
+  }
+  var outFix = pts.map(function (p) {   // fix-level outlier: any component clipped
+    return p.enu.some(function (v) { return v < lo || v > hi; });
+  });
+  var nOut = outFix.filter(function (b) { return b; }).length;
+  [0, 1, 2].forEach(function (c) {
+    var col = ENU_COLORS[c];
+    ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.beginPath();
+    var started = false;
+    pts.forEach(function (p) {
+      var y = Math.min(Math.max(Y(p.enu[c]), 0), H);
+      if (started) ctx.lineTo(X(p.epoch), y); else { ctx.moveTo(X(p.epoch), y); started = true; }
+    });
+    ctx.stroke();
+    pts.forEach(function (p) {
+      var out = p.enu[c] < lo || p.enu[c] > hi;
+      var y = out ? Math.min(Math.max(Y(p.enu[c]), 4), H - 4) : Y(p.enu[c]);
+      var x = X(p.epoch);
+      if (out) {                      // clipped: mark at the edge, don't stretch
+        ctx.strokeStyle = "#ef9a9a"; ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x - 3, y - 3); ctx.lineTo(x + 3, y + 3);
+        ctx.moveTo(x - 3, y + 3); ctx.lineTo(x + 3, y - 3);
+        ctx.stroke();
+        return;
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, 2.6, 0, 2 * Math.PI);
+      if (p.gated) { ctx.fillStyle = col; ctx.fill(); }
+      ctx.strokeStyle = p.mixed ? MIXED_EDGE : col;
+      ctx.lineWidth = p.mixed ? 1.6 : 1.1;
+      ctx.stroke();
+    });
+  });
+  lg.innerHTML =
+    ENU_NAMES.map(function (n, i) {
+      return '<span style="color:' + ENU_COLORS[i] + '">●</span> ' + n;
+    }).join(" &nbsp; ") +
+    ' &nbsp;·&nbsp; ' + pts.length + " fixes / 3 h" +
+    ' &nbsp;·&nbsp; filled = gated, open = ungated, <span style="color:' + MIXED_EDGE +
+    '">purple edge</span> = mixed GPS+BDS' +
+    ' &nbsp;·&nbsp; y clipped to median ± 8×MAD per component: ' +
+    lo.toFixed(1) + " … " + (hi >= 0 ? "+" : "") + hi.toFixed(1) + " m" +
+    (nOut ? ' &nbsp;·&nbsp; <span class="neg">✕ ' + nOut + " outlier(s) at edge</span>" : "");
+}
+function drawPosIsx(fixes) {
+  var cv = document.getElementById("posisx");
+  var lg = document.getElementById("posisxlegend");
+  var pts = (fixes || []).filter(function (f) {
+    return f.isx_km !== null && f.isx_km !== undefined &&
+           f.epoch >= Date.now() / 1000 - 3 * 3600;
+  });
+  if (!pts.length) { cv.style.display = "none"; lg.textContent = ""; return; }
+  cv.style.display = "block";
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  var now = Date.now() / 1000, t0 = now - 3 * 3600;
+  var lim = madLimits(pts.map(function (f) { return f.isx_km; }));
+  var lo = lim[0], hi = lim[1];
+  if (hi - lo < 1e-6) { hi += 1e-3; lo -= 1e-3; }
+  ctx.strokeStyle = "#2a3540"; ctx.fillStyle = "#607d8b"; ctx.font = "10px Menlo, monospace";
+  ctx.lineWidth = 1;
+  [lo, hi].forEach(function (v) {
+    var y = H - (v - lo) / (hi - lo) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(2) + " km", 4, Math.min(Math.max(y - 2, 10), H - 2));
+  });
+  ctx.strokeStyle = MIXED_EDGE; ctx.lineWidth = 1.2; ctx.beginPath();
+  pts.forEach(function (f, i) {
+    var x = (f.epoch - t0) / (3 * 3600) * W;
+    var y = Math.min(Math.max(H - (f.isx_km - lo) / (hi - lo) * H, 0), H);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = MIXED_EDGE;
+  pts.forEach(function (f) {
+    var x = (f.epoch - t0) / (3 * 3600) * W;
+    var y = Math.min(Math.max(H - (f.isx_km - lo) / (hi - lo) * H, 2), H - 2);
+    ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  });
+  var last = pts[pts.length - 1].isx_km;
+  lg.innerHTML = 'GPS−BDS inter-system clock (isx), mixed solves only — last <b>' +
+    (last >= 0 ? "+" : "") + last.toFixed(2) + " km</b> · " + pts.length +
+    " fixes · robust axis " + lo.toFixed(1) + " … " + hi.toFixed(1) + " km" +
+    ' · <span class="dim">a spoofer faking one constellation breaks this line</span>';
 }
 var PALETTE = ["#80cbc4", "#ffcc80", "#ef9a9a", "#a5d6a7", "#90caf9", "#ce93d8", "#fff59d", "#ffab91", "#b0bec5"];
 function drawSeries(cid, legendId, series, prefix, unit) {
@@ -428,7 +620,7 @@ function annotate(root) {
   });
 }
 function annotateAll() {
-  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "sky", "status"].forEach(function (id) {
+  ["live", "clock", "fpga", "rows", "alerts", "preclegend", "satslegend", "livetrack", "sky", "posenulegend", "posisxlegend", "status"].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) annotate(el);
   });
@@ -610,7 +802,7 @@ function render(st) {
     // Plausibility gate: the station is static and surveyed. An exactly-
     // determined 4-sat solve has ZERO residual by construction, so rms
     // cannot flag a bad-anchor fix — distance from the surveyed site can.
-    var SURVEY = [40.65, -73.80];
+    var SURVEY = [39.0042, -77.6095];   // surveyed site (Virginia; was NYC before the 2026-08 move)
     var dLat = (pos.lat - SURVEY[0]) * 111.0;                       // km
     var dLon = (pos.lon - SURVEY[1]) * 111.0 * Math.cos(pos.lat * Math.PI / 180);
     var distKm = Math.sqrt(dLat * dLat + dLon * dLon);
@@ -644,6 +836,11 @@ function render(st) {
   } else {
     posEl.innerHTML = '<span class="dim">waiting for position producer&hellip;</span>';
   }
+
+  // ENU-in-time section (position_watch.py history; merged as position_history)
+  if (st.site && st.site.lat !== undefined) POS_SITE = st.site;
+  drawPosEnu(st.position_history);
+  drawPosIsx(st.position_history);
 
   // sky-visibility section (sky_producer.py, 30 s): expected vs observed
   var skyEl = document.getElementById("sky");
