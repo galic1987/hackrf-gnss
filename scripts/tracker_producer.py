@@ -159,6 +159,26 @@ def publish(sats, now, disc=None):
     }
     if disc:
         state["discipline"] = disc
+    # In-band presence rows: every constellation the tracker sees live at
+    # 1568.25 MHz — these make the panel's GPS L1 / Galileo E1 / BeiDou B1I
+    # rows live instead of depending on (paused) snapshot captures.
+    BANDS = {"gps": ("GPS L1 C/A", "C/A live track"),
+             "galileo": ("Galileo E1", "E1B BOC(1,1) live track"),
+             "beidou": ("BeiDou B1I", "B1I live track")}
+    srcs = []
+    for sysname, (band, desc) in BANDS.items():
+        chans = [s for s in sats_out if s["sys"] == sysname]
+        if not chans:
+            continue
+        srcs.append({
+            "band": band,
+            "name": f"{desc} · Pro+AA.250, 16 Msps @ 1568.25 · Presence",
+            "kind": "Presence",
+            "value": None, "sigma": None,
+            "epoch": round(now, 2),
+            "sats": [f"PRN {s['prn']}" for s in chans],
+            "anchor": "Pro live track @ 1568.25 MHz",
+        })
     waas = [s for s in sats_out if s["sys"] == "sbas" and s["lock_s"] > 0]
     if waas:
         mean_d = sum(s["doppler_hz"] for s in waas) / len(waas)
@@ -170,7 +190,7 @@ def publish(sats, now, disc=None):
         # consensus of -0.47 and pulls it to a meaningless midpoint.
         corr = (disc or {}).get("correction_ppm") or 0.0
         ppm += corr
-        state["sources"] = [{
+        srcs.append({
             "band": MY_BAND,
             "name": "WAAS GEO live Doppler + corr register · Pro+AA.250, 1 Hz tracker",
             "kind": "ClockDriftPpm",
@@ -183,7 +203,9 @@ def publish(sats, now, disc=None):
             "anchor": "Pro live track @ 1568.25 MHz",
             "ns_per_s": round(ppm * 1000.0, 1),
             "m_per_s": round(ppm * 1e-6 * C_MPS, 2),
-        }]
+        })
+    if srcs:
+        state["sources"] = srcs
     tmp = STATE + ".tracker.tmp"
     json.dump(state, open(tmp, "w"), indent=1)
     os.replace(tmp, STATE)
