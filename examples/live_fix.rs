@@ -216,7 +216,22 @@ fn main() {
         for m in rows.iter_mut() {
             m.pseudorange -= med;
         }
-        if let Some(f) = hackrf_gnss::gps::pvt::solve_mixed(&rows, g) {
+        if let Some((f, dropped)) = hackrf_gnss::gps::pvt::solve_mixed_with_rejection(&rows, g, 3) {
+            if !dropped.is_empty() {
+                // rows = GPS first, then BDS; a dropped row is a >=1 km
+                // outlier (a full 1 ms tooth slip is ~300 km)
+                let names: Vec<String> = dropped
+                    .iter()
+                    .map(|&i| {
+                        if i < gps_prns.len() {
+                            format!("G{}", gps_prns[i])
+                        } else {
+                            format!("BDS-row{}", i - gps_prns.len())
+                        }
+                    })
+                    .collect();
+                eprintln!("live_fix: dropped outlier channels {:?} (>1 km residual)", names);
+            }
             if f.residual_rms_m > 2000.0 {
                 eprintln!(
                     "live_fix: mixed fix rms {:.0} m — too coarse to publish ({} gps + {} bds)",

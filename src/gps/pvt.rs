@@ -275,6 +275,83 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
     })
 }
 
+/// Outlier-rejection threshold (metres). A full 1 ms code-period tooth slip
+/// is ~300 km — orders of magnitude outside this bound — while honest
+/// anchored channels sit meter-class to a few hundred metres indoors. The
+/// threshold removes only catastrophic outliers; fractional-tooth suspects
+/// stay (they are real signal, just biased).
+pub const REJECT_THRESH_M: f64 = 1000.0;
+
+/// RAIM-style outlier rejection around `solve`: drop the worst measurement
+/// while its residual exceeds REJECT_THRESH_M, re-solve, at most `max_drops`
+/// times. Returns the fix plus the ORIGINAL indices of dropped rows.
+/// Exact solves (rows <= unknowns) are not policed — nothing independent
+/// left to test against.
+pub fn solve_with_rejection(
+    meas: &[Meas],
+    guess: [f64; 3],
+    max_drops: usize,
+) -> Option<(Fix, Vec<usize>)> {
+    let mut idx: Vec<usize> = (0..meas.len()).collect();
+    let mut dropped = Vec::new();
+    loop {
+        let cur: Vec<Meas> = idx.iter().map(|&i| meas[i]).collect();
+        let fix = solve(&cur, guess)?;
+        if cur.len() <= 4 || dropped.len() >= max_drops {
+            return Some((fix, dropped));
+        }
+        // per-measurement residuals (m)
+        let mut worst = 0.0f64;
+        let mut worst_pos = 0usize;
+        for (pos, m) in cur.iter().enumerate() {
+            let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
+            let r = (m.pseudorange - (g + if m.clock_free { 0.0 } else { fix.clock_km })).abs() * 1000.0;
+            if r > worst {
+                worst = r;
+                worst_pos = pos;
+            }
+        }
+        if worst <= REJECT_THRESH_M {
+            return Some((fix, dropped));
+        }
+        dropped.push(idx.remove(worst_pos));
+    }
+}
+
+/// The same for the mixed-constellation solve (5 unknowns: x,y,z,clk_gps,
+/// clk_bds). A single wrong-tooth channel otherwise drags the free isx
+/// state — observed live: isx -239.5 km with a 1 ms slip in the set.
+pub fn solve_mixed_with_rejection(
+    meas: &[MeasSys],
+    guess: [f64; 3],
+    max_drops: usize,
+) -> Option<(FixMixed, Vec<usize>)> {
+    let mut idx: Vec<usize> = (0..meas.len()).collect();
+    let mut dropped = Vec::new();
+    loop {
+        let cur: Vec<MeasSys> = idx.iter().map(|&i| meas[i].clone()).collect();
+        let fix = solve_mixed(&cur, guess)?;
+        if cur.len() <= 5 || dropped.len() >= max_drops {
+            return Some((fix, dropped));
+        }
+        let clk = [fix.clock_gps_km, fix.clock_bds_km];
+        let mut worst = 0.0f64;
+        let mut worst_pos = 0usize;
+        for (pos, m) in cur.iter().enumerate() {
+            let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
+            let r = (m.pseudorange - (g + clk[m.system.min(1) as usize])).abs() * 1000.0;
+            if r > worst {
+                worst = r;
+                worst_pos = pos;
+            }
+        }
+        if worst <= REJECT_THRESH_M {
+            return Some((fix, dropped));
+        }
+        dropped.push(idx.remove(worst_pos));
+    }
+}
+
 /// 5x5 inverse (Gauss-Jordan). None if singular.
 fn inv5(a: &[[f64; 5]; 5]) -> Option<[[f64; 5]; 5]> {
     let mut m = *a;
@@ -416,6 +493,52 @@ mod tests {
         assert_eq!((fix.n_gps, fix.n_bds), (3, 3));
         // the recovered lat/lon is the New York site
         assert!((fix.lat - 40.65).abs() < 0.01 && (fix.lon + 73.80).abs() < 0.01);
+    }
+
+    /// RAIM rejection: a full 1 ms tooth slip (+299.792 km) on one channel
+    /// must be dropped, and the fix must still recover the station.
+    #[test]
+    fn rejection_drops_a_tooth_slip() {
+        let mut m = ranges(50.0);
+        m[2].pseudorange += 299.792; // 1 ms of light-travel
+        let (fix, dropped) =
+            solve_with_rejection(&m, [0.0, 0.0, 0.0], 3).expect("converges");
+        assert_eq!(dropped, vec![2], "the tooth-slip channel must be dropped");
+        let err_m = norm3([
+            fix.ecef[0] - STATION[0],
+            fix.ecef[1] - STATION[1],
+            fix.ecef[2] - STATION[2],
+        ]) * 1000.0;
+        assert!(err_m < 1.0, "position error {err_m:.3} m");
+    }
+
+    /// A clean set must pass untouched (no false rejections).
+    #[test]
+    fn rejection_leaves_clean_set_untouched() {
+        let m = ranges(50.0);
+        let (_fix, dropped) =
+            solve_with_rejection(&m, [0.0, 0.0, 0.0], 3).expect("converges");
+        assert!(dropped.is_empty());
+    }
+
+    /// Mixed: a tooth slip on a BDS row must not drag the isx state.
+    /// Note the redundancy requirement: with 6 rows / 5 unknowns there is
+    /// only one degree of freedom — detection works, but IDENTIFICATION of
+    /// the bad row is not guaranteed. With 7+ rows the wrapper identifies
+    /// reliably; the test uses 7.
+    #[test]
+    fn mixed_rejection_protects_isx() {
+        let (c_gps, c_bds) = (50.0, 80.0);
+        let mut m = ranges_mixed(c_gps, c_bds);
+        // add a 7th row (GPS) for real redundancy
+        let extra = [15000.0, 15000.0, 15000.0];
+        let g = norm3([STATION[0] - extra[0], STATION[1] - extra[1], STATION[2] - extra[2]]);
+        m.push(MeasSys { sat: extra, pseudorange: g + c_gps, system: 0 });
+        m[4].pseudorange -= 299.792; // BDS row, 1 ms slip
+        let (fix, dropped) =
+            solve_mixed_with_rejection(&m, [0.0, 0.0, 0.0], 3).expect("converges");
+        assert_eq!(dropped, vec![4]);
+        assert!((fix.isx_km - (c_gps - c_bds)).abs() < 1e-3, "isx {}", fix.isx_km);
     }
 
     #[test]
