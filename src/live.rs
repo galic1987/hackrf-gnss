@@ -228,6 +228,10 @@ const ANCHOR_MAX_AGE_S: f64 = 30.0;
 const GPS_RESCAN_BACK: usize = 302;
 const D1_RESCAN_BACK: usize = 600;
 
+/// CRC-valid 250-bit blocks required for SBAS frame-sync lock (same value
+/// as the sbas.rs end-to-end tests).
+const SBAS_MIN_BLOCKS: usize = 3;
+
 /// One tracked satellite: a Costas PLL + early/late DLL over one code period
 /// per epoch (1 ms for GPS/SBAS/B1I, 4 ms for Galileo E1B).
 pub struct Channel {
@@ -324,6 +328,10 @@ pub struct Channel {
     last_wrap: f64,
     /// self-decoded broadcast ephemeris (subframes 1-3 assembled live)
     pub eph: Option<BrdcEph>,
+    /// SBAS/WAAS streaming decoder (Sys::Sbas only): fed once per second
+    /// from the same 1 ms prompt buffer the GPS/BDS nav demod collects in
+    /// nav_ms (sbas_tick drains it, so the 200k cap never binds for SBAS).
+    sbas_dec: crate::sbas::Decoder,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -413,6 +421,7 @@ impl Channel {
             comb_acc_teeth: 0.0,
             last_wrap: f64::NAN,
             eph: None,
+            sbas_dec: crate::sbas::Decoder::new(),
         }
     }
 
@@ -632,9 +641,11 @@ impl Channel {
         self.sec_prompt += ip * ip + qp * qp;
         self.sec_noise += inz * inz + qnz * qnz; // off-code replica: pure noise
         self.sec_epochs += 1;
-        // nav demod: collect prompt-I per 1 ms epoch (GPS LNAV and BeiDou
-        // D1; the Costas loop carries the data on ip). Cap at ~3 min.
-        if matches!(self.sys, Sys::Gps | Sys::Beidou) {
+        // nav demod: collect prompt-I per 1 ms epoch (GPS LNAV, BeiDou D1,
+        // and SBAS/WAAS — the Costas loop carries the data on ip; SBAS
+        // epochs are 1 ms like GPS, one push per epoch, drained per second
+        // by sbas_tick). Cap at ~3 min.
+        if matches!(self.sys, Sys::Gps | Sys::Beidou | Sys::Sbas) {
             self.nav_ms.push(ip);
             if self.nav_ms.len() > 200_000 {
                 let drop = self.nav_ms.len() - 200_000;
@@ -771,6 +782,43 @@ impl Channel {
         }
     }
 
+    /// SBAS/WAAS message decode, called once per second (like nav_tick):
+    /// drain the 1 ms prompt buffer into 2 ms soft symbols, feed the
+    /// streaming decoder, and summarize the current decode window. Symbols
+    /// accumulate regardless of lock (the decoder wants ~4 s of history at
+    /// lock time); the decode itself runs only while LOCKED — an unlocked
+    /// channel's prompt stream is noise and the frame-sync search over it
+    /// is wasted CPU. Returns None for non-SBAS channels.
+    fn sbas_tick(&mut self) -> Option<SbasSummary> {
+        if self.sys != Sys::Sbas {
+            return None;
+        }
+        let (soft, par) = crate::sbas::symbols_from_prompt(&self.nav_ms);
+        // drain only the consumed prompts: when the 2 ms symbol grid sits
+        // at the odd parity, one straddling ms must survive into the next
+        // second or one symbol per second would be lost
+        let used = par + 2 * soft.len();
+        self.nav_ms.drain(..used);
+        self.sbas_dec.push_symbols(&soft);
+        if !self.locked {
+            return Some(SbasSummary {
+                locked: false,
+                n_msgs: 0,
+                types: std::collections::BTreeMap::new(),
+            });
+        }
+        let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
+        let mut types = std::collections::BTreeMap::new();
+        for dm in &rep.messages {
+            *types.entry(dm.message.mt()).or_insert(0usize) += 1;
+        }
+        Some(SbasSummary {
+            locked: rep.sync.locked,
+            n_msgs: rep.messages.len(),
+            types,
+        })
+    }
+
     /// diagnostics for examples/dbg_live.rs
     pub fn debug_refine(&mut self, sig: &[Complex<f32>]) -> f64 {
         self.refine_dopp(sig, 250.0, 25.0, 100)
@@ -886,6 +934,20 @@ impl Channel {
     }
 }
 
+/// Compact SBAS/WAAS decode summary, published on Sys::Sbas SatReports.
+/// tracker_producer.py passes per-PRN report dicts straight through into
+/// state.tracker.json, so this rides along with no producer change.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SbasSummary {
+    /// frame sync locked on the current decode window (>= SBAS_MIN_BLOCKS
+    /// CRC-valid 250-bit blocks)
+    pub locked: bool,
+    /// WAAS messages decoded from the current window
+    pub n_msgs: usize,
+    /// per-message-type counts in the current window (DO-229 MT -> n)
+    pub types: std::collections::BTreeMap<u8, usize>,
+}
+
 /// Per-PRN 1 Hz report — serialized to JSON by the front end.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SatReport {
@@ -917,6 +979,9 @@ pub struct SatReport {
     /// A phase break happened this second (lock watchdog fired or the
     /// channel was re-seeded — carrier_cycles re-zeroed).
     pub slip: bool,
+    /// WAAS message decode summary (Sys::Sbas rows only; absent otherwise).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sbas_msgs: Option<SbasSummary>,
 }
 
 /// Acquisition runs on a WORKER THREAD, never on the consumer: any
@@ -1386,6 +1451,7 @@ impl Band {
             let slip = ch.take_slip();
             ch.track_comb(t_proc);
             ch.nav_tick();
+            let sbas_msgs = ch.sbas_tick();
             // scan for new subframes since the last scan (the overlap keeps
             // the LAST validated subframe findable, so the anchor re-anchors
             // to it every second between validations rather than freezing —
@@ -1481,6 +1547,7 @@ impl Band {
                 phase_frac,
                 slip,
                 epoch,
+                sbas_msgs,
             });
         }
         // re-acquire channels whose lock has been lost for REACQ_S, drop
@@ -2908,5 +2975,155 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// WAAS 250-bit block: rotating preamble, message type, 212-bit payload,
+    /// appended CRC-24Q over the first 226 bits (the same assembly as
+    /// sbas.rs's test make_block).
+    fn sbas_block(idx: usize, mt: u8, payload: &[u8]) -> Vec<u8> {
+        assert_eq!(payload.len(), 212);
+        let mut block = Vec::with_capacity(crate::sbas::BLOCK_BITS);
+        for i in (0..8).rev() {
+            block.push((crate::sbas::PREAMBLES[idx % 3] >> i) & 1);
+        }
+        for i in (0..6).rev() {
+            block.push((mt >> i) & 1);
+        }
+        block.extend_from_slice(payload);
+        let crc = crate::sbas::crc24q(&block);
+        for i in (0..24).rev() {
+            block.push(((crc >> i) & 1) as u8);
+        }
+        block
+    }
+
+    /// MT1 payload: 210-bit PRN mask + 2-bit IODP.
+    fn mt1_payload(slots: &[u8], iodp: u8) -> Vec<u8> {
+        let mut p = vec![0u8; 212];
+        for &s in slots {
+            p[(s - 1) as usize] = 1;
+        }
+        p[210] = (iodp >> 1) & 1;
+        p[211] = iodp & 1;
+        p
+    }
+
+    /// MT9 payload with a healthy block weight (alternating bits).
+    fn mt9_payload() -> Vec<u8> {
+        (0..212).map(|i| (i % 2) as u8).collect()
+    }
+
+    /// Single-PRN synthetic SBAS/WAAS L1 signal: C/A code + 500 sym/s
+    /// convolutionally encoded data on a carrier at `dopp` Hz (the
+    /// synth_gps shape with the SBAS 2 ms symbol structure). One 250-bit
+    /// block per second, continuous encoder across blocks, as on air.
+    fn synth_sbas(prn: usize, dopp: f64, blocks: &[Vec<u8>], fs: f64) -> Vec<Complex<f32>> {
+        let bits: Vec<u8> = blocks.concat();
+        let sym = crate::sbas::conv_encode(&bits, false, 0);
+        let code = sbas_code(prn);
+        let code_len = code.len();
+        let ns_ms = (fs / 1000.0) as usize;
+        let n = 2 * sym.len() * ns_ms;
+        let mut sig = vec![Complex::new(0.0f32, 0.0); n];
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let mut nxt = || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            ((st >> 40) as f32 / 8_388_608.0) - 1.0
+        };
+        for (k, s) in sig.iter_mut().enumerate() {
+            let t = k as f64 / fs;
+            let ci = (k as f64 * 1.023e6 * (1.0 + dopp / F_L1) / fs) as usize;
+            let c = code[ci % code_len];
+            // soft > 0 means symbol bit 0, so bit 0 modulates as +1
+            let bit = 1.0 - 2.0 * sym[k / (2 * ns_ms)] as f32;
+            let ph = 2.0 * PI * dopp * t;
+            let v = c * bit;
+            s.re += v * ph.cos() as f32 + 0.05 * nxt();
+            s.im += v * ph.sin() as f32 + 0.05 * nxt();
+        }
+        sig
+    }
+
+    /// The SBAS live hook end to end: a synthetic WAAS stream fed through
+    /// the Channel (prompt-I collection -> sbas_tick -> symbols_from_prompt
+    /// -> Viterbi -> frame sync -> CRC-24Q) must decode the encoded
+    /// messages, and the summary must ride the report.
+    #[test]
+    fn sbas_channel_decodes_waas_messages() {
+        let fs = 4.0e6;
+        let dopp = 1200.0;
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks: Vec<Vec<u8>> = (0..10)
+            .map(|i| {
+                if i % 2 == 0 {
+                    sbas_block(i, 1, &mt1_payload(&slots, 2))
+                } else {
+                    sbas_block(i, 9, &mt9_payload())
+                }
+            })
+            .collect();
+        let sig = synth_sbas(131, dopp, &blocks, fs);
+        let ns = (fs / 1000.0) as usize;
+        let mut ch = Channel::new(Sys::Sbas, 131, fs, dopp, 0.0);
+        let mut summ = None;
+        for sec in sig.chunks(1000 * ns) {
+            for chunk in sec.chunks(ns) {
+                ch.process_epoch(chunk);
+            }
+            ch.end_second();
+            summ = ch.sbas_tick();
+        }
+        assert!(ch.locked, "strong synthetic must lock");
+        let s = summ.expect("an SBAS channel must produce a summary");
+        assert!(s.locked, "frame sync must lock on the clean stream");
+        assert!(s.n_msgs >= 6, "decoded {} of 10 blocks", s.n_msgs);
+        // every decoded block is one of the two encoded types (no Other)
+        assert_eq!(
+            s.types.get(&1).copied().unwrap_or(0) + s.types.get(&9).copied().unwrap_or(0),
+            s.n_msgs,
+            "unexpected message types: {:?}",
+            s.types
+        );
+        // deep check: every decoded MT1 mask round-trips exactly
+        let rep = ch.sbas_dec.decode(SBAS_MIN_BLOCKS);
+        let masks: Vec<&Vec<u8>> = rep
+            .messages
+            .iter()
+            .filter_map(|dm| match &dm.message {
+                crate::sbas::Message::PrnMask { slots: sl, .. } => Some(sl),
+                _ => None,
+            })
+            .collect();
+        assert!(!masks.is_empty(), "no MT1 decoded");
+        assert!(masks.iter().all(|m| **m == slots), "PRN mask mismatch");
+    }
+
+    /// An unlocked SBAS channel accumulates symbols but must not run the
+    /// decode: the summary reports not-locked with zero messages.
+    #[test]
+    fn sbas_tick_unlocked_decodes_nothing() {
+        let fs = 4.0e6;
+        let ns = (fs / 1000.0) as usize;
+        let mut ch = Channel::new(Sys::Sbas, 131, fs, 800.0, 0.0);
+        let mut st = 0x1b87_3593u64;
+        for _ in 0..2000 {
+            let noise: Vec<Complex<f32>> = (0..ns)
+                .map(|_| {
+                    st ^= st << 13;
+                    st ^= st >> 7;
+                    st ^= st << 17;
+                    let v = ((st >> 40) as f32 / 8_388_608.0) - 1.0;
+                    Complex::new(0.05 * v, 0.05 * v)
+                })
+                .collect();
+            ch.process_epoch(&noise);
+        }
+        ch.end_second();
+        let s = ch.sbas_tick().expect("SBAS summary even when unlocked");
+        assert!(!ch.locked, "pure noise must not lock");
+        assert!(!s.locked);
+        assert_eq!(s.n_msgs, 0);
     }
 }

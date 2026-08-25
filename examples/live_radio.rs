@@ -17,10 +17,16 @@
 //!   - excursion clamp at +/- CLAMP ppm
 //!   - stall detector (coarse mode only): 3 steps without >= 20%
 //!     improvement -> stop + alarm
+//!   - residual-plausibility gate (discipline::PlausibilityGate): no write
+//!     while the locked-channel count collapses, while a feeding WAAS/GEO
+//!     channel is freshly relocked, on an impossible residual slew vs the
+//!     last accepted residual, or on stale inputs — the 2026-08-25 bogus
+//!     -0.37 ppm class (docs/p0c_clock_continuity.md)
 //!
 //! stdout: one JSON line per tracked PRN per second (same as live_track),
 //! plus {"discipline": {...}} once per cycle. usage: live_radio [serial]
 
+use hackrf_gnss::discipline::PlausibilityGate;
 use hackrf_gnss::live::{Engine, Sys};
 use rs_hackrf::HackRf;
 use std::io::{self, BufWriter, Write};
@@ -234,6 +240,11 @@ fn main() {
     let mut stalled = false;
     let mut last_disc = 0.0f64;
     let mut last_corr_written = corr;
+    // residual-plausibility gate: no correction write on a dying tracker's
+    // measurement (collapse / fresh relock / impossible slew / stale inputs)
+    let mut gate = PlausibilityGate::new();
+    // wall time of the newest 1 Hz channel report (the gate's staleness ref)
+    let mut last_report_wall = now_f64();
 
     // Tick counter sampling: the in-process replacement for sync_producer
     // (an external 2-s SPI poller can never open the radio while we own it
@@ -257,11 +268,17 @@ fn main() {
             }
             bytes_in += (chunk.len() - n) as u64;
             let reports = eng.push_i8(&chunk[n..]);
+            if !reports.is_empty() {
+                last_report_wall = now_f64();
+            }
             emit(reports, &mut out);
             continue;
         }
         bytes_in += chunk.len() as u64;
         let reports = eng.push_i8(&chunk);
+        if !reports.is_empty() {
+            last_report_wall = now_f64();
+        }
         emit(reports, &mut out);
         let proc_ms = iter_t0.elapsed().as_secs_f64() * 1e3;
         if proc_ms > max_proc_ms {
@@ -337,13 +354,22 @@ fn main() {
         // ---- discipline cycle ----
         if now_wall - last_disc >= DISC_EVERY_S {
             last_disc = now_wall;
-            let waas: Vec<f64> = eng
+            // (doppler, lock age) of the locked WAAS/GEO channels
+            let waas: Vec<(f64, f64)> = eng
                 .l1_band
                 .channels
                 .iter()
                 .filter(|c| c.sys == Sys::Sbas && c.lock_s > 5.0)
-                .map(|c| c.debug_dopp())
+                .map(|c| (c.debug_dopp(), c.lock_s))
                 .collect();
+            gate.observe_locked(
+                eng.l1_band
+                    .channels
+                    .iter()
+                    .chain(eng.b1i_band.channels.iter())
+                    .filter(|c| c.lock_s > 0.0)
+                    .count(),
+            );
             let mut note = String::new();
             let mut resid: Option<f64> = None;
             if stalled {
@@ -351,10 +377,17 @@ fn main() {
             } else if waas.is_empty() {
                 note = "no locked WAAS GEO — holding".into();
             } else {
-                let mean = waas.iter().sum::<f64>() / waas.len() as f64;
+                let mean = waas.iter().map(|w| w.0).sum::<f64>() / waas.len() as f64;
                 let r = mean / F_L1 * 1e6; // unsteered clock residual
                 resid = Some(r);
-                if r.abs() < DEADBAND_PPM {
+                let waas_locks: Vec<f64> = waas.iter().map(|w| w.1).collect();
+                // measurement context untrustworthy: suppress the write and
+                // say why (the note rides the discipline line into
+                // state.tracker.json, so the panel shows the gate working)
+                if let Err(reason) = gate.check(r, &waas_locks, now_wall - last_report_wall) {
+                    note = format!("gate: {reason} — suppressed write (residual {r:+.4} ppm)");
+                    eprintln!("live_radio: {note}");
+                } else if r.abs() < DEADBAND_PPM {
                     note = format!("in deadband ({r:+.4} ppm) — loop closed");
                 } else {
                     // two modes: coarse steps converge fast, fine steps stop

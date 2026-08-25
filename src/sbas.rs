@@ -2,23 +2,16 @@
 //! rate-1/2 K=7 Viterbi -> 250-bit frame sync -> CRC-24Q -> message parsing.
 //!
 //! Port of `validation/sbas_decode.py` (same algorithms, same measured
-//! caveats). The tracker (`live.rs`) locks WAAS GEOs for Doppler/drift but
-//! does NOT export their symbol stream today — this module is the back end
-//! only. The input it expects is the per-1 ms prompt-I stream of an SBAS
-//! channel (exactly the `ip` values live.rs already computes per epoch and
-//! currently keeps only for GPS/BDS at live.rs:637-643).
+//! caveats). The input is the per-1 ms prompt-I stream of an SBAS channel
+//! (exactly the `ip` values live.rs computes per epoch).
 //!
-//! LIVE.RS HOOK (for whoever wires it after the anchor work lands):
-//!   1. In `Channel`, add `sbas_ms: Vec<f64>` and extend the guard at
-//!      live.rs:637 to `matches!(self.sys, Sys::Gps | Sys::Beidou | Sys::Sbas)`
-//!      (or push `ip` into `sbas_ms` for `Sys::Sbas`; same cap logic).
-//!      SBAS epochs are 1 ms like GPS (live.rs:348), so one push per epoch.
-//!   2. Once per second per locked SBAS channel, drain `sbas_ms` and call
-//!      `sbas::symbols_from_prompt` -> `sbas::Decoder::push_symbols` (or the
-//!      one-shot `sbas::decode_symbols` on a buffer of >= ~4 s).
-//!   3. Publish the resulting `Vec<Message>` on the report/state file.
-//!   No radio access is involved; the decode is pure post-processing of the
-//!   prompt stream the channel already produces.
+//! LIVE HOOK (wired in live.rs): the prompt-I collection guard in
+//! `Channel::process_epoch` includes `Sys::Sbas`, and `Channel::sbas_tick`
+//! runs once per second from `Band::end_second`: `symbols_from_prompt` ->
+//! `Decoder::push_symbols` -> `decode` (while locked), with the summary
+//! published as the SatReport `sbas_msgs` field. No radio access is
+//! involved; the decode is pure post-processing of the prompt stream the
+//! channel already produces.
 //!
 //! Format facts (DO-229, verified against the Python chain on the synthetic
 //! capture `../observations/sbas_work/multi.iq`):
