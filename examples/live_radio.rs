@@ -448,9 +448,12 @@ fn main() {
                         // (its `freq_lo != applied_lo` guard skips when only
                         // the correction changed) — so the RX path sees the
                         // correction ONLY at config time. A same-freq retune
-                        // forces it; note_clock_step keeps the loops on the
-                        // signal through the sub-ms relock.
-                        eng.note_clock_step(step); // keep the loops on the signal
+                        // forces it. NOTE (2026-08-25 retro, 122/122 writes):
+                        // the write+retune path collapses ALL tracker locks
+                        // for ~1 min regardless — note_clock_step's Doppler
+                        // bookkeeping cannot save them; this branch is only
+                        // reachable with HACKRF_GNSS_ACTUATE=1.
+                        eng.note_clock_step(step); // shift loop bookkeeping by the step
                         steps.push(r);
                         if note.is_empty() {
                             note = format!("applied {corr:+.4} ppm (residual {r:+.4})");
@@ -483,7 +486,14 @@ fn main() {
                 "sign": sign,
                 "stalled": stalled,
                 "waas_locked": waas.len(),
-                "note": note,
+                // shadow is a published runtime state (review round 4), and
+                // "loop closed" must never appear while shadowing
+                "actuate": actuate,
+                "note": if !actuate && !note.starts_with("SHADOW") {
+                    format!("SHADOW (not actuating): {note}")
+                } else {
+                    note
+                },
             }});
             let _ = writeln!(out, "{}", line);
             let _ = out.flush();

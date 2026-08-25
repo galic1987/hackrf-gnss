@@ -26,6 +26,11 @@ HackRFs. Read this before touching anything that talks to the radios.
   hackrf_spiflash -d 0000000000000000977c64de2b557213 -R; sleep 6;
   nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log &`.
   Never `pkill -9` live_radio.
+- **Host build load kills the tracker** (2026-08-25, measured live): cargo/
+  nextpnr stalls >115 ms overflow the ~190 ms USB transfer queue → `big
+  gap` → full channel realign. NEVER run cargo builds/tests while
+  tracker_producer runs. Build first, then restart the tracker; keep the
+  host quiet while it tracks.
 
 ## Producers and state files (merge architecture)
 
@@ -82,9 +87,12 @@ mask, dropout-cause suggestion). Schema/layout/query doc:
   HACKRF_GNSS_OBS / HACKRF_GNSS_CRATE env overrides; never touches live
   observations), `python3 scripts/test_sky_producer.py` (plain asserts;
   the final cross-check runs a live pass when observations exist — it
-  writes one sky_history row), and `node web/smoke_sync.js` for the panel
-  (live API or a fixture; exits nonzero on failure). The archive tooling
-  touches NO radio and signals NO process.
+  writes one sky_history row), `python3 scripts/test_series_producer.py`
+  (consensus election + alert history), `python3
+  scripts/test_position_watch.py` (plausibility gate), and `node
+  web/smoke_sync.js` for the panel (live API or a fixture; exits nonzero
+  on failure). The archive tooling touches NO radio and signals NO
+  process.
 
 ## Testing
 

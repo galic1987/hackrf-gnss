@@ -241,6 +241,36 @@ pub fn symbols_from_prompt_par(prompts: &[f64], forced: Option<usize>) -> (Vec<f
     (soft, par)
 }
 
+/// MT2-5 rows by ORDINAL through the MT1 mask, UDREI-UNFILTERED (unlike
+/// `fast_corrections`): every ordinal-mapped GPS row is returned with its
+/// UDREI so the caller can act on UDREI >= 14 (not monitored / don't use)
+/// — a fresh don't-use row must EVICT any cached usable correction for
+/// that PRN, which a filtered view cannot express. Same IODP gate, same
+/// scales; see `fast_corrections` for the addressing rules.
+pub fn fast_rows(
+    mask_slots: &[u8],
+    mask_iodp: u8,
+    msg_iodp: u8,
+    first_slot: u8,
+    prc: &[i16; 13],
+    udrei: &[u8; 13],
+) -> Vec<(u8, f64, u8)> {
+    if mask_iodp != msg_iodp {
+        return Vec::new();
+    }
+    (0..13usize)
+        .filter_map(|k| {
+            let ordinal = first_slot as usize + k;
+            let slot = *mask_slots.get(ordinal - 1)?;
+            if (1..=37).contains(&slot) {
+                Some((slot, prc[k] as f64 * 0.125, udrei[k]))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Harvest MT2-5 fast corrections as (GPS PRN, PRC metres, UDREI) rows.
 /// Entries map to satellites by ORDINAL through the set bits of the MT1
 /// PRN mask, not by absolute slot (DO-229D A.4.4.3: "Message Type 2
@@ -263,19 +293,9 @@ pub fn fast_corrections(
     prc: &[i16; 13],
     udrei: &[u8; 13],
 ) -> Vec<(u8, f64, u8)> {
-    if mask_iodp != msg_iodp {
-        return Vec::new();
-    }
-    (0..13usize)
-        .filter_map(|k| {
-            let ordinal = first_slot as usize + k;
-            let slot = *mask_slots.get(ordinal - 1)?;
-            if (1..=37).contains(&slot) && udrei[k] < 14 {
-                Some((slot, prc[k] as f64 * 0.125, udrei[k]))
-            } else {
-                None
-            }
-        })
+    fast_rows(mask_slots, mask_iodp, msg_iodp, first_slot, prc, udrei)
+        .into_iter()
+        .filter(|&(_, _, u)| u < 14)
         .collect()
 }
 
@@ -1852,6 +1872,27 @@ mod tests {
         let rows = fast_corrections(&mask, 0, 0, 1, &prc, &udrei);
         let prns: Vec<u8> = rows.iter().map(|r| r.0).collect();
         assert_eq!(prns, vec![1, 2, 3, 4]);
+    }
+
+    /// fast_rows keeps the UDREI >= 14 rows that fast_corrections drops:
+    /// the caller needs them to EVICT a cached usable correction when a
+    /// fresh don't-use arrives (DO-229D A.4.4.3 UDRE table).
+    #[test]
+    fn fast_rows_includes_dont_use_rows() {
+        let mask = vec![1u8, 2, 3, 5, 7];
+        let prc = [8i16; 13];
+        let mut udrei = [0u8; 13];
+        udrei[1] = 14; // don't use
+        udrei[3] = 15; // not monitored
+        let rows = fast_rows(&mask, 2, 2, 1, &prc, &udrei);
+        assert_eq!(rows.len(), 5, "only ordinals beyond the mask drop out");
+        assert_eq!(rows[1], (2, 1.0, 14));
+        assert_eq!(rows[3], (5, 1.0, 15));
+        // the IODP gate still applies to the unfiltered view
+        assert!(fast_rows(&mask, 2, 3, 1, &prc, &udrei).is_empty());
+        // and fast_corrections remains the filtered view of the same rows
+        let usable = fast_corrections(&mask, 2, 2, 1, &prc, &udrei);
+        assert_eq!(usable.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 3, 7]);
     }
 
     /// lt_corrections: raw->physical scaling and slot filtering. A sign or

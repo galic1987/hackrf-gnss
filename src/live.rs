@@ -336,8 +336,9 @@ pub struct Channel {
     /// (review round 5: re-picking by energy every second lets a noisy
     /// flip insert/delete a coded symbol mid-stream). None = probing.
     sbas_par: Option<usize>,
-    /// Latest per-PRN fast corrections (PRC m, UDREI, insert lock_s),
-    /// from MT2-5 messages decoded by this channel. Cleared on reseed.
+    /// Latest per-PRN fast corrections (PRC m, UDREI, insert stream-time
+    /// s), from MT2-5 messages decoded by this channel. Cleared on reseed
+    /// and on an MT1 mask-generation change (IODP).
     sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
     /// Latest MT1 PRN mask: (absolute slot numbers of the set bits in
     /// mask order, IODP). MT2-5 and MT24/25 corrections only decode
@@ -345,14 +346,14 @@ pub struct Channel {
     /// the set bits and gates them on IODP match. Cleared on reseed.
     sbas_mask: Option<(Vec<u8>, u8)>,
     /// Latest per-PRN long-term corrections (dx, dy, dz m, daf0 s, IOD,
-    /// insert lock_s), from MT24/25 halves decoded by this channel.
-    /// Cleared on reseed.
+    /// insert stream-time s), from MT24/25 halves decoded by this channel.
+    /// Cleared on reseed and on an MT1 mask-generation change (IODP).
     sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, u8, f64)>,
-    /// Latest iono grid masks by band (iodi, IGP list, insert lock_s),
-    /// from MT18. Cleared on reseed.
+    /// Latest iono grid masks by band (iodi, IGP list, insert stream-time
+    /// s), from MT18. Cleared on reseed.
     sbas_igpmask: std::collections::BTreeMap<u8, (u8, Vec<u16>, f64)>,
     /// Latest iono delay blocks by (band, block_id): (iodi, 15 x
-    /// (vertical-delay counts, GIVEI), insert lock_s), from MT26.
+    /// (vertical-delay counts, GIVEI), insert stream-time s), from MT26.
     /// Cleared on reseed.
     sbas_iono: std::collections::BTreeMap<(u8, u8), (u8, [(u16, u8); 15], f64)>,
 }
@@ -818,7 +819,15 @@ impl Channel {
     /// lock time); the decode itself runs only while LOCKED — an unlocked
     /// channel's prompt stream is noise and the frame-sync search over it
     /// is wasted CPU. Returns None for non-SBAS channels.
-    fn sbas_tick(&mut self) -> Option<SbasSummary> {
+    ///
+    /// `t_proc` is the stream time of the most recently processed sample
+    /// (the same clock Band::end_second uses for anchor freshness) and
+    /// stamps every cache insert / freshness check: it advances
+    /// monotonically for the life of the channel, unlike lock_s, which
+    /// RESETS on RF unlock and let stale rows re-pass the freshness
+    /// windows with a NEGATIVE age (review round 4). Replay-driven in
+    /// tests — no system time.
+    fn sbas_tick(&mut self, t_proc: f64) -> Option<SbasSummary> {
         if self.sys != Sys::Sbas {
             return None;
         }
@@ -851,78 +860,25 @@ impl Channel {
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
             *types.entry(dm.message.mt()).or_insert(0usize) += 1;
-            // harvest fast corrections (MT2-5): entries address satellites
-            // by ORDINAL through the MT1 mask's set bits, and are valid
-            // only while the message IODP matches the mask's (DO-229D
-            // A.4.4.2/A.4.4.3). No mask held -> nothing decodes. UDREI
-            // >= 14 means not-monitored/don't-use and is never published
-            if let crate::sbas::Message::Fast { first_slot, iodp, prc, udrei, .. } = &dm.message {
-                if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
-                    for (prn, prc_m, u) in
-                        crate::sbas::fast_corrections(mask_slots, *mask_iodp, *iodp, *first_slot, prc, udrei)
-                    {
-                        self.sbas_prc.insert(prn, (prc_m, u, self.lock_s));
-                    }
-                }
-            }
-            // harvest long-term corrections (MT25 halves; MT24 long-term
-            // slot): corrected sat position/clock = broadcast + delta;
-            // same ordinal-through-mask addressing and IODP gate as the
-            // fast corrections (DO-229D A.4.4.7)
-            match &dm.message {
-                crate::sbas::Message::PrnMask { slots, iodp } => {
-                    self.sbas_mask = Some((slots.clone(), *iodp));
-                }
-                crate::sbas::Message::LongTerm { a, b } => {
-                    if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
-                        for h in [a, b] {
-                            for (prn, dx, dy, dz, daf0, iod) in
-                                crate::sbas::lt_corrections(mask_slots, *mask_iodp, h)
-                            {
-                                self.sbas_lt
-                                    .insert(prn, (dx, dy, dz, daf0, iod, self.lock_s));
-                            }
-                        }
-                    }
-                }
-                crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
-                    if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
-                        for (prn, dx, dy, dz, daf0, iod) in
-                            crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt)
-                        {
-                            self.sbas_lt
-                                .insert(prn, (dx, dy, dz, daf0, iod, self.lock_s));
-                        }
-                    }
-                }
-                crate::sbas::Message::IonoMask { band, iodi, igps, .. } => {
-                    self.sbas_igpmask
-                        .insert(*band, (*iodi, igps.clone(), self.lock_s));
-                }
-                crate::sbas::Message::IonoDelay { band, block_id, iodi, igps } => {
-                    self.sbas_iono
-                        .insert((*band, *block_id), (*iodi, *igps, self.lock_s));
-                }
-                _ => {}
-            }
+            self.sbas_apply(&dm.message, t_proc);
         }
-        // publish only fresh entries (<= 60 s of lock time)
-        let now_ls = self.lock_s;
-        let fast_corr: Vec<(u8, f64, u8)> = self
+        // publish only fresh entries (<= 60 s of stream time)
+        let now = t_proc;
+        let fast_corr: Vec<(u8, f64, u8, f64)> = self
             .sbas_prc
             .iter()
-            .filter(|(_, (_, _, ls))| now_ls - ls < 60.0)
-            .map(|(&prn, &(prc_m, udrei, _))| (prn, prc_m, udrei))
+            .filter(|(_, (_, _, t))| now - t < 60.0)
+            .map(|(&prn, &(prc_m, udrei, t))| (prn, prc_m, udrei, now - t))
             .collect();
         // long-term corrections have their own, longer validity: DO-229D
         // Table 2-1 gives a 360 s timeout for MT24/25 (en-route/terminal;
         // 240 s on approach) — the 60 s fast-corr window would drop
         // still-valid LT data
-        let lt_corr: Vec<(u8, f64, f64, f64, f64, u8)> = self
+        let lt_corr: Vec<(u8, f64, f64, f64, f64, u8, f64)> = self
             .sbas_lt
             .iter()
-            .filter(|(_, (_, _, _, _, _, ls))| now_ls - ls < 360.0)
-            .map(|(&prn, &(dx, dy, dz, daf0, iod, _))| (prn, dx, dy, dz, daf0, iod))
+            .filter(|(_, (_, _, _, _, _, t))| now - t < 360.0)
+            .map(|(&prn, &(dx, dy, dz, daf0, iod, t))| (prn, dx, dy, dz, daf0, iod, now - t))
             .collect();
         // iono data has a longer life than fast corrections (DO-229
         // timeouts: 5 min for MT26, 10 min for the MT18 mask — 300 s is
@@ -930,13 +886,13 @@ impl Channel {
         let igp_mask: Vec<(u8, u8, Vec<u16>)> = self
             .sbas_igpmask
             .iter()
-            .filter(|(_, (_, _, ls))| now_ls - ls < 300.0)
+            .filter(|(_, (_, _, t))| now - t < 300.0)
             .map(|(&band, &(iodi, ref igps, _))| (band, iodi, igps.clone()))
             .collect();
         let iono_delay: Vec<(u8, u8, u8, Vec<(u16, u8)>)> = self
             .sbas_iono
             .iter()
-            .filter(|(_, (_, _, ls))| now_ls - ls < 300.0)
+            .filter(|(_, (_, _, t))| now - t < 300.0)
             .map(|(&(band, block), &(iodi, rows, _))| {
                 (band, block, iodi, rows.to_vec())
             })
@@ -950,6 +906,111 @@ impl Channel {
             igp_mask,
             iono_delay,
         })
+    }
+
+    /// Apply one decoded SBAS message to the held correction state:
+    /// insert/refresh usable corrections, EVICT on don't-use, and drop the
+    /// correction caches when a new mask generation arrives. `t_s` is the
+    /// stream-time insert stamp (see sbas_tick).
+    fn sbas_apply(&mut self, m: &crate::sbas::Message, t_s: f64) {
+        match m {
+            crate::sbas::Message::PrnMask { slots, iodp } => {
+                // A DIFFERENT IODP is a new mask GENERATION: every
+                // correction harvested under the old mask is invalid
+                // (DO-229D A.4.4.2 — MT2-5/MT24/25 data is valid only
+                // against the mask whose IODP it carries). Clear the
+                // caches before adopting the new mask (review round 4).
+                if self.sbas_mask.as_ref().map(|(_, p)| *p) != Some(*iodp) {
+                    self.sbas_prc.clear();
+                    self.sbas_lt.clear();
+                }
+                self.sbas_mask = Some((slots.clone(), *iodp));
+            }
+            // harvest fast corrections (MT2-5): entries address satellites
+            // by ORDINAL through the MT1 mask's set bits, and are valid
+            // only while the message IODP matches the mask's (DO-229D
+            // A.4.4.2/A.4.4.3). No mask held -> nothing decodes. A fresh
+            // UDREI >= 14 row (not monitored / don't use) EVICTS the
+            // cached usable correction for that PRN — otherwise a dead
+            // satellite's stale PRC stays applicable for the rest of the
+            // freshness window (review round 4).
+            crate::sbas::Message::Fast { first_slot, iodp, prc, udrei, .. } => {
+                if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                    for (prn, prc_m, u) in
+                        crate::sbas::fast_rows(mask_slots, *mask_iodp, *iodp, *first_slot, prc, udrei)
+                    {
+                        if u < 14 {
+                            self.sbas_prc.insert(prn, (prc_m, u, t_s));
+                        } else {
+                            self.sbas_prc.remove(&prn);
+                        }
+                    }
+                }
+            }
+            // MT6 integrity (DO-229D A.4.4.4): UDREI per mask ORDINAL
+            // 1..=51 — the same through-mask addressing as the MT2-5
+            // entries. MT6 carries no IODP; it is applied against the
+            // currently held mask. APPROXIMATIONS, honestly scoped: the
+            // four IODF fields sequence these UDREIs against the IODFs of
+            // the MT2-5 messages — that sequencing is NOT tracked, so
+            // every MT6 is treated as refreshing all 51 slots wholesale;
+            // and only the don't-use half is enforced (UDREI >= 14 evicts
+            // the satellite's cached fast AND long-term corrections — a
+            // not-monitored/don't-use satellite has no usable corrections
+            // at all). Degraded-but-usable UDREI updates do not rewrite
+            // cached rows.
+            crate::sbas::Message::Integrity { udrei, .. } => {
+                let evict: Vec<u8> = match &self.sbas_mask {
+                    Some((slots, _)) => udrei
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &u)| u >= 14)
+                        .filter_map(|(i, _)| slots.get(i).copied())
+                        .filter(|s| (1..=37).contains(s))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                for slot in evict {
+                    self.sbas_prc.remove(&slot);
+                    self.sbas_lt.remove(&slot);
+                }
+            }
+            // harvest long-term corrections (MT25 halves; MT24 long-term
+            // slot): corrected sat position/clock = broadcast + delta;
+            // same ordinal-through-mask addressing and IODP gate as the
+            // fast corrections (DO-229D A.4.4.7)
+            crate::sbas::Message::LongTerm { a, b } => {
+                if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                    for h in [a, b] {
+                        for (prn, dx, dy, dz, daf0, iod) in
+                            crate::sbas::lt_corrections(mask_slots, *mask_iodp, h)
+                        {
+                            self.sbas_lt
+                                .insert(prn, (dx, dy, dz, daf0, iod, t_s));
+                        }
+                    }
+                }
+            }
+            crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
+                if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                    for (prn, dx, dy, dz, daf0, iod) in
+                        crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt)
+                    {
+                        self.sbas_lt
+                            .insert(prn, (dx, dy, dz, daf0, iod, t_s));
+                    }
+                }
+            }
+            crate::sbas::Message::IonoMask { band, iodi, igps, .. } => {
+                self.sbas_igpmask
+                    .insert(*band, (*iodi, igps.clone(), t_s));
+            }
+            crate::sbas::Message::IonoDelay { band, block_id, iodi, igps } => {
+                self.sbas_iono
+                    .insert((*band, *block_id), (*iodi, *igps, t_s));
+            }
+            _ => {}
+        }
     }
 
     /// diagnostics for examples/dbg_live.rs
@@ -1090,22 +1151,24 @@ pub struct SbasSummary {
     /// per-message-type counts in the current window (DO-229 MT -> n)
     pub types: std::collections::BTreeMap<u8, usize>,
     /// Latest fast corrections (MT2-5) held by this channel:
-    /// (GPS PRN, PRC metres, UDREI), decoded by ordinal through the
-    /// current MT1 mask and only while IODPs match. UDREI >= 14 rows are
-    /// never included
-    /// (not-monitored/don't-use). Entries older than 60 s of lock time are
+    /// (GPS PRN, PRC metres, UDREI, insert age in seconds of stream time),
+    /// decoded by ordinal through the current MT1 mask and only while
+    /// IODPs match. UDREI >= 14 rows are never included
+    /// (not-monitored/don't-use) — a fresh don't-use row EVICTS the cached
+    /// entry instead. Entries older than 60 s of stream time are
     /// dropped (conservative vs the MT7 degradation model, not yet
     /// implemented). Empty when none decoded.
-    pub fast_corr: Vec<(u8, f64, u8)>,
+    pub fast_corr: Vec<(u8, f64, u8, f64)>,
     /// Latest long-term corrections (MT24/25) held by this channel:
-    /// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD). Corrected satellite
+    /// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD, insert age in
+    /// seconds of stream time). Corrected satellite
     /// position = broadcast + (dx, dy, dz); corrected satellite clock
     /// offset = broadcast + daf0. IOD is the GPS IODE of the ephemeris
     /// the correction was generated against (DO-229D Table A-10 Note 3) —
     /// apply only when it matches the ephemeris in use. Velocity-code-1
     /// halves are never published (their rates are not propagated).
     /// 360 s freshness window (DO-229D Table 2-1 MT24/25 timeout).
-    pub lt_corr: Vec<(u8, f64, f64, f64, f64, u8)>,
+    pub lt_corr: Vec<(u8, f64, f64, f64, f64, u8, f64)>,
     /// Latest iono grid masks (MT18): (band, iodi, IGP numbers). 300 s
     /// freshness (DO-229 mask timeout is 10 min).
     pub igp_mask: Vec<(u8, u8, Vec<u16>)>,
@@ -1618,7 +1681,7 @@ impl Band {
             let slip = ch.take_slip();
             ch.track_comb(t_proc);
             ch.nav_tick();
-            let sbas_msgs = ch.sbas_tick();
+            let sbas_msgs = ch.sbas_tick(t_proc);
             // scan for new subframes since the last scan (the overlap keeps
             // the LAST validated subframe findable, so the anchor re-anchors
             // to it every second between validations rather than freezing —
@@ -3235,12 +3298,14 @@ mod tests {
         let ns = (fs / 1000.0) as usize;
         let mut ch = Channel::new(Sys::Sbas, 131, fs, dopp, 0.0);
         let mut summ = None;
+        let mut t = 0.0;
         for sec in sig.chunks(1000 * ns) {
             for chunk in sec.chunks(ns) {
                 ch.process_epoch(chunk);
             }
             ch.end_second();
-            summ = ch.sbas_tick();
+            t += 1.0;
+            summ = ch.sbas_tick(t);
         }
         assert!(ch.locked, "strong synthetic must lock");
         let s = summ.expect("an SBAS channel must produce a summary");
@@ -3288,9 +3353,223 @@ mod tests {
             ch.process_epoch(&noise);
         }
         ch.end_second();
-        let s = ch.sbas_tick().expect("SBAS summary even when unlocked");
+        let s = ch.sbas_tick(1.0).expect("SBAS summary even when unlocked");
         assert!(!ch.locked, "pure noise must not lock");
         assert!(!s.locked);
         assert_eq!(s.n_msgs, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // SBAS correction cache semantics (review round 4)
+    // -----------------------------------------------------------------
+
+    fn push_bits(p: &mut Vec<u8>, v: u64, w: usize) {
+        for i in (0..w).rev() {
+            p.push(((v >> i) & 1) as u8);
+        }
+    }
+    fn push_sbits(p: &mut Vec<u8>, v: i64, w: usize) {
+        push_bits(p, (v as u64) & ((1u64 << w) - 1), w);
+    }
+
+    /// MT2 payload: 2-bit IODF, 2-bit IODP, 13 x 12-bit signed PRC,
+    /// 13 x 4-bit UDREI (212 bits; MT3-5 differ only in the type field).
+    fn mt2_payload(iodf: u8, iodp: u8, prc: &[i16; 13], udrei: &[u8; 13]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(212);
+        push_bits(&mut p, iodf as u64, 2);
+        push_bits(&mut p, iodp as u64, 2);
+        for &v in prc {
+            push_sbits(&mut p, v as i64, 12);
+        }
+        for &u in udrei {
+            push_bits(&mut p, u as u64, 4);
+        }
+        assert_eq!(p.len(), 212);
+        p
+    }
+
+    /// MT6 payload: 4 x 2-bit IODF + 51 x 4-bit UDREI (212 bits).
+    fn mt6_payload(udrei: &[u8; 51]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(212);
+        for _ in 0..4 {
+            push_bits(&mut p, 0, 2);
+        }
+        for &u in udrei {
+            push_bits(&mut p, u as u64, 4);
+        }
+        assert_eq!(p.len(), 212);
+        p
+    }
+
+    /// MT25 payload: two velocity-code-0 long-term halves (106 bits each);
+    /// each half carries two satellites addressed by mask ordinal, with
+    /// dx = +1 m, dy = dz = 0, daf0 = 16 counts, IOD 42.
+    fn mt25_payload(mask_nos: [u8; 2], iodp: u8) -> Vec<u8> {
+        let mut p = Vec::with_capacity(212);
+        for _ in 0..2 {
+            push_bits(&mut p, 0, 1); // velocity code 0
+            for &mn in mask_nos.iter() {
+                push_bits(&mut p, mn as u64, 6);
+                push_bits(&mut p, 42, 8); // IOD
+                push_sbits(&mut p, 8, 9); // dx = +1.0 m
+                push_sbits(&mut p, 0, 9);
+                push_sbits(&mut p, 0, 9);
+                push_sbits(&mut p, 16, 10); // daf0
+            }
+            push_bits(&mut p, iodp as u64, 2);
+            push_bits(&mut p, 0, 1); // pad
+        }
+        assert_eq!(p.len(), 212);
+        p
+    }
+
+    /// Feed SBAS blocks into the channel as noiseless prompt-I pairs (two
+    /// identical 1 ms prompts per 2 ms symbol — exactly what process_epoch
+    /// produces on a clean capture), one block per simulated second, with
+    /// sbas_tick after each. `t0` is the stream time feeding sbas_tick's
+    /// freshness clock for the first block's second (the caller continues
+    /// it across calls). Forces the lock flags: these tests exercise
+    /// the decode/apply/publish path, not the tracking loops (those are
+    /// covered by sbas_channel_decodes_waas_messages).
+    fn feed_sbas_blocks(ch: &mut Channel, t0: f64, blocks: &[Vec<u8>]) -> Vec<SbasSummary> {
+        let bits: Vec<u8> = blocks.concat();
+        let sym = crate::sbas::conv_encode(&bits, false, 0);
+        let mut out = Vec::new();
+        for (i, chunk) in sym.chunks(500).enumerate() {
+            for &s in chunk {
+                let v = 1.0 - 2.0 * s as f64;
+                ch.nav_ms.push(v);
+                ch.nav_ms.push(v);
+            }
+            ch.locked = true;
+            ch.lock_s += 1.0;
+            out.push(ch.sbas_tick(t0 + (i + 1) as f64).expect("SBAS summary"));
+        }
+        out
+    }
+
+    /// A decoded MT1 carrying a DIFFERENT IODP than the held mask starts a
+    /// new mask generation: every correction harvested under the old mask
+    /// is invalid (DO-229D A.4.4.2 — fast/LT data is valid only with the
+    /// mask whose IODP they carry) and must be cleared when the new mask
+    /// is adopted.
+    #[test]
+    fn sbas_new_mask_generation_clears_corrections() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let gen0 = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+            sbas_block(4, 25, &mt25_payload([1, 2], 0)),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 0.0, &gen0);
+        assert!(!ch.sbas_prc.is_empty(), "MT2 rows must cache");
+        assert!(!ch.sbas_lt.is_empty(), "MT25 rows must cache");
+        assert!(!sums.last().unwrap().fast_corr.is_empty());
+        // new generation: same mask content, IODP bumped
+        let gen1 = vec![sbas_block(5, 1, &mt1_payload(&slots, 1))];
+        let sums = feed_sbas_blocks(&mut ch, 5.0, &gen1);
+        assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(1));
+        assert!(
+            ch.sbas_prc.is_empty(),
+            "old-generation fast corrections must be cleared: {:?}",
+            ch.sbas_prc
+        );
+        assert!(
+            ch.sbas_lt.is_empty(),
+            "old-generation LT corrections must be cleared: {:?}",
+            ch.sbas_lt
+        );
+        assert!(sums.last().unwrap().fast_corr.is_empty());
+    }
+
+    /// A fresh fast-correction row with UDREI >= 14 (don't use / not
+    /// monitored, DO-229D A.4.4.3 UDRE table) must EVICT the cached usable
+    /// row for that PRN — not leave the stale usable one in place.
+    #[test]
+    fn sbas_udrei_dont_use_evicts_cached_row() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let mut bad = [0u8; 13];
+        bad[1] = 14; // ordinal 2 -> slot 7: don't use
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(ch.sbas_prc.contains_key(&7), "usable row must cache");
+        let blocks2 = vec![sbas_block(4, 2, &mt2_payload(0, 0, &[8i16; 13], &bad))];
+        let sums = feed_sbas_blocks(&mut ch, 4.0, &blocks2);
+        assert!(
+            !ch.sbas_prc.contains_key(&7),
+            "a fresh don't-use row must evict the cached usable one"
+        );
+        assert!(ch.sbas_prc.contains_key(&3), "unaffected rows stay");
+        assert!(sums.last().unwrap().fast_corr.iter().all(|r| r.0 != 7));
+    }
+
+    /// MT6 integrity UDREIs address mask ORDINALS 1..=51 (same through-mask
+    /// mapping as MT2-5); a UDREI >= 14 there evicts the satellite's cached
+    /// fast AND long-term corrections.
+    #[test]
+    fn sbas_mt6_evicts_dont_use_ordinals() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+            sbas_block(4, 25, &mt25_payload([1, 2], 0)),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(ch.sbas_prc.contains_key(&7));
+        assert!(ch.sbas_lt.contains_key(&7), "LT row must cache");
+        let mut udrei51 = [0u8; 51];
+        udrei51[1] = 14; // ordinal 2 -> slot 7
+        let blocks2 = vec![sbas_block(5, 6, &mt6_payload(&udrei51))];
+        feed_sbas_blocks(&mut ch, 5.0, &blocks2);
+        assert!(
+            !ch.sbas_prc.contains_key(&7),
+            "MT6 don't-use must evict the fast correction"
+        );
+        assert!(
+            !ch.sbas_lt.contains_key(&7),
+            "MT6 don't-use must evict the LT correction"
+        );
+        assert!(ch.sbas_prc.contains_key(&3), "unaffected rows stay");
+        assert!(ch.sbas_lt.contains_key(&3), "unaffected rows stay");
+    }
+
+    /// Correction freshness is measured on stream time (t_proc), which
+    /// advances monotonically across RF unlock/relock — never on lock_s,
+    /// which RESETS to 0 on unlock (end_second): a row cached at lock_s
+    /// 500 and re-checked after a relock at lock_s 1 computed a NEGATIVE
+    /// age and passed any freshness window (review round 4).
+    #[test]
+    fn sbas_freshness_survives_lock_s_reset() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        ch.locked = true;
+        ch.sbas_mask = Some((vec![3u8, 7, 12], 0));
+        // rows cached at stream t = 100 and t = 175 (the stamp the harvest
+        // writes)
+        ch.sbas_prc.insert(7, (1.5, 3, 100.0));
+        ch.sbas_prc.insert(9, (0.5, 2, 175.0));
+        // RF unlock -> lock_s = 0; relock -> the lock clock counts from 1
+        ch.lock_s = 1.0;
+        let s = ch.sbas_tick(181.0).expect("summary");
+        assert!(
+            s.fast_corr.iter().all(|r| r.0 != 7),
+            "a row 81 s old must not re-pass the 60 s window after a lock_s reset: {:?}",
+            s.fast_corr
+        );
+        // a genuinely fresh row (6 s old) still passes: the window runs on
+        // true elapsed time, not on lock state
+        let row9 = s.fast_corr.iter().find(|r| r.0 == 9).expect("fresh row");
+        assert!((row9.3 - 6.0).abs() < 1e-9, "published age: {:?}", row9);
     }
 }

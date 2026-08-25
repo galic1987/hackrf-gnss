@@ -27,6 +27,47 @@ fn alt_sane(alt_km: f64) -> bool {
     alt_km.is_finite() && alt_km >= ALT_SANE_KM.0 && alt_km <= ALT_SANE_KM.1
 }
 
+/// Multi-GEO merge of one fast-correction row into the map: several locked
+/// SBAS channels (different GEOs) can publish a row for the same GPS PRN.
+/// Keep the row with the freshest insert age; a material disagreement
+/// (|Δprc| > 2 m) is recorded once per PRN (largest Δ kept) for the log
+/// line.
+fn merge_fast_corr(
+    map: &mut std::collections::HashMap<u8, (f64, f64)>,
+    conflicts: &mut std::collections::BTreeMap<u8, f64>,
+    prn: u8,
+    prc: f64,
+    age: f64,
+) {
+    if let Some(&(prev, prev_age)) = map.get(&prn) {
+        let d = (prev - prc).abs();
+        if d > 2.0 {
+            let e = conflicts.entry(prn).or_insert(0.0);
+            *e = e.max(d);
+        }
+        if age >= prev_age {
+            return; // the held row is fresher (or tied): keep it
+        }
+    }
+    map.insert(prn, (prc, age));
+}
+
+/// Same freshest-age preference for long-term corrections (no materiality
+/// note — the |Δprc| > 2 m rule is a fast-correction metric).
+fn merge_lt_corr(
+    map: &mut std::collections::HashMap<u8, (f64, f64, f64, f64, u8, f64)>,
+    prn: u8,
+    row: (f64, f64, f64, f64, u8),
+    age: f64,
+) {
+    if let Some(&(_, _, _, _, _, prev_age)) = map.get(&prn) {
+        if age >= prev_age {
+            return;
+        }
+    }
+    map.insert(prn, (row.0, row.1, row.2, row.3, row.4, age));
+}
+
 /// Canonical site anchor (observations/site.json) — NO hardcoded
 /// coordinates. Only a coarse (~150 km) guess is needed for the light-time
 /// anchor / snapshot solver, but even that must come from the one file.
@@ -165,11 +206,17 @@ fn main() {
     let mut gps_prns: Vec<u8> = Vec::new();
     let mut bds_meas = Vec::new();
     // SBAS fast corrections (WAAS MT2-5), harvested from any streak-locked
-    // SBAS channel's published fast_corr: GPS PRN -> PRC metres. DO-229
-    // convention: the PRC is ADDED to the measured pseudorange.
-    let mut sbas_prc: std::collections::HashMap<u8, f64> = std::collections::HashMap::new();
-    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64, u8)> =
+    // SBAS channel's published fast_corr: GPS PRN -> (PRC metres, insert
+    // age s). DO-229 convention: the PRC is ADDED to the measured
+    // pseudorange. Several locked GEO channels can publish a row for the
+    // same PRN — merge_fast_corr keeps the freshest and records material
+    // disagreement (a silent last-writer-wins overwrite was the review
+    // round-4 finding).
+    let mut sbas_prc: std::collections::HashMap<u8, (f64, f64)> =
         std::collections::HashMap::new();
+    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64, u8, f64)> =
+        std::collections::HashMap::new();
+    let mut sbas_conf: std::collections::BTreeMap<u8, f64> = std::collections::BTreeMap::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if s["sys"].as_str() != Some("sbas") {
             continue;
@@ -179,17 +226,20 @@ fn main() {
         }
         for row in s["sbas_msgs"]["fast_corr"].as_array().into_iter().flatten() {
             if let (Some(prn), Some(prc)) = (row[0].as_u64(), row[1].as_f64()) {
-                sbas_prc.insert(prn as u8, prc);
+                // rows from a pre-age tracker build lack element [3] —
+                // an unknown age sorts oldest
+                let age = row[3].as_f64().unwrap_or(f64::MAX);
+                merge_fast_corr(&mut sbas_prc, &mut sbas_conf, prn as u8, prc, age);
             }
         }
         // SBAS long-term corrections (MT24/25): GPS PRN -> (dx, dy, dz m,
-        // daf0 s, iod). Corrected sat position = broadcast + delta,
-        // corrected sat clock offset = broadcast + daf0 (DO-229). The iod
-        // is the GPS IODE of the ephemeris the correction was generated
-        // against (DO-229D Table A-10 Note 3); gating on it is not
-        // possible yet — BrdcEph carries no IODE (lnav.rs decodes it only
-        // as a subframe consistency check, and RINEX nav records don't
-        // include it) — so the correction is applied ungated.
+        // daf0 s, iod, insert age s). Corrected sat position = broadcast +
+        // delta, corrected sat clock offset = broadcast + daf0 (DO-229).
+        // The iod is the GPS IODE of the ephemeris the correction was
+        // generated against (DO-229D Table A-10 Note 3); gating on it is
+        // not possible yet — BrdcEph carries no IODE (lnav.rs decodes it
+        // only as a subframe consistency check, and RINEX nav records
+        // don't include it) — so the correction is applied ungated.
         for row in s["sbas_msgs"]["lt_corr"].as_array().into_iter().flatten() {
             if let (Some(prn), Some(dx), Some(dy), Some(dz), Some(daf0), Some(iod)) = (
                 row[0].as_u64(),
@@ -199,9 +249,20 @@ fn main() {
                 row[4].as_f64(),
                 row[5].as_u64(),
             ) {
-                sbas_lt.insert(prn as u8, (dx, dy, dz, daf0, iod as u8));
+                let age = row[6].as_f64().unwrap_or(f64::MAX);
+                merge_lt_corr(&mut sbas_lt, prn as u8, (dx, dy, dz, daf0, iod as u8), age);
             }
         }
+    }
+    if !sbas_conf.is_empty() {
+        let list: Vec<String> = sbas_conf
+            .iter()
+            .map(|(p, d)| format!("G{p} Δ{d:.1} m"))
+            .collect();
+        eprintln!(
+            "live_fix: SBAS GEOs disagree on PRC (>2 m): {} — freshest row used",
+            list.join(", ")
+        );
     }
     let mut n_sbas_corr = 0usize;
     let mut n_lt_corr = 0usize;
@@ -293,12 +354,14 @@ fn main() {
                     dt_sv = d;
                     a = t_tx - d + r / 299_792_458.0;
                 }
-                let prc = sbas_prc.get(&prn).copied().unwrap_or(0.0);
+                let prc = sbas_prc.get(&prn).map(|&(p, _)| p).unwrap_or(0.0);
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
-                let (dx, dy, dz, daf0, iod) =
-                    sbas_lt.get(&prn).copied().unwrap_or((0.0, 0.0, 0.0, 0.0, 0));
+                let (dx, dy, dz, daf0, iod) = sbas_lt
+                    .get(&prn)
+                    .map(|&(x, y, z, a, i, _)| (x, y, z, a, i))
+                    .unwrap_or((0.0, 0.0, 0.0, 0.0, 0));
                 // IOD gate (DO-229D Table A-10 Note 3): the LT correction is
                 // valid only against the ephemeris issue it names. Self-
                 // decoded ephemerides carry IODE and can be checked; BRDC
@@ -703,5 +766,43 @@ fn main() {
             eprintln!("live_fix: no converged fix");
             std::process::exit(4);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Multi-GEO merge (review round 4): the freshest row wins; material
+    /// disagreement (|Δprc| > 2 m) is noted once per PRN with the largest
+    /// Δ kept; sub-threshold disagreement is silent and an older row never
+    /// displaces a fresher one.
+    #[test]
+    fn multi_geo_merge_prefers_freshest_and_notes_conflict() {
+        let mut map = std::collections::HashMap::new();
+        let mut conf = std::collections::BTreeMap::new();
+        merge_fast_corr(&mut map, &mut conf, 5, 1.0, 3.0); // GEO A, 3 s old
+        merge_fast_corr(&mut map, &mut conf, 5, 4.5, 1.0); // GEO B, fresher
+        assert_eq!(map[&5], (4.5, 1.0), "the freshest row must win");
+        assert!((conf[&5] - 3.5).abs() < 1e-12, "Δ3.5 m must be noted");
+        merge_fast_corr(&mut map, &mut conf, 5, 4.7, 2.0); // older, small Δ
+        assert_eq!(map[&5], (4.5, 1.0), "an older row never displaces a fresher one");
+        assert_eq!(conf.len(), 1, "sub-2 m disagreement stays silent");
+        merge_fast_corr(&mut map, &mut conf, 5, 9.0, 0.5); // freshest, big Δ
+        assert_eq!(map[&5], (9.0, 0.5));
+        assert!((conf[&5] - 4.5).abs() < 1e-12, "the largest Δ is kept");
+        // a second PRN is tracked independently
+        merge_fast_corr(&mut map, &mut conf, 12, 1.0, 1.0);
+        merge_fast_corr(&mut map, &mut conf, 12, 1.5, 0.0);
+        assert_eq!(map[&12], (1.5, 0.0));
+        assert_eq!(conf.len(), 1, "Δ0.5 m on G12 must not be noted");
+        // LT rows: same freshest-age preference (no materiality note)
+        let mut lt = std::collections::HashMap::new();
+        merge_lt_corr(&mut lt, 7, (1.0, 0.0, 0.0, 0.0, 42), 5.0);
+        merge_lt_corr(&mut lt, 7, (2.0, 0.0, 0.0, 0.0, 42), 2.0);
+        assert_eq!(lt[&7].0, 2.0, "the freshest LT row must win");
+        merge_lt_corr(&mut lt, 7, (3.0, 0.0, 0.0, 0.0, 42), 4.0);
+        assert_eq!(lt[&7].0, 2.0, "an older LT row must not displace a fresher one");
     }
 }
