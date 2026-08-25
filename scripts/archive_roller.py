@@ -71,6 +71,9 @@ FIELDS = {
                   ("temp_c", "f"), ("gain_db", "f"), ("radio", "s")],
     "presence": [("epoch", "f"), ("band", "s"), ("n_sats", "i"),
                  ("sats", "s"), ("anchor", "s")],
+    "position": [("epoch", "f"), ("lat", "f"), ("lon", "f"), ("alt_km", "f"),
+                 ("mode", "s"), ("gate", "s"), ("gdop", "f"), ("n_sats", "i"),
+                 ("isx_km", "f")],
     "tdc": [("epoch", "f"), ("seq", "i"), ("popcount", "i"), ("thermo", "s")],
 }
 
@@ -85,6 +88,7 @@ KEYS = {
     "loop_log": ("epoch", "loop"),
     "telemetry": ("epoch",),
     "presence": ("epoch", "band"),
+    "position": ("epoch",),
     "tdc": ("epoch", "seq"),
 }
 
@@ -228,6 +232,18 @@ def parse_sky(d):
     return {"satellite": rows} if rows else {}
 
 
+def parse_position(d):
+    """One position_watch history line -> position-stream row."""
+    t = d.get("epoch")
+    if t is None:
+        return {}
+    return {"position": [{"epoch": t, "lat": d.get("lat"), "lon": d.get("lon"),
+                          "alt_km": d.get("alt_km"), "mode": d.get("mode"),
+                          "gate": d.get("gate"), "gdop": d.get("gdop"),
+                          "n_sats": d.get("n_sats"),
+                          "isx_km": d.get("isx_km")}]}
+
+
 # (path, parser) — parser takes the decoded JSON object
 SOURCES = [
     (os.path.join(OBS, "band_drift_history.jsonl"), parse_band_drift),
@@ -238,6 +254,7 @@ SOURCES = [
      lambda d: parse_loop(d, "fused")),
     (os.path.join(OBS, "telemetry_log.jsonl"), parse_telemetry),
     (os.path.join(OBS, "sky_history.jsonl"), parse_sky),
+    (os.path.join(OBS, "position_history.jsonl"), parse_position),
 ]
 
 
