@@ -208,15 +208,31 @@ pub fn viterbi(soft: &[f32], invert_g2: bool) -> Vec<u8> {
 /// the one with more energy. Returns (soft symbols, parity offset consumed).
 /// Soft > 0 means symbol bit 0.
 pub fn symbols_from_prompt(prompts: &[f64]) -> (Vec<f32>, usize) {
-    let m = prompts.len() / 2 * 2;
-    let e0: f64 = prompts[..m].chunks_exact(2).map(|c| (c[0] + c[1]).abs()).sum();
-    let m1 = (prompts.len().saturating_sub(1)) / 2 * 2;
-    let e1: f64 = if m1 > 0 {
-        prompts[1..1 + m1].chunks_exact(2).map(|c| (c[0] + c[1]).abs()).sum()
-    } else {
-        -1.0
+    symbols_from_prompt_par(prompts, None)
+}
+
+/// As `symbols_from_prompt`, but with an optional forced parity. A locked
+/// decoder latches its parity: re-picking by energy every second lets a
+/// noisy parity flip insert or delete one coded symbol and silently break
+/// the Viterbi stream (review round 5).
+pub fn symbols_from_prompt_par(prompts: &[f64], forced: Option<usize>) -> (Vec<f32>, usize) {
+    let par = match forced {
+        Some(p) => p.min(1),
+        None => {
+            let m = prompts.len() / 2 * 2;
+            let e0: f64 = prompts[..m].chunks_exact(2).map(|c| (c[0] + c[1]).abs()).sum();
+            let m1 = (prompts.len().saturating_sub(1)) / 2 * 2;
+            let e1: f64 = if m1 > 0 {
+                prompts[1..1 + m1].chunks_exact(2).map(|c| (c[0] + c[1]).abs()).sum()
+            } else {
+                -1.0
+            };
+            if e0 >= e1 { 0 } else { 1 }
+        }
     };
-    let par = if e0 >= e1 { 0 } else { 1 };
+    if prompts.len() <= par {
+        return (Vec::new(), par);
+    }
     let n = (prompts.len() - par) / 2 * 2;
     let soft = prompts[par..par + n]
         .chunks_exact(2)
@@ -244,6 +260,46 @@ pub struct SyncResult {
     pub inverted: Vec<bool>,
     /// True when `npass >= min_blocks`.
     pub locked: bool,
+}
+
+/// Length of the TRAILING run of consecutive blocks that are CRC-valid,
+/// nondegenerate (content differs from the previous block), and carry the
+/// correctly rotating preamble (0x53 -> 0x9A -> 0xC6 across consecutive
+/// blocks). This is the frame-lock criterion (review round 5): scattered
+/// CRC passes anywhere in the window do NOT count — a single bad or
+/// mis-rotating block resets the run.
+pub fn lock_streak(blocks: &[u8], valid: &[bool]) -> usize {
+    let mut streak = 0usize;
+    let mut expect: Option<u8> = None;
+    let mut prev: Option<&[u8]> = None;
+    for (i, blk) in blocks.chunks_exact(BLOCK_BITS).enumerate() {
+        let ok = valid.get(i).copied().unwrap_or(false) && {
+            let mut pre = 0u8;
+            for &b in &blk[..8] {
+                pre = (pre << 1) | (b & 1);
+            }
+            let rot_ok = match expect {
+                None => PREAMBLES.contains(&pre),
+                Some(e) => pre == e,
+            };
+            let degen = prev.map(|p| p == blk).unwrap_or(false);
+            if rot_ok && !degen {
+                let idx = PREAMBLES.iter().position(|&p| p == pre).unwrap();
+                expect = Some(PREAMBLES[(idx + 1) % 3]);
+                true
+            } else {
+                false
+            }
+        };
+        if ok {
+            streak += 1;
+        } else {
+            streak = 0;
+            expect = None;
+        }
+        prev = Some(blk);
+    }
+    streak
 }
 
 /// Search all 250 bit offsets; return the one with the most CRC-valid blocks.
@@ -745,6 +801,9 @@ pub struct DecodeReport {
     pub sync: SyncResult,
     /// Preamble rotation check: (phase, n_matching, n_valid).
     pub preamble: (usize, usize, usize),
+    /// Trailing run of consecutive CRC-valid, correctly-rotating,
+    /// nondegenerate blocks — the actual lock criterion.
+    pub streak: usize,
     /// Messages parsed from CRC-valid, polarity-resolved blocks.
     pub messages: Vec<DecodedMessage>,
 }
@@ -766,7 +825,9 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
         }
     }
     let (off, inv, bits, sync) = best.unwrap();
+    let mut sync = sync;
     let mut preamble = (0, 0, 0);
+    let mut streak = 0usize;
     let mut messages = Vec::new();
     if let Some(o) = sync.offset {
         let mut corr = bits[o..o + sync.nblocks * BLOCK_BITS].to_vec();
@@ -784,6 +845,11 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
             }
         }
         preamble = preamble_phase(&corr, &sync.valid);
+        streak = lock_streak(&corr, &sync.valid);
+        // Lock means a CURRENT streak of consecutive, correctly-rotating,
+        // nondegenerate CRC-valid blocks — not scattered passes anywhere in
+        // the window (review round 5).
+        sync.locked = streak >= min_blocks;
         for i in 0..sync.nblocks {
             if !sync.valid[i] {
                 continue;
@@ -796,12 +862,15 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
                 });
             }
         }
+    } else {
+        sync.locked = false;
     }
     DecodeReport {
         sym_offset: off,
         invert_g2: inv,
         sync,
         preamble,
+        streak,
         messages,
     }
 }
@@ -1572,5 +1641,65 @@ mod tests {
             let dec = viterbi(&soft, false);
             assert_eq!(dec[40..], bits[40..]);
         }
+    }
+
+    /// Review round 5: scattered CRC-valid blocks (no consecutiveness, no
+    /// rotation) must NOT lock; three consecutive correctly-rotating blocks
+    /// lock; a rotation break resets the streak.
+    #[test]
+    fn lock_streak_requires_consecutive_rotation() {
+        let payload = vec![0xA5u8; 212];
+        let good = |i: usize| make_block(PREAMBLES[i % 3], 63, &payload);
+        // scattered: three valid blocks separated by garbage — never locks
+        let mut bits = Vec::new();
+        let mut valid = Vec::new();
+        for (i, &g) in [true, false, true, false, true].iter().enumerate() {
+            if g {
+                bits.extend_from_slice(&good(i));
+            } else {
+                bits.extend_from_slice(&vec![0u8; BLOCK_BITS]);
+            }
+            valid.push(g);
+        }
+        assert!(lock_streak(&bits, &valid) < 3, "scattered blocks must not streak");
+        // consecutive, rotating: streaks to 3
+        let mut bits = Vec::new();
+        let mut valid = Vec::new();
+        for i in 0..3 {
+            bits.extend_from_slice(&good(i));
+            valid.push(true);
+        }
+        assert_eq!(lock_streak(&bits, &valid), 3);
+        // rotation break in the middle kills the run
+        let mut bits = Vec::new();
+        let mut valid = Vec::new();
+        bits.extend_from_slice(&good(0));
+        valid.push(true);
+        bits.extend_from_slice(&good(2)); // wrong rotation member
+        valid.push(true);
+        bits.extend_from_slice(&good(2)); // correct successor of 0xC6 is 0x53? no: good(2) is 0xC6 again
+        valid.push(true);
+        assert!(lock_streak(&bits, &valid) < 3, "rotation break must reset");
+    }
+
+    /// The forced-parity variant: a locked decoder keeps its pairing even
+    /// when the noisy energy pick would flip it.
+    #[test]
+    fn symbols_from_prompt_forced_parity_holds() {
+        let mut rng = Rng::new(32);
+        let bits: Vec<u8> = (0..200).map(|_| rng.bit()).collect();
+        let sym = conv_encode(&bits, false, 0);
+        let sign: Vec<f64> = sym.iter().map(|&s| 1.0 - 2.0 * s as f64).collect();
+        // build prompts at parity 1, then CORRUPT parity 0's energy pick so
+        // the free chooser would flip
+        let mut prompts = vec![0.0f64; 2 * sign.len() + 1];
+        for (i, &s) in sign.iter().enumerate() {
+            prompts[1 + 2 * i] = s;
+            prompts[1 + 2 * i + 1] = s;
+        }
+        let (soft, got) = symbols_from_prompt_par(&prompts, Some(1));
+        assert_eq!(got, 1);
+        let dec = viterbi(&soft, false);
+        assert_eq!(dec[40..], bits[40..]);
     }
 }

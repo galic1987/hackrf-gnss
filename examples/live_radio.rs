@@ -367,7 +367,7 @@ fn main() {
                     .channels
                     .iter()
                     .chain(eng.b1i_band.channels.iter())
-                    .filter(|c| c.lock_s > 0.0)
+                    .filter(|c| c.sys == Sys::Sbas && c.lock_s > 0.0)
                     .count(),
             );
             let mut note = String::new();
@@ -397,22 +397,31 @@ fn main() {
                     let step_limit = if fine { 0.03 } else { STEP_MAX_PPM };
                     let target = (corr + sign * r).clamp(-CLAMP_PPM, CLAMP_PPM);
                     let step = (target - corr).clamp(-step_limit, step_limit);
-                    corr = ((corr + step) * 1e4).round() / 1e4;
-                    let _ = radio_ctrl.set_clock_corr_ppm(corr);
-                    // Firmware truth (radio.c): mid-stream, the correction
-                    // only re-programs the AFE/sample clock. The LO synth
-                    // is NOT re-programmed unless a frequency update runs
-                    // (its `freq_lo != applied_lo` guard skips when only
-                    // the correction changed) — so the RX path sees the
-                    // correction ONLY at config time. A same-freq retune
-                    // forces it; note_clock_step keeps the loops on the
-                    // signal through the sub-ms relock.
-                    let _ = radio_ctrl.tune(FC);
-                    eng.note_clock_step(step); // keep the loops on the signal
-                    steps.push(r);
-                    if note.is_empty() {
-                        note = format!("applied {corr:+.4} ppm (residual {r:+.4})");
-                    }
+                    let new_corr = ((corr + step) * 1e4).round() / 1e4;
+                    // Only advance the software bookkeeping if the hardware
+                    // actually accepted the write + retune — otherwise the
+                    // loop's belief and the radio's state diverge silently.
+                    if let Err(e) = radio_ctrl.set_clock_corr_ppm(new_corr) {
+                        note = format!("clock-corr write FAILED ({e}) — software state not advanced");
+                        eprintln!("live_radio: {note}");
+                    } else if let Err(e) = radio_ctrl.tune(FC) {
+                        note = format!("retune after clock-corr FAILED ({e}) — software state not advanced");
+                        eprintln!("live_radio: {note}");
+                    } else {
+                        corr = new_corr;
+                        // Firmware truth (radio.c): mid-stream, the correction
+                        // only re-programs the AFE/sample clock. The LO synth
+                        // is NOT re-programmed unless a frequency update runs
+                        // (its `freq_lo != applied_lo` guard skips when only
+                        // the correction changed) — so the RX path sees the
+                        // correction ONLY at config time. A same-freq retune
+                        // forces it; note_clock_step keeps the loops on the
+                        // signal through the sub-ms relock.
+                        eng.note_clock_step(step); // keep the loops on the signal
+                        steps.push(r);
+                        if note.is_empty() {
+                            note = format!("applied {corr:+.4} ppm (residual {r:+.4})");
+                        }
                     // stall detector only in coarse mode: near zero the
                     // loop dithers within measurement noise by design
                     if !fine && steps.len() > STALL_AFTER {
@@ -424,6 +433,7 @@ fn main() {
                                 "STALLED — |resid| {r:+.4} not improving over {STALL_AFTER} steps; holding at {corr:+.4} ppm"
                             );
                         }
+                    }
                     }
                 }
             }

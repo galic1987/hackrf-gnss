@@ -332,6 +332,10 @@ pub struct Channel {
     /// from the same 1 ms prompt buffer the GPS/BDS nav demod collects in
     /// nav_ms (sbas_tick drains it, so the 200k cap never binds for SBAS).
     sbas_dec: crate::sbas::Decoder,
+    /// Latched 1 ms->2 ms symbol pairing while the decoder is locked
+    /// (review round 5: re-picking by energy every second lets a noisy
+    /// flip insert/delete a coded symbol mid-stream). None = probing.
+    sbas_par: Option<usize>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -422,6 +426,7 @@ impl Channel {
             last_wrap: f64::NAN,
             eph: None,
             sbas_dec: crate::sbas::Decoder::new(),
+            sbas_par: None,
         }
     }
 
@@ -793,7 +798,7 @@ impl Channel {
         if self.sys != Sys::Sbas {
             return None;
         }
-        let (soft, par) = crate::sbas::symbols_from_prompt(&self.nav_ms);
+        let (soft, par) = crate::sbas::symbols_from_prompt_par(&self.nav_ms, self.sbas_par);
         // drain only the consumed prompts: when the 2 ms symbol grid sits
         // at the odd parity, one straddling ms must survive into the next
         // second or one symbol per second would be lost
@@ -808,6 +813,13 @@ impl Channel {
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
+        // Latch the pairing that produced a locked decode; release the
+        // latch when lock drops so the next lock re-probes (review round 5).
+        if rep.sync.locked {
+            self.sbas_par = Some(par);
+        } else {
+            self.sbas_par = None;
+        }
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
             *types.entry(dm.message.mt()).or_insert(0usize) += 1;
@@ -921,6 +933,11 @@ impl Channel {
         self.carr_cycles = 0.0;
         self.above = 0;
         self.below = 0;
+        // the reseed also breaks the SBAS symbol stream: a fresh decoder
+        // and a released parity latch (review round 5 — stale state would
+        // otherwise decode across the break)
+        self.sbas_dec = crate::sbas::Decoder::new();
+        self.sbas_par = None;
     }
 
     /// Shift the carrier loops by `df` Hz WITHOUT touching lock state.

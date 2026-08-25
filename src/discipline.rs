@@ -92,6 +92,11 @@ pub const GATE_MAX_SLEW_PPM: f64 = 0.15;
 /// Measurement inputs older than this are stale (channel reports are 1 Hz;
 /// a dying tracker stops emitting long before the discipline cycle notices).
 pub const GATE_STALE_S: f64 = 10.0;
+/// Absolute sanity bound on the residual (ppm), applied to EVERY sample
+/// including the first. The firmware clamp is ±1 % (±10 000 ppm), but this
+/// TCXO's raw drift lives well inside ±1 ppm — 2 ppm is a generous bound
+/// that still rejects NaN-adjacent garbage and unit bugs outright.
+pub const GATE_ABS_BOUND_PPM: f64 = 2.0;
 
 /// Residual-plausibility gate for the in-process discipline loop
 /// (examples/live_radio.rs): suppresses a correction write when the
@@ -100,10 +105,12 @@ pub const GATE_STALE_S: f64 = 10.0;
 /// tracker was dying, then walked the correction back over ~8 min.
 #[derive(Debug, Default)]
 pub struct PlausibilityGate {
-    /// locked-channel counts of the recent cycles (the collapse reference);
-    /// recorded EVERY cycle, gated or not — the reference must track the
-    /// tracker
-    locked_hist: std::collections::VecDeque<usize>,
+    /// locked SBAS/WAAS channel counts of the recent cycles (the collapse
+    /// reference); recorded EVERY cycle, gated or not — the reference must
+    /// track the tracker. SBAS-only because the residual the gate protects
+    /// is WAAS-derived; an all-band count would mask a GEO collapse behind
+    /// healthy GPS/B1I locks.
+    sbas_hist: std::collections::VecDeque<usize>,
     /// previous ACCEPTED residual (the slew reference); a suppressed
     /// residual never becomes the reference, or a bogus value would
     /// legitimize the next bogus one
@@ -115,11 +122,11 @@ impl PlausibilityGate {
         Self::default()
     }
 
-    /// Record the locked-channel count of the current cycle (both bands).
+    /// Record the locked SBAS/WAAS channel count of the current cycle.
     pub fn observe_locked(&mut self, n: usize) {
-        self.locked_hist.push_back(n);
-        while self.locked_hist.len() > GATE_WINDOW {
-            self.locked_hist.pop_front();
+        self.sbas_hist.push_back(n);
+        while self.sbas_hist.len() > GATE_WINDOW {
+            self.sbas_hist.pop_front();
         }
     }
 
@@ -134,13 +141,19 @@ impl PlausibilityGate {
         waas_lock_s: &[f64],
         inputs_age_s: f64,
     ) -> Result<(), &'static str> {
-        let locked_now = self.locked_hist.back().copied().unwrap_or(0);
-        let win_max = self.locked_hist.iter().copied().max().unwrap_or(0);
-        let floor = (win_max as f64 * GATE_COLLAPSE_FRAC).max(2.0);
+        if !resid.is_finite() {
+            return Err("non-finite residual");
+        }
+        if resid.abs() > GATE_ABS_BOUND_PPM {
+            return Err("residual beyond absolute sanity bound");
+        }
+        let locked_now = self.sbas_hist.back().copied().unwrap_or(0);
+        let win_max = self.sbas_hist.iter().copied().max().unwrap_or(0);
+        let floor = (win_max as f64 * GATE_COLLAPSE_FRAC).max(1.0);
         // only a count BELOW the window max can be a collapse — a healthy
         // low-count track (e.g. one GEO all night) is not one
         if locked_now < win_max && (locked_now as f64) < floor {
-            return Err("locked-channel count collapsing");
+            return Err("WAAS locked-channel count collapsing");
         }
         if let Some(freshest) = waas_lock_s.iter().copied().reduce(f64::min) {
             if freshest < GATE_FRESH_LOCK_S {
@@ -187,7 +200,7 @@ mod tests {
         g.observe_locked(2); // 6 -> 2: below 0.5 * 6 = 3
         assert_eq!(
             g.check(-0.40, &[45.0], 1.0),
-            Err("locked-channel count collapsing")
+            Err("WAAS locked-channel count collapsing")
         );
         // a gentle fluctuation (6 -> 4) is not a collapse
         let mut g = PlausibilityGate::new();
@@ -247,5 +260,32 @@ mod tests {
             Err("measurement inputs stale")
         );
         assert!(g.check(-0.40, &[45.0], 5.0).is_ok());
+    }
+
+    /// (d) non-finite residuals are rejected outright.
+    #[test]
+    fn gate_suppresses_non_finite() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert_eq!(g.check(f64::NAN, &[45.0], 1.0), Err("non-finite residual"));
+        assert_eq!(
+            g.check(f64::INFINITY, &[45.0], 1.0),
+            Err("non-finite residual")
+        );
+    }
+
+    /// (e) the absolute sanity bound applies to EVERY sample, including the
+    /// first — a garbage initial residual must not legitimize itself.
+    #[test]
+    fn gate_suppresses_beyond_absolute_bound() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert_eq!(
+            g.check(3.7, &[45.0], 1.0),
+            Err("residual beyond absolute sanity bound")
+        );
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert!(g.check(1.9, &[45.0], 1.0).is_ok());
     }
 }
