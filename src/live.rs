@@ -343,6 +343,13 @@ pub struct Channel {
     /// insert lock_s), from MT24/25 halves decoded by this channel.
     /// Cleared on reseed.
     sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, f64)>,
+    /// Latest iono grid masks by band (iodi, IGP list, insert lock_s),
+    /// from MT18. Cleared on reseed.
+    sbas_igpmask: std::collections::BTreeMap<u8, (u8, Vec<u16>, f64)>,
+    /// Latest iono delay blocks by (band, block_id): (iodi, 15 x
+    /// (vertical-delay counts, GIVEI), insert lock_s), from MT26.
+    /// Cleared on reseed.
+    sbas_iono: std::collections::BTreeMap<(u8, u8), (u8, [(u16, u8); 15], f64)>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -436,6 +443,8 @@ impl Channel {
             sbas_par: None,
             sbas_prc: std::collections::BTreeMap::new(),
             sbas_lt: std::collections::BTreeMap::new(),
+            sbas_igpmask: std::collections::BTreeMap::new(),
+            sbas_iono: std::collections::BTreeMap::new(),
         }
     }
 
@@ -821,6 +830,8 @@ impl Channel {
                 types: std::collections::BTreeMap::new(),
                 fast_corr: Vec::new(),
                 lt_corr: Vec::new(),
+                igp_mask: Vec::new(),
+                iono_delay: Vec::new(),
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
@@ -859,6 +870,14 @@ impl Channel {
                         self.sbas_lt.insert(prn, (dx, dy, dz, daf0, self.lock_s));
                     }
                 }
+                crate::sbas::Message::IonoMask { band, iodi, igps, .. } => {
+                    self.sbas_igpmask
+                        .insert(*band, (*iodi, igps.clone(), self.lock_s));
+                }
+                crate::sbas::Message::IonoDelay { band, block_id, iodi, igps } => {
+                    self.sbas_iono
+                        .insert((*band, *block_id), (*iodi, *igps, self.lock_s));
+                }
                 _ => {}
             }
         }
@@ -876,12 +895,31 @@ impl Channel {
             .filter(|(_, (_, _, _, _, ls))| now_ls - ls < 60.0)
             .map(|(&prn, &(dx, dy, dz, daf0, _))| (prn, dx, dy, dz, daf0))
             .collect();
+        // iono data has a longer life than fast corrections (DO-229
+        // timeouts: 5 min for MT26, 10 min for the MT18 mask — 300 s is
+        // the conservative common window)
+        let igp_mask: Vec<(u8, u8, Vec<u16>)> = self
+            .sbas_igpmask
+            .iter()
+            .filter(|(_, (_, _, ls))| now_ls - ls < 300.0)
+            .map(|(&band, &(iodi, ref igps, _))| (band, iodi, igps.clone()))
+            .collect();
+        let iono_delay: Vec<(u8, u8, u8, Vec<(u16, u8)>)> = self
+            .sbas_iono
+            .iter()
+            .filter(|(_, (_, _, ls))| now_ls - ls < 300.0)
+            .map(|(&(band, block), &(iodi, rows, _))| {
+                (band, block, iodi, rows.to_vec())
+            })
+            .collect();
         Some(SbasSummary {
             locked: rep.sync.locked,
             n_msgs: rep.messages.len(),
             types,
             fast_corr,
             lt_corr,
+            igp_mask,
+            iono_delay,
         })
     }
 
@@ -994,6 +1032,8 @@ impl Channel {
         self.sbas_par = None;
         self.sbas_prc.clear();
         self.sbas_lt.clear();
+        self.sbas_igpmask.clear();
+        self.sbas_iono.clear();
     }
 
     /// Shift the carrier loops by `df` Hz WITHOUT touching lock state.
@@ -1031,6 +1071,13 @@ pub struct SbasSummary {
     /// offset = broadcast + daf0. Velocity-code-1 rates are not yet
     /// extrapolated. Same 60 s freshness window as fast_corr.
     pub lt_corr: Vec<(u8, f64, f64, f64, f64)>,
+    /// Latest iono grid masks (MT18): (band, iodi, IGP numbers). 300 s
+    /// freshness (DO-229 mask timeout is 10 min).
+    pub igp_mask: Vec<(u8, u8, Vec<u16>)>,
+    /// Latest iono delay blocks (MT26): (band, block_id, iodi, 15 x
+    /// (vertical-delay counts, GIVEI)). Delay scale 0.125 m, 511 counts
+    /// = not monitored. 300 s freshness (DO-229 MT26 timeout is 5 min).
+    pub iono_delay: Vec<(u8, u8, u8, Vec<(u16, u8)>)>,
 }
 
 /// Per-PRN 1 Hz report — serialized to JSON by the front end.
