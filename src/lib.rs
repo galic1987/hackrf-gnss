@@ -16,6 +16,7 @@ pub mod e5;
 pub mod upper_l;
 pub mod pass;
 pub mod sbas;
+pub mod sbas_iono;
 pub mod ts_nibble;
 pub mod tdc;
 pub mod ts_sidecar;

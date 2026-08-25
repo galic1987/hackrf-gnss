@@ -181,6 +181,54 @@ fn main() {
     }
     let mut n_sbas_corr = 0usize;
     let mut n_lt_corr = 0usize;
+    // WAAS iono (MT18 masks + MT26 delays): (IGP lat, lon) deg -> vertical
+    // delay m. An MT26 block is used only when its IODI matches the band's
+    // current mask IODI (DO-229 consistency rule); 511 counts = not
+    // monitored; GIVEI >= 15 = don't use.
+    let mut igp_delay: std::collections::HashMap<(i16, i16), f64> =
+        std::collections::HashMap::new();
+    for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
+        if s["sys"].as_str() != Some("sbas") {
+            continue;
+        }
+        if !s["sbas_msgs"]["locked"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        for mask in s["sbas_msgs"]["igp_mask"].as_array().into_iter().flatten() {
+            let (Some(band), Some(miodi)) = (mask[0].as_u64(), mask[1].as_u64()) else {
+                continue;
+            };
+            let Some(igps) = mask[2].as_array() else { continue };
+            for dl in s["sbas_msgs"]["iono_delay"].as_array().into_iter().flatten() {
+                let (Some(dband), Some(block), Some(diodi)) =
+                    (dl[0].as_u64(), dl[1].as_u64(), dl[2].as_u64())
+                else {
+                    continue;
+                };
+                if dband != band || diodi != miodi {
+                    continue;
+                }
+                let Some(rows) = dl[3].as_array() else { continue };
+                for (i, row) in rows.iter().enumerate() {
+                    let (Some(counts), Some(givei)) = (row[0].as_u64(), row[1].as_u64()) else {
+                        continue;
+                    };
+                    if counts == 511 || givei >= 15 {
+                        continue;
+                    }
+                    let j = block as usize * 15 + i;
+                    if let Some(igp_num) = igps.get(j).and_then(|v| v.as_u64()) {
+                        if let Some(coord) =
+                            hackrf_gnss::sbas_iono::igp_latlon(band as u8, igp_num as u16)
+                        {
+                            igp_delay.insert(coord, counts as f64 * 0.125);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut n_iono_corr = 0usize;
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if now - s["epoch"].as_f64().unwrap_or(0.0) > 10.0 {
             continue;
@@ -225,9 +273,40 @@ fn main() {
                     n_lt_corr += 1;
                 }
                 let sat_m = [sat_m[0] + dx, sat_m[1] + dy, sat_m[2] + dz];
+                // WAAS iono slant delay: pierce point from the site to the
+                // (LT-corrected) satellite, bilinear/triangle over the
+                // live IGP grid, obliquity-scaled. The iono delays the
+                // signal, so the correction is SUBTRACTED.
+                let rel = [
+                    sat_m[0] - site_m[0],
+                    sat_m[1] - site_m[1],
+                    sat_m[2] - site_m[2],
+                ];
+                let (az, el) = hackrf_gnss::sbas_iono::azel(
+                    dyn_lla[0].to_radians(),
+                    dyn_lla[1].to_radians(),
+                    rel,
+                );
+                let mut iono_m = 0.0;
+                if el > 0.0 && !igp_delay.is_empty() {
+                    let ((plat, plon), fp) = hackrf_gnss::sbas_iono::ion_pierce_point(
+                        (dyn_lla[0].to_radians(), dyn_lla[1].to_radians()),
+                        az,
+                        el,
+                    );
+                    if let Some(d) = hackrf_gnss::sbas_iono::iono_slant_delay(
+                        plat.to_degrees(),
+                        plon.to_degrees(),
+                        fp,
+                        &igp_delay,
+                    ) {
+                        iono_m = d;
+                        n_iono_corr += 1;
+                    }
+                }
                 gps_meas.push(hackrf_gnss::gps::pvt::Meas {
                     sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
-                    pseudorange: (rho_m + prc) / 1000.0 + (dt_sv + daf0) * 299_792.458, // SBAS PRC added, sat clock + LT daf0 removed
+                    pseudorange: (rho_m + prc - iono_m) / 1000.0 + (dt_sv + daf0) * 299_792.458, // SBAS PRC added, iono slant subtracted, sat clock + LT daf0 removed
                     clock_free: false,
                 });
                 gps_prns.push(prn);
@@ -319,8 +398,8 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             println!(
-                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, gate
+                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -456,8 +535,8 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             println!(
-                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, gate
+                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
