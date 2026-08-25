@@ -242,15 +242,36 @@ pub fn symbols_from_prompt_par(prompts: &[f64], forced: Option<usize>) -> (Vec<f
 }
 
 /// Harvest MT2-5 fast corrections as (GPS PRN, PRC metres, UDREI) rows.
-/// Slots 1..=37 of the MT1 mask are GPS; UDREI >= 14 (not monitored /
-/// don't use) rows are excluded. PRC scale is 0.125 m. DO-229 convention:
-/// the PRC is ADDED to the measured pseudorange.
-pub fn fast_corrections(first_slot: u8, prc: &[i16; 13], udrei: &[u8; 13]) -> Vec<(u8, f64, u8)> {
+/// Entries map to satellites by ORDINAL through the set bits of the MT1
+/// PRN mask, not by absolute slot (DO-229D A.4.4.3: "Message Type 2
+/// contains the data sets for the first 13 satellites designated in the
+/// PRN mask. Message Type 3 ... satellites 14 - 26", etc.): `mask_slots`
+/// is the 1-based absolute slot numbers of the set bits in mask order
+/// (Message::PrnMask), `first_slot` the 1-based ordinal of this message's
+/// first entry ((mt-2)*13+1). A WAAS mask always has gaps, so ordinal and
+/// slot differ. Corrections are valid only while the message IODP equals
+/// the mask's IODP (DO-229D A.4.4.2) — a mismatch or an empty/short mask
+/// yields no rows. Absolute slots 1..=37 are GPS (slot number = GPS PRN);
+/// UDREI >= 14 (not monitored / don't use) rows are excluded. PRC scale
+/// is 0.125 m. DO-229 convention: the PRC is ADDED to the measured
+/// pseudorange.
+pub fn fast_corrections(
+    mask_slots: &[u8],
+    mask_iodp: u8,
+    msg_iodp: u8,
+    first_slot: u8,
+    prc: &[i16; 13],
+    udrei: &[u8; 13],
+) -> Vec<(u8, f64, u8)> {
+    if mask_iodp != msg_iodp {
+        return Vec::new();
+    }
     (0..13usize)
         .filter_map(|k| {
-            let slot = first_slot as usize + k;
+            let ordinal = first_slot as usize + k;
+            let slot = *mask_slots.get(ordinal - 1)?;
             if (1..=37).contains(&slot) && udrei[k] < 14 {
-                Some((slot as u8, prc[k] as f64 * 0.125, udrei[k]))
+                Some((slot, prc[k] as f64 * 0.125, udrei[k]))
             } else {
                 None
             }
@@ -259,24 +280,46 @@ pub fn fast_corrections(first_slot: u8, prc: &[i16; 13], udrei: &[u8; 13]) -> Ve
 }
 
 /// Harvest a long-term half message (MT25 halves, MT24 long-term slot) as
-/// (GPS PRN, dx, dy, dz metres, daf0 seconds) rows. Slots 1..=37 of the
-/// PRN mask are GPS. dx/dy/dz scale 0.125 m; daf0 scale 2^-31 s.
-/// Velocity-code-1 rates (ddx/daf1, t_lt) are not yet extrapolated — the
-/// base correction is applied as-of its issue time. DO-229 convention:
-/// corrected satellite position = broadcast + (dx, dy, dz) and corrected
-/// satellite clock offset = broadcast + daf0.
-pub fn lt_corrections(half: &LongTermHalf) -> Vec<(u8, f64, f64, f64, f64)> {
+/// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD) rows. The 6-bit PRN
+/// mask number is an ORDINAL into the mask, exactly like the MT2-5
+/// entries: DO-229D A.4.4.7 — "The PRN Mask No. is the sequence number of
+/// the bits set in the 210 bit mask (that is, between 1 and 51)" (Table
+/// A-10 Note 2: the count of 1's in the mask up to the subject
+/// satellite's bit; 0 = no satellite, ignore the entry). The half's IODP
+/// must match the mask's IODP (A.4.4.2/A.4.4.7). Velocity-code-1 halves
+/// are skipped: their base terms are defined at t_lt with rates we don't
+/// propagate, and applying them frozen across the 360 s validity window
+/// is worse than skipping (vc=0 is what EGNOS/WAAS predominantly
+/// broadcast). Absolute slots 1..=37 are GPS. dx/dy/dz scale 0.125 m;
+/// daf0 scale 2^-31 s. DO-229 convention: corrected satellite position =
+/// broadcast + (dx, dy, dz) and corrected satellite clock offset =
+/// broadcast + daf0. The returned IOD is the GPS IODE of the ephemeris
+/// the correction was generated against (Table A-10 Note 3) — the
+/// application must match it against the ephemeris in use.
+pub fn lt_corrections(
+    mask_slots: &[u8],
+    mask_iodp: u8,
+    half: &LongTermHalf,
+) -> Vec<(u8, f64, f64, f64, f64, u8)> {
+    if half.velocity_code != 0 || half.iodp != mask_iodp {
+        return Vec::new();
+    }
     half.sats
         .iter()
-        .filter(|s| (1..=37).contains(&s.mask))
-        .map(|s| {
-            (
-                s.mask,
-                s.dx as f64 * 0.125,
-                s.dy as f64 * 0.125,
-                s.dz as f64 * 0.125,
-                s.daf0 as f64 * 2.0f64.powi(-31),
-            )
+        .filter_map(|s| {
+            let slot = *mask_slots.get((s.mask as usize).checked_sub(1)?)?;
+            if (1..=37).contains(&slot) {
+                Some((
+                    slot,
+                    s.dx as f64 * 0.125,
+                    s.dy as f64 * 0.125,
+                    s.dz as f64 * 0.125,
+                    s.daf0 as f64 * 2.0f64.powi(-31),
+                    s.iod,
+                ))
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -461,7 +504,9 @@ impl<'a> BitReader<'a> {
 /// One satellite entry of a long-term correction half message (MT24/25).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LongTermSat {
-    /// PRN mask slot number.
+    /// PRN mask number: ORDINAL of the satellite among the set bits of
+    /// the MT1 mask (1..=51; DO-229D A.4.4.7), not an absolute slot. 0 =
+    /// no satellite (Table A-10 Note 2).
     pub mask: u8,
     /// Issue of data (ephemeris).
     pub iod: u8,
@@ -513,11 +558,14 @@ pub enum Message {
     DontUse,
     /// MT1: PRN mask — slot numbers 1..=210 (1..37 are GPS).
     PrnMask { slots: Vec<u8>, iodp: u8 },
-    /// MT2-5: fast corrections for 13 PRN-mask slots. PRC scale 0.125 m.
+    /// MT2-5: fast corrections for 13 satellites designated in the MT1
+    /// PRN mask (addressed by ordinal, see fast_corrections). PRC scale
+    /// 0.125 m.
     Fast {
         iodf: u8,
         iodp: u8,
-        /// First PRN-mask slot covered (1-based).
+        /// Ordinal of the first entry among the mask's set bits (1-based,
+        /// (mt-2)*13+1).
         first_slot: u8,
         prc: [i16; 13],
         /// UDRE indicator per slot (index into UDRE_M2; 13/14/15 special).
@@ -1730,26 +1778,80 @@ mod tests {
         assert!(lock_streak(&bits, &valid) < 3, "rotation break must reset");
     }
 
-    /// Fast-correction harvest: 0.125 m scale, slot->GPS-PRN mapping,
-    /// UDREI >= 14 and non-GPS slots excluded. DO-229 sign convention:
-    /// PRC is ADDED to the measured pseudorange (verified by the scale/
-    /// sign assertions here — a sign flip would show as a doubled error
-    /// downstream, the classic SBAS application bug).
+    /// Fast-correction harvest: 0.125 m scale, UDREI >= 14 excluded. DO-229
+    /// sign convention: PRC is ADDED to the measured pseudorange (verified
+    /// by the scale/sign assertions here — a sign flip would show as a
+    /// doubled error downstream, the classic SBAS application bug).
     #[test]
     fn fast_corrections_scale_sign_and_gates() {
+        // full GPS mask: the ordinal mapping degenerates to slot = ordinal
+        let mask: Vec<u8> = (1..=37).collect();
         let mut prc = [0i16; 13];
         let mut udrei = [0u8; 13];
         prc[0] = 16; // +2.0 m
         prc[1] = -8; // -1.0 m
         udrei[1] = 3;
         udrei[2] = 15; // don't use
-        let rows = fast_corrections(1, &prc, &udrei);
-        assert_eq!(rows[0], (1, 2.0, 0)); // slot 1 -> PRN 1, +2.0 m (not -2.0)
+        let rows = fast_corrections(&mask, 2, 2, 1, &prc, &udrei);
+        assert_eq!(rows[0], (1, 2.0, 0)); // ordinal 1 -> PRN 1, +2.0 m (not -2.0)
         assert_eq!(rows[1], (2, -1.0, 3));
         assert_eq!(rows.len(), 12, "only the UDREI-15 row is excluded");
-        // slot 38+ is not GPS
-        let rows = fast_corrections(30, &prc, &udrei);
-        assert!(rows.iter().all(|(p, _, _)| *p <= 37));
+        // ordinals beyond the mask length yield nothing
+        let rows = fast_corrections(&mask, 2, 2, 40, &prc, &udrei);
+        assert!(rows.is_empty());
+    }
+
+    /// MT2-5 entries address satellites by ORDINAL through the set bits of
+    /// the MT1 mask (DO-229D A.4.4.3: "Message Type 2 contains the data
+    /// sets for the first 13 satellites designated in the PRN mask"), not
+    /// by absolute slot — with gaps in the mask the same entry lands on a
+    /// different PRN.
+    #[test]
+    fn fast_corrections_ordinal_through_gapped_mask() {
+        // slots 4 and 6 are not monitored: the mask has gaps
+        let mask = vec![1u8, 2, 3, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let mut prc = [0i16; 13];
+        let udrei = [0u8; 13];
+        for (k, v) in prc.iter_mut().enumerate() {
+            *v = (k as i16) + 1; // distinct PRC per entry
+        }
+        let rows = fast_corrections(&mask, 2, 2, 1, &prc, &udrei);
+        assert_eq!(rows.len(), 13);
+        for (k, &(prn, prc_m, _)) in rows.iter().enumerate() {
+            assert_eq!(prn, mask[k], "ordinal {} must map through the mask", k + 1);
+            assert_eq!(prc_m, (k as f64 + 1.0) * 0.125);
+        }
+        // entry 4 lands on PRN 5, not 4: the gap at slot 4 shifts it
+        assert_eq!(rows[3].0, 5);
+        // MT3 (ordinals 14-26) on a 13-satellite mask is empty
+        assert!(fast_corrections(&mask, 2, 2, 14, &prc, &udrei).is_empty());
+    }
+
+    /// Fast corrections are valid only while the message IODP matches the
+    /// IODP of the MT1 mask in use (DO-229D A.4.4.2/A.4.4.3).
+    #[test]
+    fn fast_corrections_iodp_mismatch_yields_nothing() {
+        let mask = vec![1u8, 2, 3, 5, 7];
+        let prc = [8i16; 13];
+        let udrei = [0u8; 13];
+        assert!(fast_corrections(&mask, 2, 3, 1, &prc, &udrei).is_empty());
+        assert!(
+            fast_corrections(&[], 2, 2, 1, &prc, &udrei).is_empty(),
+            "no mask, no corrections"
+        );
+        assert_eq!(fast_corrections(&mask, 2, 2, 1, &prc, &udrei).len(), 5);
+    }
+
+    /// Mask slots beyond 37 (GLONASS 38-61, GEO 120-138) are never GPS
+    /// PRNs, even when their ordinal falls inside the 13-entry range.
+    #[test]
+    fn fast_corrections_non_gps_slots_excluded() {
+        let mask = vec![1u8, 2, 38, 39, 120, 3, 4];
+        let prc = [8i16; 13];
+        let udrei = [0u8; 13];
+        let rows = fast_corrections(&mask, 0, 0, 1, &prc, &udrei);
+        let prns: Vec<u8> = rows.iter().map(|r| r.0).collect();
+        assert_eq!(prns, vec![1, 2, 3, 4]);
     }
 
     /// lt_corrections: raw->physical scaling and slot filtering. A sign or
@@ -1758,12 +1860,14 @@ mod tests {
     /// guards).
     #[test]
     fn lt_corrections_scale_and_slots() {
+        // full GPS mask: ordinal = slot
+        let mask: Vec<u8> = (1..=37).collect();
         let half = LongTermHalf {
             velocity_code: 0,
             sats: vec![
                 LongTermSat {
                     mask: 5,
-                    iod: 0,
+                    iod: 42,
                     dx: 8,   // +1.0 m
                     dy: -16, // -2.0 m
                     dz: 0,
@@ -1774,7 +1878,7 @@ mod tests {
                     daf1: None,
                 },
                 LongTermSat {
-                    mask: 40, // not GPS — filtered
+                    mask: 40, // ordinal beyond the mask — skipped
                     iod: 0,
                     dx: 100,
                     dy: 100,
@@ -1789,14 +1893,67 @@ mod tests {
             t_lt_s: None,
             iodp: 0,
         };
-        let rows = lt_corrections(&half);
+        let rows = lt_corrections(&mask, 0, &half);
         assert_eq!(rows.len(), 1);
-        let (prn, dx, dy, dz, daf0) = rows[0];
+        let (prn, dx, dy, dz, daf0, iod) = rows[0];
         assert_eq!(prn, 5);
         assert_eq!(dx, 1.0);
         assert_eq!(dy, -2.0);
         assert_eq!(dz, 0.0);
         assert!((daf0 - 1024.0 * 2.0f64.powi(-31)).abs() < 1e-15);
+        assert_eq!(iod, 42, "the IOD must ride along for the ephemeris gate");
+    }
+
+    /// LT half messages address satellites by ordinal through the mask
+    /// (DO-229D A.4.4.7: "The PRN Mask No. is the sequence number of the
+    /// bits set in the 210 bit mask (that is, between 1 and 51)") and are
+    /// gated on the mask IODP; velocity-code-1 halves are skipped.
+    #[test]
+    fn lt_corrections_ordinal_iodp_and_vc_gate() {
+        let sat = |mask_no: u8, iod: u8| LongTermSat {
+            mask: mask_no,
+            iod,
+            dx: 8,
+            dy: 0,
+            dz: 0,
+            daf0: 0,
+            ddx: None,
+            ddy: None,
+            ddz: None,
+            daf1: None,
+        };
+        let mask = vec![1u8, 2, 5, 7, 9];
+        let half = LongTermHalf {
+            velocity_code: 0,
+            // ordinal 3 -> slot 5; 0 = "no satellite" (Table A-10 Note 2);
+            // 6 is beyond the mask
+            sats: vec![sat(3, 200), sat(0, 1), sat(6, 2)],
+            t_lt_s: None,
+            iodp: 1,
+        };
+        let rows = lt_corrections(&mask, 1, &half);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 5);
+        assert_eq!(rows[0].5, 200);
+        // IODP mismatch: the corrections belong to another mask generation
+        assert!(lt_corrections(&mask, 2, &half).is_empty());
+        // non-GPS slots (GLONASS 38-61) are excluded
+        let glo = LongTermHalf {
+            velocity_code: 0,
+            sats: vec![sat(1, 3)],
+            t_lt_s: None,
+            iodp: 0,
+        };
+        assert!(lt_corrections(&[38u8], 0, &glo).is_empty());
+        // velocity code 1: base terms are defined at t_lt with rates we
+        // don't propagate — skipped rather than applied frozen
+        let vc1 = LongTermHalf {
+            velocity_code: 1,
+            sats: vec![sat(1, 7)],
+            t_lt_s: Some(16),
+            iodp: 1,
+        };
+        assert!(lt_corrections(&mask, 1, &vc1).is_empty());
     }
 
     /// The forced-parity variant: a locked decoder keeps its pairing even

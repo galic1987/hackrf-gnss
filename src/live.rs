@@ -339,10 +339,15 @@ pub struct Channel {
     /// Latest per-PRN fast corrections (PRC m, UDREI, insert lock_s),
     /// from MT2-5 messages decoded by this channel. Cleared on reseed.
     sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
-    /// Latest per-PRN long-term corrections (dx, dy, dz m, daf0 s,
+    /// Latest MT1 PRN mask: (absolute slot numbers of the set bits in
+    /// mask order, IODP). MT2-5 and MT24/25 corrections only decode
+    /// against this mask — DO-229 addresses their entries by ORDINAL of
+    /// the set bits and gates them on IODP match. Cleared on reseed.
+    sbas_mask: Option<(Vec<u8>, u8)>,
+    /// Latest per-PRN long-term corrections (dx, dy, dz m, daf0 s, IOD,
     /// insert lock_s), from MT24/25 halves decoded by this channel.
     /// Cleared on reseed.
-    sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, f64)>,
+    sbas_lt: std::collections::BTreeMap<u8, (f64, f64, f64, f64, u8, f64)>,
     /// Latest iono grid masks by band (iodi, IGP list, insert lock_s),
     /// from MT18. Cleared on reseed.
     sbas_igpmask: std::collections::BTreeMap<u8, (u8, Vec<u16>, f64)>,
@@ -442,6 +447,7 @@ impl Channel {
             sbas_dec: crate::sbas::Decoder::new(),
             sbas_par: None,
             sbas_prc: std::collections::BTreeMap::new(),
+            sbas_mask: None,
             sbas_lt: std::collections::BTreeMap::new(),
             sbas_igpmask: std::collections::BTreeMap::new(),
             sbas_iono: std::collections::BTreeMap::new(),
@@ -845,29 +851,48 @@ impl Channel {
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
             *types.entry(dm.message.mt()).or_insert(0usize) += 1;
-            // harvest fast corrections (MT2-5): GPS PRNs live in slots
-            // 1..=37 of the MT1 mask; PRC scale 0.125 m; UDREI >= 14 means
-            // not-monitored/don't-use and is never published
-            if let crate::sbas::Message::Fast { first_slot, prc, udrei, .. } = &dm.message {
-                for (prn, prc_m, u) in
-                    crate::sbas::fast_corrections(*first_slot, prc, udrei)
-                {
-                    self.sbas_prc.insert(prn, (prc_m, u, self.lock_s));
+            // harvest fast corrections (MT2-5): entries address satellites
+            // by ORDINAL through the MT1 mask's set bits, and are valid
+            // only while the message IODP matches the mask's (DO-229D
+            // A.4.4.2/A.4.4.3). No mask held -> nothing decodes. UDREI
+            // >= 14 means not-monitored/don't-use and is never published
+            if let crate::sbas::Message::Fast { first_slot, iodp, prc, udrei, .. } = &dm.message {
+                if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                    for (prn, prc_m, u) in
+                        crate::sbas::fast_corrections(mask_slots, *mask_iodp, *iodp, *first_slot, prc, udrei)
+                    {
+                        self.sbas_prc.insert(prn, (prc_m, u, self.lock_s));
+                    }
                 }
             }
             // harvest long-term corrections (MT25 halves; MT24 long-term
-            // slot): corrected sat position/clock = broadcast + delta
+            // slot): corrected sat position/clock = broadcast + delta;
+            // same ordinal-through-mask addressing and IODP gate as the
+            // fast corrections (DO-229D A.4.4.7)
             match &dm.message {
+                crate::sbas::Message::PrnMask { slots, iodp } => {
+                    self.sbas_mask = Some((slots.clone(), *iodp));
+                }
                 crate::sbas::Message::LongTerm { a, b } => {
-                    for h in [a, b] {
-                        for (prn, dx, dy, dz, daf0) in crate::sbas::lt_corrections(h) {
-                            self.sbas_lt.insert(prn, (dx, dy, dz, daf0, self.lock_s));
+                    if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                        for h in [a, b] {
+                            for (prn, dx, dy, dz, daf0, iod) in
+                                crate::sbas::lt_corrections(mask_slots, *mask_iodp, h)
+                            {
+                                self.sbas_lt
+                                    .insert(prn, (dx, dy, dz, daf0, iod, self.lock_s));
+                            }
                         }
                     }
                 }
                 crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
-                    for (prn, dx, dy, dz, daf0) in crate::sbas::lt_corrections(lt) {
-                        self.sbas_lt.insert(prn, (dx, dy, dz, daf0, self.lock_s));
+                    if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                        for (prn, dx, dy, dz, daf0, iod) in
+                            crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt)
+                        {
+                            self.sbas_lt
+                                .insert(prn, (dx, dy, dz, daf0, iod, self.lock_s));
+                        }
                     }
                 }
                 crate::sbas::Message::IonoMask { band, iodi, igps, .. } => {
@@ -889,11 +914,15 @@ impl Channel {
             .filter(|(_, (_, _, ls))| now_ls - ls < 60.0)
             .map(|(&prn, &(prc_m, udrei, _))| (prn, prc_m, udrei))
             .collect();
-        let lt_corr: Vec<(u8, f64, f64, f64, f64)> = self
+        // long-term corrections have their own, longer validity: DO-229D
+        // Table 2-1 gives a 360 s timeout for MT24/25 (en-route/terminal;
+        // 240 s on approach) — the 60 s fast-corr window would drop
+        // still-valid LT data
+        let lt_corr: Vec<(u8, f64, f64, f64, f64, u8)> = self
             .sbas_lt
             .iter()
-            .filter(|(_, (_, _, _, _, ls))| now_ls - ls < 60.0)
-            .map(|(&prn, &(dx, dy, dz, daf0, _))| (prn, dx, dy, dz, daf0))
+            .filter(|(_, (_, _, _, _, _, ls))| now_ls - ls < 360.0)
+            .map(|(&prn, &(dx, dy, dz, daf0, iod, _))| (prn, dx, dy, dz, daf0, iod))
             .collect();
         // iono data has a longer life than fast corrections (DO-229
         // timeouts: 5 min for MT26, 10 min for the MT18 mask — 300 s is
@@ -1031,6 +1060,7 @@ impl Channel {
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
         self.sbas_prc.clear();
+        self.sbas_mask = None;
         self.sbas_lt.clear();
         self.sbas_igpmask.clear();
         self.sbas_iono.clear();
@@ -1060,17 +1090,22 @@ pub struct SbasSummary {
     /// per-message-type counts in the current window (DO-229 MT -> n)
     pub types: std::collections::BTreeMap<u8, usize>,
     /// Latest fast corrections (MT2-5) held by this channel:
-    /// (GPS PRN, PRC metres, UDREI). UDREI >= 14 rows are never included
+    /// (GPS PRN, PRC metres, UDREI), decoded by ordinal through the
+    /// current MT1 mask and only while IODPs match. UDREI >= 14 rows are
+    /// never included
     /// (not-monitored/don't-use). Entries older than 60 s of lock time are
     /// dropped (conservative vs the MT7 degradation model, not yet
     /// implemented). Empty when none decoded.
     pub fast_corr: Vec<(u8, f64, u8)>,
     /// Latest long-term corrections (MT24/25) held by this channel:
-    /// (GPS PRN, dx, dy, dz metres, daf0 seconds). Corrected satellite
+    /// (GPS PRN, dx, dy, dz metres, daf0 seconds, IOD). Corrected satellite
     /// position = broadcast + (dx, dy, dz); corrected satellite clock
-    /// offset = broadcast + daf0. Velocity-code-1 rates are not yet
-    /// extrapolated. Same 60 s freshness window as fast_corr.
-    pub lt_corr: Vec<(u8, f64, f64, f64, f64)>,
+    /// offset = broadcast + daf0. IOD is the GPS IODE of the ephemeris
+    /// the correction was generated against (DO-229D Table A-10 Note 3) —
+    /// apply only when it matches the ephemeris in use. Velocity-code-1
+    /// halves are never published (their rates are not propagated).
+    /// 360 s freshness window (DO-229D Table 2-1 MT24/25 timeout).
+    pub lt_corr: Vec<(u8, f64, f64, f64, f64, u8)>,
     /// Latest iono grid masks (MT18): (band, iodi, IGP numbers). 300 s
     /// freshness (DO-229 mask timeout is 10 min).
     pub igp_mask: Vec<(u8, u8, Vec<u16>)>,

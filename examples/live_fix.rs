@@ -150,7 +150,7 @@ fn main() {
     // SBAS channel's published fast_corr: GPS PRN -> PRC metres. DO-229
     // convention: the PRC is ADDED to the measured pseudorange.
     let mut sbas_prc: std::collections::HashMap<u8, f64> = std::collections::HashMap::new();
-    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64)> =
+    let mut sbas_lt: std::collections::HashMap<u8, (f64, f64, f64, f64, u8)> =
         std::collections::HashMap::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if s["sys"].as_str() != Some("sbas") {
@@ -165,17 +165,23 @@ fn main() {
             }
         }
         // SBAS long-term corrections (MT24/25): GPS PRN -> (dx, dy, dz m,
-        // daf0 s). Corrected sat position = broadcast + delta, corrected
-        // sat clock offset = broadcast + daf0 (DO-229).
+        // daf0 s, iod). Corrected sat position = broadcast + delta,
+        // corrected sat clock offset = broadcast + daf0 (DO-229). The iod
+        // is the GPS IODE of the ephemeris the correction was generated
+        // against (DO-229D Table A-10 Note 3); gating on it is not
+        // possible yet — BrdcEph carries no IODE (lnav.rs decodes it only
+        // as a subframe consistency check, and RINEX nav records don't
+        // include it) — so the correction is applied ungated.
         for row in s["sbas_msgs"]["lt_corr"].as_array().into_iter().flatten() {
-            if let (Some(prn), Some(dx), Some(dy), Some(dz), Some(daf0)) = (
+            if let (Some(prn), Some(dx), Some(dy), Some(dz), Some(daf0), Some(iod)) = (
                 row[0].as_u64(),
                 row[1].as_f64(),
                 row[2].as_f64(),
                 row[3].as_f64(),
                 row[4].as_f64(),
+                row[5].as_u64(),
             ) {
-                sbas_lt.insert(prn as u8, (dx, dy, dz, daf0));
+                sbas_lt.insert(prn as u8, (dx, dy, dz, daf0, iod as u8));
             }
         }
     }
@@ -268,7 +274,9 @@ fn main() {
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
-                let (dx, dy, dz, daf0) = sbas_lt.get(&prn).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
+                let (dx, dy, dz, daf0, _iod) =
+                    sbas_lt.get(&prn).copied().unwrap_or((0.0, 0.0, 0.0, 0.0, 0));
+                // counted only when a correction is actually applied
                 if dx != 0.0 || dy != 0.0 || dz != 0.0 || daf0 != 0.0 {
                     n_lt_corr += 1;
                 }
