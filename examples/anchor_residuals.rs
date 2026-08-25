@@ -20,6 +20,7 @@
 //!
 //! usage: anchor_residuals   (reads live state; no radio access)
 
+use hackrf_gnss::beidou_d1::{parse_rinex_bds, sat_at_txtime_bds};
 use hackrf_gnss::gps::broadcast::BrdcEph;
 
 const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
@@ -34,14 +35,16 @@ fn main() {
         .as_secs_f64();
 
     let mut ephs: std::collections::HashMap<u8, BrdcEph> = Default::default();
+    let mut bds_ephs: std::collections::HashMap<u8, BrdcEph> = Default::default();
     if let Ok(t) = std::fs::read_to_string(EPH) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
             for e in v["ephemeris"].as_array().into_iter().flatten() {
                 if let Ok(eph) = serde_json::from_value::<BrdcEph>(e.clone()) {
-                    if eph.sys != 0 {
-                        continue; // BeiDou: separate timescale/orbit constants
+                    if eph.sys == 1 {
+                        bds_ephs.insert(eph.prn, eph);
+                    } else if eph.sys == 0 {
+                        ephs.insert(eph.prn, eph);
                     }
-                    ephs.insert(eph.prn, eph);
                 }
             }
         }
@@ -52,6 +55,9 @@ fn main() {
     ) {
         for (prn, eph) in hackrf_gnss::gps::broadcast::parse_rinex_gps(&t) {
             ephs.entry(prn).or_insert(eph);
+        }
+        for (prn, eph) in parse_rinex_bds(&t) {
+            bds_ephs.entry(prn).or_insert(eph);
         }
     }
 
@@ -150,6 +156,44 @@ fn main() {
         let geom_km = rng_m / 1000.0;
         let rho_km = rho_m / 1000.0 + dt_sv * C_KM_S; // sat clock removed, as in live_fix
         raw.push((prn, rho_km - geom_km));
+    }
+    // (prn, raw BDS residual in km before clock removal). t_tx for BDS is
+    // stored as GPST-equivalent SOW (see beidou_d1.rs), so the BDS median is
+    // directly comparable to the GPS median: bds_clock - gps_clock is the
+    // inter-system time-base bias the mixed solver reports as isx.
+    let mut raw_bds: Vec<(u8, f64)> = Vec::new();
+    for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
+        if s["sys"].as_str() != Some("beidou") {
+            continue;
+        }
+        if now - s["epoch"].as_f64().unwrap_or(0.0) > 10.0 {
+            continue;
+        }
+        let (Some(prn), Some(rho_m), Some(t_tx)) = (
+            s["prn"].as_u64().map(|p| p as u8),
+            s["rho_m"].as_f64(),
+            s["t_tx"].as_f64(),
+        ) else {
+            continue;
+        };
+        let Some(eph) = bds_ephs.get(&prn) else {
+            println!("BDS PRN {prn:2}: anchored but NO ephemeris — skipped");
+            continue;
+        };
+        let site_m = site.map(|x| x * 1000.0);
+        let (_, dt0, _) = sat_at_txtime_bds(eph, t_tx, site_m);
+        let mut a = t_tx - dt0 + 0.075;
+        let mut dt_sv = dt0;
+        let mut rng_m = 0.0;
+        for _ in 0..2 {
+            let (_, d, r) = sat_at_txtime_bds(eph, a, site_m);
+            dt_sv = d;
+            rng_m = r;
+            a = t_tx - d + r / 299_792_458.0;
+        }
+        let geom_km = rng_m / 1000.0;
+        let rho_km = rho_m / 1000.0 + dt_sv * C_KM_S;
+        raw_bds.push((prn, rho_km - geom_km));
     }
     if raw.is_empty() {
         println!("no anchored GPS channels in the tracker state right now");
@@ -257,4 +301,45 @@ fn main() {
             "DO NOT trust an anchored solve"
         }
     );
+
+    // ---- BeiDou split (round-8 phase 2) ----
+    if !raw_bds.is_empty() {
+        let mut bsorted: Vec<f64> = raw_bds.iter().map(|&(_, r)| r).collect();
+        bsorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let bds_clock = bsorted[bsorted.len() / 2];
+        let isx_km = bds_clock - clock;
+        println!("\n--- BeiDou ({} anchored) ---", raw_bds.len());
+        println!(
+            "BDS common-mode: {bds_clock:.3} km | isx (BDS-GPS median split): {isx_km:+.3} km ({:+.2} us)",
+            isx_km / C_KM_S * 1e6
+        );
+        if raw_bds.len() < 2 {
+            println!("*** only one BDS channel — per-channel split unmeasurable;");
+            println!("*** the isx line above conflates time-base bias with this channel's own error");
+        }
+        println!("{:>6} {:>14} {:>12}", "PRN", "resid (km)", "resid (us)");
+        for (prn, r) in &raw_bds {
+            let resid = r - bds_clock;
+            println!(
+                "{:>6} {:>14.3} {:>12.1}",
+                prn,
+                resid,
+                resid / C_KM_S * 1e6
+            );
+        }
+        if raw_bds.len() >= 2 {
+            // All channels sharing the same offset => common BDS time-base
+            // bias; one channel departing => per-channel measurement issue.
+            let spread = bsorted[bsorted.len() - 1] - bsorted[0];
+            println!(
+                "BDS channel spread: {:.3} km — {}",
+                spread,
+                if spread < 0.05 {
+                    "channels agree; offset is a COMMON time-base bias"
+                } else {
+                    "channels disagree; per-channel measurement issue in the mix"
+                }
+            );
+        }
+    }
 }
