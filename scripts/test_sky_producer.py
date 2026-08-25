@@ -27,8 +27,11 @@ def check(name, cond, detail=""):
 
 
 def main():
-    site = sp.geodetic_to_ecef(sp.SITE_LAT, sp.SITE_LON, sp.SITE_H)
-    la, lo = math.radians(sp.SITE_LAT), math.radians(sp.SITE_LON)
+    # anchor comes from observations/site.json via sp.SITE (None sandboxed);
+    # the geometry cases work for any site, so a fixture stands in then
+    site_ll = sp.SITE if sp.SITE else (39.0032, -77.6058, 20.0)
+    site = sp.geodetic_to_ecef(*site_ll)
+    la, lo = math.radians(site_ll[0]), math.radians(site_ll[1])
     up = (math.cos(la) * math.cos(lo), math.cos(la) * math.sin(lo), math.sin(la))
     east = (-math.sin(lo), math.cos(lo), 0.0)
     north = (-math.sin(la) * math.cos(lo), -math.sin(la) * math.sin(lo), math.cos(la))
@@ -36,22 +39,22 @@ def main():
     # --- zenith -> el 90 --------------------------------------------------
     R = 20200e3
     sat = tuple(site[i] + up[i] * R for i in range(3))
-    az, el = sp.ecef_to_azel(sat, site, sp.SITE_LAT, sp.SITE_LON)
+    az, el = sp.ecef_to_azel(sat, site, site_ll[0], site_ll[1])
     check("zenith satellite -> el +90", abs(el - 90.0) < 1e-9, f"el={el}")
 
     # --- east horizon -> el 0, az 90 ---------------------------------------
     sat = tuple(site[i] + east[i] * R for i in range(3))
-    az, el = sp.ecef_to_azel(sat, site, sp.SITE_LAT, sp.SITE_LON)
+    az, el = sp.ecef_to_azel(sat, site, site_ll[0], site_ll[1])
     check("east horizon -> el 0", abs(el) < 1e-6, f"el={el}")
     check("east horizon -> az 90", abs(az - 90.0) < 1e-6, f"az={az}")
 
     sat = tuple(site[i] + north[i] * R for i in range(3))
-    az, el = sp.ecef_to_azel(sat, site, sp.SITE_LAT, sp.SITE_LON)
+    az, el = sp.ecef_to_azel(sat, site, site_ll[0], site_ll[1])
     check("north horizon -> az 0", abs(az) < 1e-6 or abs(az - 360) < 1e-6, f"az={az}")
 
     # below the site -> el -90
     sat = tuple(site[i] - up[i] * R for i in range(3))
-    _, el = sp.ecef_to_azel(sat, site, sp.SITE_LAT, sp.SITE_LON)
+    _, el = sp.ecef_to_azel(sat, site, site_ll[0], site_ll[1])
     check("nadir satellite -> el -90", abs(el + 90.0) < 1e-9, f"el={el}")
 
     # --- circular equatorial orbit at toe -> (a, 0, 0) ----------------------
@@ -79,6 +82,17 @@ def main():
           sp._wrap_tk(604800.0 - 10.0 - 604800.0) == -10.0
           and abs(sp._wrap_tk(-400000.0) - 204800.0) < 1e-9)
 
+    # --- motion fields (alt/speed/track for the panel, 2026-08-25) ----------
+    alt_km, speed_mps, track_deg = sp.sat_motion(e, 3600.0, site_ll[0], site_ll[1])
+    check("GPS-nominal alt ~20180 km", abs(alt_km - 20180.0) < 50.0,
+          f"alt={alt_km:.0f}")
+    # prograde equatorial case: ECEF speed = orbital sqrt(mu/a) minus the
+    # frame's rotation rate at orbital radius (OMEGA_E * a) = 3874 - 1937
+    check("ECEF speed = orbital minus rotation", abs(speed_mps - 1937.0) < 10.0,
+          f"speed={speed_mps:.0f}")
+    check("track heading in [0, 360)", 0.0 <= track_deg < 360.0,
+          f"track={track_deg:.1f}")
+
     # --- classification logic on a synthetic pass -----------------------------
     mask = {"exp": 100, "lock": 0}
     check("learned mask bin flags masked", sp.bin_masked(mask))
@@ -102,6 +116,9 @@ def main():
     if os.path.exists(sp.BRDC) and os.path.exists(sp.TRACKER_STATE):
         import time as _t
         st = sp.pass_once(_t.time())
+        if st is None:
+            check("live pass has an anchor", False, "pass_once returned None")
+            st = {"sky": {"sats": [], "counts": {}, "eph": "?"}}
         sky = st["sky"]
         print(f"  live: eph={sky['eph']} counts={sky['counts']}")
         locked_low = [s for s in sky["sats"]

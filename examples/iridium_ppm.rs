@@ -18,8 +18,20 @@ use hackrf_gnss::iridium::ppm::{estimate_ppm, median, PpmEstimate};
 use std::fs::File;
 use std::io::Read;
 
-const RX_LAT: f64 = 39.001;
-const RX_LON: f64 = -77.60732;
+// The canonical anchor is observations/site.json — no hardcoded coordinates
+// here (this copy had drifted ~250 m from the main site constant).
+fn site_ll() -> (f64, f64) {
+    hackrf_gnss::site::load_site(std::path::Path::new(
+        "/Volumes/Radiator 8TB/gnss/observations/site.json",
+    ))
+    .map(|s| (s[0], s[1]))
+    .unwrap_or_else(|| {
+        eprintln!(
+            "iridium_ppm: no site anchor — provide observations/site.json (lat, lon)"
+        );
+        std::process::exit(2);
+    })
+}
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -62,7 +74,8 @@ fn main() {
 
     let text = std::fs::read_to_string(&tle).expect("read TLE");
     let sats = load_tle_named(&text);
-    let rx = geodetic_to_ecef(RX_LAT, RX_LON, 0.0);
+    let (rx_lat, rx_lon) = site_ll();
+    let rx = geodetic_to_ecef(rx_lat, rx_lon, 0.0);
     let est = if bps == 2 {
         let raw: Vec<i16> = raw_u8.chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]])).collect();

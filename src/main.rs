@@ -15,6 +15,7 @@ use hackrf_gnss::decoder;
 use hackrf_gnss::dsp_calib;
 use hackrf_gnss::gps;
 use hackrf_gnss::rf_calib;
+use hackrf_gnss::site;
 
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug, Hash)]
@@ -127,11 +128,13 @@ struct Args {
     nav: String,
 
     /// Fix mode: approximate receiver latitude/longitude (deg). The snapshot
-    /// solver only needs this to ~150 km to resolve the millisecond ambiguity.
-    #[arg(long, default_value_t = 39.0032)]
-    approx_lat: f64,
-    #[arg(long, default_value_t = -77.6058)]
-    approx_lon: f64,
+    /// solver only needs this to ~150 km to resolve the millisecond
+    /// ambiguity. When omitted, the canonical anchor observations/site.json
+    /// is used (no hardcoded coordinates).
+    #[arg(long)]
+    approx_lat: Option<f64>,
+    #[arg(long)]
+    approx_lon: Option<f64>,
 
     /// Fix mode: sample rate of the IQ file (Hz) and the IF at which L1 sits in
     /// it (Hz; 0 = the file is already at baseband, e.g. SatCatch GPS captures).
@@ -1525,7 +1528,24 @@ fn run_fix(args: &Args) -> Result<()> {
         .iter()
         .map(|r| gps::Obs { prn: r.prn as u8, code_phase: r.code_phase, doppler: r.doppler })
         .collect();
-    match gps::snapshot_fix(&obs, &ephs, [args.approx_lat, args.approx_lon, 0.0], tow) {
+    let approx = match (args.approx_lat, args.approx_lon) {
+        (Some(la), Some(lo)) => [la, lo, 0.0],
+        (None, None) => site::load_site(std::path::Path::new(
+            "/Volumes/Radiator 8TB/gnss/observations/site.json",
+        ))
+        .map(|s| [s[0], s[1], 0.0])
+        .unwrap_or_else(|| {
+            eprintln!(
+                "no approximate position: pass --approx-lat/--approx-lon or provide observations/site.json"
+            );
+            std::process::exit(2);
+        }),
+        _ => {
+            eprintln!("--approx-lat and --approx-lon must be given together");
+            std::process::exit(2);
+        }
+    };
+    match gps::snapshot_fix(&obs, &ephs, approx, tow) {
         Some(fix) => {
             println!(
                 "\n  FIX: {:.6} N, {:.6} E   alt {:.0} m",

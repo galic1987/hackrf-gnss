@@ -40,12 +40,12 @@ class). Producers with nothing to report must still heartbeat their file.
 
 | producer | file | notes |
 |---|---|---|
-| tracker_producer + live_radio | state.tracker.json | 1 Hz channels, discipline loop (in-process, steers clock-corr via control handle), tick counter reads |
+| tracker_producer + live_radio | state.tracker.json | 1 Hz channels, discipline loop (in-process; **SHADOW by default since 2026-08-25** — every correction write was proven to collapse all tracker locks ~1 min, so corrections are computed/logged but never written unless `HACKRF_GNSS_ACTUATE=1`), tick counter reads |
 | phase_producer | state.phase.json | 60 Hz carrier phase; heartbeats `lock:false` when dark; re-acquires after 60 s dark |
 | series_producer | state.series.json | 30 s; rolling 1-h band series, consensus, spoof z-alerts (sigma floor 0.05 ppm) |
 | band_producer | state.band.json | snapshot rotation — CANNOT snapshot while tracker owns the Pro; rows age, file heartbeats |
-| position_producer | state.position.json | runs examples/live_fix every 5 min |
-| sky_producer | state.sky.json | 30 s; az/el from BRDC+live eph vs tracker: tracked/absent/unexpected; learns 5°×5° sky_mask.json; appends sky_history.jsonl |
+| position_producer | state.position.json | runs examples/live_fix every 5 min; refreshes BRDC from BKG HOURLY (the ±4 h ephemeris fit window makes a 6-h refresh guarantee a modeled-sky blind gap) |
+| sky_producer | state.sky.json | 30 s; az/el from BRDC+live eph vs tracker: tracked/absent/unexpected; learns 5°×5° sky_mask.json; appends sky_history.jsonl; per-sat alt_km/speed_mps/track_deg + 30-min recent_trails; re-reads **observations/site.json every pass** (the canonical anchor — no hardcoded coordinates anywhere; a missing anchor is an error heartbeat, never a guess) |
 
 ## Consensus semantics (hard-won)
 
@@ -80,8 +80,11 @@ mask, dropout-cause suggestion). Schema/layout/query doc:
   (parse_sky; sky_producer is the source).
 - Tests: `python3 scripts/test_archive_roller.py` (sandboxed via
   HACKRF_GNSS_OBS / HACKRF_GNSS_CRATE env overrides; never touches live
-  observations). The archive tooling touches NO radio and signals NO
-  process.
+  observations), `python3 scripts/test_sky_producer.py` (plain asserts;
+  the final cross-check runs a live pass when observations exist — it
+  writes one sky_history row), and `node web/smoke_sync.js` for the panel
+  (live API or a fixture; exits nonzero on failure). The archive tooling
+  touches NO radio and signals NO process.
 
 ## Testing
 

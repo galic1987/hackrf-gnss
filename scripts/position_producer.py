@@ -4,8 +4,9 @@
 Every 5 min runs examples/live_fix, which reads the live tracker state
 (per-PRN code phases) and solves a coarse-time snapshot fix against BRDC
 broadcast ephemeris. The RINEX nav file is refreshed from BKG when older
-than 6 h (BRDC00WRD_R = world multi-GNSS rapid, updated ~hourly; GPS
-ephemeris validity ~2-4 h so freshness matters).
+than 1 h (BRDC00WRD_R = world multi-GNSS rapid, updated ~hourly; GPS
+ephemeris validity ~2-4 h so freshness matters — a 6-hourly refresh left a
+modeled-sky blind gap at the end of every cycle).
 
 live_fix writes observations/state.position.json directly; this wrapper
 just schedules it and logs.
@@ -19,7 +20,10 @@ OBS = "/Volumes/Radiator 8TB/gnss/observations"
 RINEX = f"{OBS}/brdc_latest.rnx"
 LIVE_FIX = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/target/release/examples/live_fix"
 SOLVE_EVERY_S = 300
-REFRESH_S = 6 * 3600
+# BKG updates the world rapid BRDC ~hourly and GPS ephemeris fit windows are
+# ~4 h: a 6-hourly refresh guaranteed a modeled-sky collapse at the end of
+# every cycle (seen live 2026-08-25 20:00 UTC). Refresh hourly instead.
+REFRESH_S = 3600
 
 
 def log(msg):

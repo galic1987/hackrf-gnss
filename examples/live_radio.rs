@@ -108,6 +108,22 @@ fn main() {
     let serial = a.get(1).map(|s| s.as_str()).unwrap_or(PRO);
     let epoch0 = now_f64();
     set_realtime();
+    // Discipline actuation gate. The 2026-08-25 retro analysis of the
+    // telemetry archive showed every observable correction write (122/122,
+    // down to +-0.01 ppm dither steps) followed by a tracker-wide lock
+    // collapse and ~1 min relock: the firmware write path disables SGPIO,
+    // reprograms Si5351 MS0/MS1 and resets PLL-A (radio.c/clock_gen.c), and
+    // note_clock_step cannot save the loops through it. So the loop runs
+    // SHADOW by default — residuals and corrections are computed, logged and
+    // published, but the hardware is never written. HACKRF_GNSS_ACTUATE=1
+    // re-enables actuation once a capture-boundary-safe write path exists.
+    let actuate =
+        std::env::var("HACKRF_GNSS_ACTUATE").map(|v| v == "1").unwrap_or(false);
+    if !actuate {
+        eprintln!(
+            "live_radio: discipline loop in SHADOW mode (set HACKRF_GNSS_ACTUATE=1 to actuate)"
+        );
+    }
 
     // Radio thread: the ASYNC streaming reader keeps 24 bulk transfers
     // queued (~190 ms of device-side slack) — the synchronous read_sync
@@ -401,10 +417,18 @@ fn main() {
                     let target = (corr + sign * r).clamp(-CLAMP_PPM, CLAMP_PPM);
                     let step = (target - corr).clamp(-step_limit, step_limit);
                     let new_corr = ((corr + step) * 1e4).round() / 1e4;
+                    if !actuate {
+                        // shadow: compute and log the would-be correction,
+                        // never touch the hardware (see the actuation gate at
+                        // startup); corr stays at the value the radio
+                        // actually holds
+                        note = format!(
+                            "SHADOW: would apply {new_corr:+.4} ppm (residual {r:+.4}) — actuation disabled"
+                        );
                     // Only advance the software bookkeeping if the hardware
                     // actually accepted the write + retune — otherwise the
                     // loop's belief and the radio's state diverge silently.
-                    if let Err(e) = radio_ctrl.set_clock_corr_ppm(new_corr) {
+                    } else if let Err(e) = radio_ctrl.set_clock_corr_ppm(new_corr) {
                         note = format!("clock-corr write FAILED ({e}) — software state not advanced");
                         eprintln!("live_radio: {note}");
                     } else if let Err(e) = radio_ctrl.tune(FC) {

@@ -49,7 +49,19 @@ TRACKER_STATE = os.path.join(OBS, "state.tracker.json")
 TRACKER_EPH = os.path.join(OBS, "tracker_eph.json")
 BRDC = os.path.join(OBS, "brdc_latest.rnx")
 
-SITE_LAT, SITE_LON, SITE_H = 39.0032, -77.6058, 20.0  # mast by the window
+def _load_site():
+    """Canonical site anchor: observations/site.json. NO hardcoded
+    coordinates: a missing anchor is an operator-visible error state, never
+    a guessed location. Returns (lat, lon, h_m) or None."""
+    try:
+        with open(os.path.join(OBS, "site.json")) as f:
+            s = json.load(f)
+        return float(s["lat"]), float(s["lon"]), float(s.get("h_m", 20.0))
+    except Exception:
+        return None
+
+
+SITE = _load_site()  # mast by the window — None when site.json is absent
 CADENCE_S = 30.0
 TTL_S = 90.0                       # 3 missed cycles before we tombstone out
 EL_MASK_DEG = 5.0                  # static horizon mask until learned
@@ -68,6 +80,12 @@ WEEK_S = 604800.0
 SYS_NAME = {0: "gps", 1: "beidou"}
 SYS_ID = {"gps": 0, "beidou": 1}
 BDS_GEO_PRNS = set(range(1, 6)) | set(range(59, 64))  # GEO: ICD MEO math wrong
+
+# Rolling in-memory az/el trails for the panel's sky log map: the last
+# TRAIL_WINDOW_S of (az, el, t) per satellite, rebuilt from scratch after a
+# restart (30 s cadence -> <= 60 points per trail).
+TRAIL_WINDOW_S = 1800.0
+TRAILS = {}  # (sysid, prn) -> [[az_deg, el_deg, unix_t], ...]
 
 
 # --- time ------------------------------------------------------------------
@@ -152,6 +170,38 @@ def ecef_to_azel(sat, site, lat_deg, lon_deg):
     az = math.degrees(math.atan2(e, n)) % 360.0
     el = math.degrees(math.atan2(u, math.hypot(e, n)))
     return az, el
+
+
+def ecef_to_enu_vec(vec, lat_deg, lon_deg):
+    """Rotate an ECEF vector into (east, north, up) at geodetic lat/lon."""
+    la, lo = math.radians(lat_deg), math.radians(lon_deg)
+    dx, dy, dz = vec
+    e = -math.sin(lo) * dx + math.cos(lo) * dy
+    n = (-math.sin(la) * math.cos(lo) * dx - math.sin(la) * math.sin(lo) * dy
+         + math.cos(la) * dz)
+    u = (math.cos(la) * math.cos(lo) * dx + math.cos(la) * math.sin(lo) * dy
+         + math.sin(la) * dz)
+    return e, n, u
+
+
+def sat_motion(e, t, lat_deg, lon_deg):
+    """(alt_km, speed_mps, track_deg) for the panel's satellite table.
+
+    alt is height above the spherical Earth radius A_E (educational, not
+    geodetic); speed is the ECEF-frame magnitude (central difference over
+    1 s); track is the heading of the velocity projected into the site's
+    local horizon plane — the direction the sat is moving across our sky,
+    degrees clockwise from north.
+    """
+    pos = sat_pos_ecef(e, t)
+    p0 = sat_pos_ecef(e, t - 0.5)
+    p1 = sat_pos_ecef(e, t + 0.5)
+    vel = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
+    alt_km = (math.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2) - A_E) / 1e3
+    speed = math.sqrt(sum(v * v for v in vel))
+    ev, nv, _ = ecef_to_enu_vec(vel, lat_deg, lon_deg)
+    track = math.degrees(math.atan2(ev, nv)) % 360.0
+    return alt_km, speed, track
 
 
 # --- ephemeris sources ---------------------------------------------------------
@@ -330,7 +380,7 @@ def load_mask():
             return d
     except Exception:
         pass
-    return {"bin_deg": BIN_DEG, "site": [SITE_LAT, SITE_LON, SITE_H],
+    return {"bin_deg": BIN_DEG, "site": list(_load_site()) if _load_site() else None,
             "epoch": 0, "bins": {}}
 
 
@@ -358,7 +408,20 @@ def atomic_json(path, obj):
 
 def pass_once(now=None):
     now = now if now is not None else time.time()
-    site = geodetic_to_ecef(SITE_LAT, SITE_LON, SITE_H)
+    # re-read the anchor every pass: operator edits propagate live, and a
+    # missing anchor is an honest error heartbeat, never a guessed location
+    site_ll = _load_site()
+    if site_ll is None:
+        atomic_json(STATE, {"epoch": now, "ttl_s": TTL_S, "sky": {
+            "epoch": now, "site": None,
+            "error": "no site anchor: observations/site.json missing/invalid",
+            "sats": [],
+            "counts": {k: 0 for k in ("modeled", "tracked", "absent",
+                                      "unexpected", "below", "unmodeled",
+                                      "expected", "observed")}}})
+        return None
+    site_lat, site_lon, site_h = site_ll
+    site = geodetic_to_ecef(site_lat, site_lon, site_h)
     eph, leap_s, eph_notes = load_ephemeris()
     t_sow = gps_sow_unix(now, leap_s)
     tracked, tracker_stale = load_tracked(now)
@@ -374,9 +437,16 @@ def pass_once(now=None):
             continue                       # ephemeris past its fit window
         try:
             pos = sat_pos_ecef(e, t_sow)
+            alt_km, speed_mps, track_deg = sat_motion(e, t_sow, site_lat, site_lon)
         except (ValueError, OverflowError, ZeroDivisionError):
             continue
-        az, el = ecef_to_azel(pos, site, SITE_LAT, SITE_LON)
+        az, el = ecef_to_azel(pos, site, site_lat, site_lon)
+        if el > -10.0:  # trail only the near-sky region (below-horizon is noise)
+            tr = TRAILS.setdefault(key, [])
+            tr.append([round(az, 1), round(el, 1), round(now)])
+            cutoff = now - TRAIL_WINDOW_S
+            while tr and tr[0][2] < cutoff:
+                tr.pop(0)
         row = tracked.get(key)
         observed = bool(row and (row.get("lock_s") or 0) > 0)
         bk = bin_key(az, el)
@@ -398,6 +468,8 @@ def pass_once(now=None):
         sats.append({
             "sys": SYS_NAME[sysid], "prn": prn,
             "az_deg": round(az, 1), "el_deg": round(el, 1), "cls": cls,
+            "alt_km": round(alt_km), "speed_mps": round(speed_mps),
+            "track_deg": round(track_deg, 1),
             "cn0": row.get("cn0_proxy") if row else None,
             "lock_s": row.get("lock_s") if row else None,
             "doppler_hz": row.get("doppler_hz") if row else None,
@@ -415,11 +487,21 @@ def pass_once(now=None):
     counts["expected"] = counts["tracked"] + counts["absent"]
     counts["observed"] = counts["tracked"] + counts["unexpected"]
 
+    # Prune departed sats' trails fully (in-loop pruning only covers sats
+    # seen this pass); survivors with >= 2 points feed the sky log map.
+    cutoff = now - TRAIL_WINDOW_S
+    for k in list(TRAILS):
+        TRAILS[k] = [pt for pt in TRAILS[k] if pt[2] >= cutoff]
+        if not TRAILS[k]:
+            del TRAILS[k]
+    recent_trails = [{"sys": SYS_NAME[k[0]], "prn": k[1], "trail": v}
+                     for k, v in sorted(TRAILS.items()) if len(v) >= 2]
+
     state = {
         "epoch": now, "ttl_s": TTL_S,
         "sky": {
             "epoch": now,
-            "site": [SITE_LAT, SITE_LON, SITE_H],
+            "site": [site_lat, site_lon, site_h],
             "mask": {"el_min_deg": EL_MASK_DEG, "bin_deg": BIN_DEG,
                      "learned_bins": sum(1 for b in mask["bins"].values()
                                          if bin_masked(b))},
@@ -427,6 +509,7 @@ def pass_once(now=None):
             "unmodeled_sats": unmodeled,
             "tracker_stale": tracker_stale,
             "eph": eph_notes,
+            "recent_trails": recent_trails,
             "sats": sats,
         },
     }

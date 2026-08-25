@@ -25,7 +25,7 @@ use hackrf_gnss::gps::broadcast::BrdcEph;
 
 const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
 const EPH: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
-const APPROX_LLA: [f64; 3] = [39.0032, -77.6058, 20.0];
+const SITE_JSON: &str = "/Volumes/Radiator 8TB/gnss/observations/site.json";
 const C_KM_S: f64 = 299_792.458;
 
 fn main() {
@@ -63,29 +63,40 @@ fn main() {
 
     let text = std::fs::read_to_string(TRACKER_STATE).expect("tracker state");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    // Site reference priority: SITE_LL env > latest GATED published fix
-    // (mobile station: the reference IS the current fix, not a constant —
-    // the old hardcoded site made every residual a lie after relocation,
-    // and the station is going in a car) > APPROX_LLA cold-start fallback.
-    let fix_ref: Option<[f64; 3]> = std::fs::read_to_string(
-        "/Volumes/Radiator 8TB/gnss/observations/state.position.json",
-    )
-    .ok()
-    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-    .and_then(|p| {
-        let pos = &p["position"];
-        let fresh = now - p["epoch"].as_f64().unwrap_or(0.0) < 900.0;
-        let gated = pos["gate"].as_str().unwrap_or("") == "redundant";
-        if fresh && gated {
-            Some([
-                pos["lat"].as_f64()?,
-                pos["lon"].as_f64()?,
-                pos["alt_km"].as_f64()? * 1000.0,
-            ])
-        } else {
-            None
-        }
-    });
+    // Site reference priority: SITE_LL env > observations/site.json (the
+    // canonical anchor) > APPROX_LLA cold-start fallback. The latest GATED
+    // published fix is the reference ONLY in mobile mode (ANCHOR_MOBILE=1):
+    // for a static station it makes the truth table circular — the receiver
+    // becomes its own reference and baselines ride on a ~120 m moving
+    // scatter (the 2026-08-25 circular-truth regression, review round 4).
+    let fix_ref: Option<[f64; 3]> = if std::env::var("ANCHOR_MOBILE").map(|v| v == "1").unwrap_or(false) {
+        std::fs::read_to_string(
+            "/Volumes/Radiator 8TB/gnss/observations/state.position.json",
+        )
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|p| {
+            let pos = &p["position"];
+            let fresh = now - p["epoch"].as_f64().unwrap_or(0.0) < 900.0;
+            let gated = pos["gate"].as_str().unwrap_or("") == "redundant";
+            if fresh && gated {
+                Some([
+                    pos["lat"].as_f64()?,
+                    pos["lon"].as_f64()?,
+                    pos["alt_km"].as_f64()? * 1000.0,
+                ])
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let site_json: Option<[f64; 3]> =
+        hackrf_gnss::site::load_site(std::path::Path::new(SITE_JSON));
+    // Site reference priority: SITE_LL env > (mobile mode: latest gated fix)
+    // > site.json. NO hardcoded fallback coordinate: a missing anchor is an
+    // operator-visible error, not a guessed location.
     let lla: [f64; 3] = std::env::var("SITE_LL")
         .ok()
         .and_then(|s| {
@@ -97,7 +108,13 @@ fn main() {
             }
         })
         .or(fix_ref)
-        .unwrap_or(APPROX_LLA);
+        .or(site_json)
+        .unwrap_or_else(|| {
+            eprintln!(
+                "anchor_residuals: no site anchor — set SITE_LL=lat,lon[,h] or provide {SITE_JSON}"
+            );
+            std::process::exit(2);
+        });
     let site = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
         lla[0], lla[1], lla[2] / 1000.0,
     ); // km
@@ -108,9 +125,9 @@ fn main() {
         if std::env::var("SITE_LL").is_ok() {
             "env"
         } else if fix_ref.is_some() {
-            "latest gated fix"
+            "latest gated fix (ANCHOR_MOBILE=1)"
         } else {
-            "fallback constant"
+            "site.json"
         }
     );
 

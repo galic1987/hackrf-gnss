@@ -97,6 +97,22 @@ pub const GATE_STALE_S: f64 = 10.0;
 /// TCXO's raw drift lives well inside ±1 ppm — 2 ppm is a generous bound
 /// that still rejects NaN-adjacent garbage and unit bugs outright.
 pub const GATE_ABS_BOUND_PPM: f64 = 2.0;
+/// First-write lock maturity (s): the first ACCEPTED residual after a
+/// process (re)start needs WAAS/GEO locks at least this old — with no slew
+/// reference the gate cannot tell a warming tracker's convergence transient
+/// from truth (the 2026-08-25 restart mis-step: spurious -0.1 ppm
+/// first-cycle steps at 08:44, 09:49, 11:50).
+pub const GATE_FIRST_LOCK_S: f64 = 180.0;
+/// Cumulative accepted-drift bound vs the oldest retained acceptance (ppm).
+/// Per-cycle slew bounds don't stop a slow bogus ramp (2026-08-25 review:
+/// <=0.0375 ppm/cycle walks in unbounded — 2.25 ppm/h). True thermal wander
+/// is ~0.02 ppm/h (the live residual stayed within [-0.48, -0.34] over
+/// 6.6 h), so 0.15 ppm is far above physics and far below the ramp.
+pub const GATE_CUM_SLEW_PPM: f64 = 0.15;
+/// Consistent cumulative suppressions before re-anchoring: true multi-hour
+/// drift must eventually win (latch-up class), but a bogus ramp pays this
+/// many quiet cycles (~20 min) per 0.15 ppm adopted.
+pub const GATE_CUM_RECOVER_N: usize = 20;
 
 /// Bounded latch-up recovery: after this many CONSECUTIVE slew
 /// suppressions whose values agree among themselves, re-anchor the
@@ -125,6 +141,11 @@ pub struct PlausibilityGate {
     prev_resid: Option<f64>,
     /// recent slew-suppressed residuals (the recovery candidate pool)
     suppressed: std::collections::VecDeque<f64>,
+    /// recently ACCEPTED residuals, newest last (the cumulative-drift
+    /// window: bounded at GATE_WINDOW entries)
+    accepted: std::collections::VecDeque<f64>,
+    /// consecutive cumulative-drift suppressions (the slow recovery pool)
+    cum_suppressed: std::collections::VecDeque<f64>,
     /// true when this check() recovered the slew reference — the caller
     /// must log it loudly (a recovery means the loop was latched)
     pub recovered: bool,
@@ -157,10 +178,12 @@ impl PlausibilityGate {
         self.recovered = false;
         if !resid.is_finite() {
             self.suppressed.clear();
+            self.cum_suppressed.clear();
             return Err("non-finite residual");
         }
         if resid.abs() > GATE_ABS_BOUND_PPM {
             self.suppressed.clear();
+            self.cum_suppressed.clear();
             return Err("residual beyond absolute sanity bound");
         }
         let locked_now = self.sbas_hist.back().copied().unwrap_or(0);
@@ -170,12 +193,33 @@ impl PlausibilityGate {
         // low-count track (e.g. one GEO all night) is not one
         if locked_now < win_max && (locked_now as f64) < floor {
             self.suppressed.clear();
+            self.cum_suppressed.clear();
             return Err("WAAS locked-channel count collapsing");
         }
-        if let Some(freshest) = waas_lock_s.iter().copied().reduce(f64::min) {
+        let min_lock = waas_lock_s.iter().copied().reduce(f64::min);
+        if let Some(freshest) = min_lock {
             if freshest < GATE_FRESH_LOCK_S {
                 self.suppressed.clear();
+                self.cum_suppressed.clear();
                 return Err("WAAS/GEO channel below fresh-lock threshold");
+            }
+        }
+        // staleness precedes the slew/recovery path: a stale input must
+        // never re-anchor the reference (2026-08-25 review hole)
+        if inputs_age_s > GATE_STALE_S {
+            self.suppressed.clear();
+            self.cum_suppressed.clear();
+            return Err("measurement inputs stale");
+        }
+        // first write after (re)start: no slew reference exists yet, so
+        // demand mature locks (the restart mis-step class)
+        if self.prev_resid.is_none() {
+            if let Some(freshest) = min_lock {
+                if freshest < GATE_FIRST_LOCK_S {
+                    self.suppressed.clear();
+                    self.cum_suppressed.clear();
+                    return Err("first write before WAAS/GEO locks mature");
+                }
             }
         }
         if let Some(prev) = self.prev_resid {
@@ -192,8 +236,12 @@ impl PlausibilityGate {
                     let mut pool: Vec<f64> = self.suppressed.iter().copied().collect();
                     pool.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     if pool[pool.len() - 1] - pool[0] <= GATE_MAX_SLEW_PPM {
-                        self.prev_resid = Some(pool[pool.len() / 2]);
+                        let med = pool[pool.len() / 2];
+                        self.prev_resid = Some(med);
+                        self.accepted.clear();
+                        self.accepted.push_back(med);
                         self.suppressed.clear();
+                        self.cum_suppressed.clear();
                         self.recovered = true;
                         return Ok(());
                     }
@@ -201,12 +249,40 @@ impl PlausibilityGate {
                 return Err("residual jump beyond plausible TCXO slew");
             }
         }
-        if inputs_age_s > GATE_STALE_S {
-            self.suppressed.clear();
-            return Err("measurement inputs stale");
+        // cumulative bound: even per-cycle-plausible steps must not walk
+        // the reference without limit (the slow-ramp hole)
+        if let Some(&oldest) = self.accepted.front() {
+            if (resid - oldest).abs() > GATE_CUM_SLEW_PPM {
+                self.cum_suppressed.push_back(resid);
+                while self.cum_suppressed.len() > GATE_CUM_RECOVER_N {
+                    self.cum_suppressed.pop_front();
+                }
+                // true long-term drift eventually wins, but slowly and
+                // loudly: GATE_CUM_RECOVER_N consistent suppressions
+                if self.cum_suppressed.len() >= GATE_CUM_RECOVER_N {
+                    let mut pool: Vec<f64> = self.cum_suppressed.iter().copied().collect();
+                    pool.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    if pool[pool.len() - 1] - pool[0] <= GATE_MAX_SLEW_PPM {
+                        let med = pool[pool.len() / 2];
+                        self.prev_resid = Some(med);
+                        self.accepted.clear();
+                        self.accepted.push_back(med);
+                        self.suppressed.clear();
+                        self.cum_suppressed.clear();
+                        self.recovered = true;
+                        return Ok(());
+                    }
+                }
+                return Err("cumulative drift beyond plausible TCXO wander");
+            }
         }
         self.suppressed.clear();
+        self.cum_suppressed.clear();
         self.prev_resid = Some(resid);
+        self.accepted.push_back(resid);
+        while self.accepted.len() > GATE_WINDOW {
+            self.accepted.pop_front();
+        }
         Ok(())
     }
 }
@@ -222,7 +298,7 @@ mod tests {
         for _ in 0..3 {
             g.observe_locked(5);
         }
-        assert!(g.check(-0.40, &[45.0, 90.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0, 190.0], 1.0).is_ok());
         // a gentle move vs the accepted reference also passes
         assert!(g.check(-0.44, &[46.0, 91.0], 1.0).is_ok());
     }
@@ -246,13 +322,13 @@ mod tests {
             g.observe_locked(6);
         }
         g.observe_locked(4);
-        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
         // and a healthy low-count track never trips the floor
         let mut g = PlausibilityGate::new();
         for _ in 0..5 {
             g.observe_locked(1);
         }
-        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
     }
 
     /// (a) a WAAS/GEO channel younger than the fresh-lock threshold just
@@ -267,7 +343,8 @@ mod tests {
         );
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
-        assert!(g.check(-0.40, &[45.0, 31.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok()); // mature first write
+        assert!(g.check(-0.44, &[45.0, 31.0], 1.0).is_ok());
     }
 
     /// (b) a residual jump beyond the plausible TCXO slew vs the previous
@@ -277,7 +354,7 @@ mod tests {
     fn gate_suppresses_implausible_slew() {
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
-        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
         assert_eq!(
             g.check(-0.05, &[45.0], 1.0),
             Err("residual jump beyond plausible TCXO slew")
@@ -297,7 +374,7 @@ mod tests {
             g.check(-0.40, &[45.0], 15.0),
             Err("measurement inputs stale")
         );
-        assert!(g.check(-0.40, &[45.0], 5.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 5.0).is_ok());
     }
 
     /// (d) non-finite residuals are rejected outright.
@@ -324,7 +401,7 @@ mod tests {
         );
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
-        assert!(g.check(1.9, &[45.0], 1.0).is_ok());
+        assert!(g.check(1.9, &[200.0], 1.0).is_ok());
     }
 
     /// (f) latch-up recovery: N consecutive slew suppressions that agree
@@ -334,7 +411,7 @@ mod tests {
     fn gate_recovers_from_latchup() {
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
-        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
         for _ in 0..GATE_RECOVER_N - 1 {
             assert_eq!(
                 g.check(-0.70, &[45.0], 1.0),
@@ -353,10 +430,76 @@ mod tests {
     fn gate_no_recovery_on_disagreement() {
         let mut g = PlausibilityGate::new();
         g.observe_locked(5);
-        assert!(g.check(-0.40, &[45.0], 1.0).is_ok());
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
         for r in [-0.70, -1.30, -0.65, -1.35, -0.75, -1.25] {
             assert!(g.check(r, &[45.0], 1.0).is_err());
             assert!(!g.recovered);
         }
+    }
+
+    /// (h) staleness is checked BEFORE the slew/recovery path: a stale
+    /// input must never trigger latch-up recovery (2026-08-25 review: the
+    /// recovery path ran before the staleness check).
+    #[test]
+    fn gate_stale_inputs_never_recover() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
+        for _ in 0..GATE_RECOVER_N * 2 {
+            assert_eq!(
+                g.check(-0.70, &[200.0], 30.0),
+                Err("measurement inputs stale")
+            );
+            assert!(!g.recovered);
+        }
+    }
+
+    /// (i) the FIRST accepted residual after a process (re)start needs
+    /// mature WAAS/GEO locks: with no slew reference the gate cannot tell a
+    /// warming tracker's convergence transient from a true residual (the
+    /// restart mis-step: spurious -0.1 ppm first-cycle steps at 08:44,
+    /// 09:49, 11:50 on 2026-08-25).
+    #[test]
+    fn gate_first_write_needs_mature_locks() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert_eq!(
+            g.check(-0.40, &[45.0, 90.0], 1.0),
+            Err("first write before WAAS/GEO locks mature")
+        );
+        // one mature + one young lock: the young one still gates the first
+        // write (min semantics, same as the fresh-lock check)
+        assert_eq!(
+            g.check(-0.40, &[45.0, 200.0], 1.0),
+            Err("first write before WAAS/GEO locks mature")
+        );
+        assert!(g.check(-0.40, &[200.0, 240.0], 1.0).is_ok());
+        // afterwards the normal per-cycle thresholds apply
+        assert!(g.check(-0.44, &[45.0, 46.0], 1.0).is_ok());
+    }
+
+    /// (j) slow-ramp walk-in: per-cycle slew is bounded, but a bogus
+    /// residual ramping just under the slew bound must not be adopted
+    /// forever — cumulative drift over the window is bounded too
+    /// (2026-08-25 review: <=0.0375 ppm/cycle walks in unbounded; true
+    /// thermal wander is ~0.02 ppm/h, a bogus ramp is 2.25 ppm/h).
+    #[test]
+    fn gate_bounds_cumulative_drift() {
+        let mut g = PlausibilityGate::new();
+        g.observe_locked(5);
+        assert!(g.check(-0.40, &[200.0], 1.0).is_ok());
+        let mut r = -0.40;
+        let mut suppressed = false;
+        for _ in 0..20 {
+            r += 0.04; // under the 0.15 ppm/cycle slew bound every time
+            if g.check(r, &[200.0], 1.0).is_err() {
+                suppressed = true;
+                break;
+            }
+        }
+        assert!(suppressed, "slow ramp was never suppressed");
+        // and the walk must stay bounded near the window bound: a residual
+        // at the full-ramp value (+0.80 from start) is rejected
+        assert!(g.check(0.40, &[200.0], 1.0).is_err());
     }
 }
