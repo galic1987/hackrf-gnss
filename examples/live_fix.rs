@@ -205,6 +205,11 @@ fn main() {
     }
     let mut n_sbas_corr = 0usize;
     let mut n_lt_corr = 0usize;
+    // LT corrections present but not applied cleanly: rejected = IOD
+    // mismatch vs the self-decoded ephemeris in use; ungated = BRDC
+    // ephemeris (no IODE — unverifiable, applied anyway)
+    let mut n_lt_rejected = 0usize;
+    let mut n_lt_ungated = 0usize;
     // WAAS iono (MT18 masks + MT26 delays): (IGP lat, lon) deg -> vertical
     // delay m. An MT26 block is used only when its IODI matches the band's
     // current mask IODI (DO-229 consistency rule); 511 counts = not
@@ -292,12 +297,32 @@ fn main() {
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
-                let (dx, dy, dz, daf0, _iod) =
+                let (dx, dy, dz, daf0, iod) =
                     sbas_lt.get(&prn).copied().unwrap_or((0.0, 0.0, 0.0, 0.0, 0));
+                // IOD gate (DO-229D Table A-10 Note 3): the LT correction is
+                // valid only against the ephemeris issue it names. Self-
+                // decoded ephemerides carry IODE and can be checked; BRDC
+                // ones can't (RINEX has no IODE) and apply unverified —
+                // counted separately so the panel can tell.
+                let lt_ok = (dx != 0.0 || dy != 0.0 || dz != 0.0 || daf0 != 0.0)
+                    && match eph.iode {
+                        Some(iode) if iode != iod => {
+                            n_lt_rejected += 1;
+                            false
+                        }
+                        Some(_) => true,
+                        None => {
+                            n_lt_ungated += 1;
+                            true
+                        }
+                    };
                 // counted only when a correction is actually applied
-                if dx != 0.0 || dy != 0.0 || dz != 0.0 || daf0 != 0.0 {
+                let (dx, dy, dz, daf0) = if lt_ok {
                     n_lt_corr += 1;
-                }
+                    (dx, dy, dz, daf0)
+                } else {
+                    (0.0, 0.0, 0.0, 0.0)
+                };
                 let sat_m = [sat_m[0] + dx, sat_m[1] + dy, sat_m[2] + dz];
                 // WAAS iono slant delay: pierce point from the site to the
                 // (LT-corrected) satellite, bilinear/triangle over the
@@ -444,6 +469,7 @@ fn main() {
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
                     "gate": gate,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -532,6 +558,7 @@ fn main() {
                                 "mode": "2D(alt-hold)",
                                 "gate": gate,
                                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                                 "loo": loo_note,
                                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                             }
@@ -611,6 +638,7 @@ fn main() {
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
                     "gate": gate,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });

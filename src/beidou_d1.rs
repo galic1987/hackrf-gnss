@@ -550,6 +550,8 @@ pub fn parse_rinex_bds(text: &str) -> HashMap<u8, BrdcEph> {
         let e = BrdcEph {
             sys: 1,
             prn,
+            iode: None, // RINEX nav records carry no IODE (and the LT gate
+                        // is GPS-only regardless)
             af0: df(fld(ln, 23, 42)),
             af1: df(fld(ln, 42, 61)),
             af2: df(fld(ln, 61, 80)),
@@ -781,6 +783,7 @@ mod tests {
         let want = BrdcEph {
             sys: 1,
             prn: 22,
+            iode: None,
             sqrt_a: 5283.0,
             e: 0.004,
             m0: 1.1,

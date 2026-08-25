@@ -47,6 +47,12 @@ pub struct BrdcEph {
     pub af1: f64,
     pub af2: f64,
     pub tgd: f64,
+    /// Issue of data, ephemeris — Some only for self-decoded LNAV (RINEX
+    /// has no IODE field; BRDC-derived ephemerides stay None =
+    /// unverifiable). WAAS LT corrections are valid only when their IOD
+    /// matches this (DO-229D Table A-10 Note 3).
+    #[serde(default)]
+    pub iode: Option<u8>,
 }
 
 fn fld(line: &str, a: usize, b: usize) -> &str {
@@ -137,6 +143,7 @@ pub fn parse_rinex_gps(text: &str) -> HashMap<u8, BrdcEph> {
         let e = BrdcEph {
             sys: 0,
             prn,
+            iode: None, // RINEX nav records carry no IODE — unverifiable
             af0: df(fld(ln, 23, 42)),
             af1: df(fld(ln, 42, 61)),
             af2: df(fld(ln, 61, 80)),

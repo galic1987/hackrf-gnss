@@ -166,6 +166,11 @@ pub fn parse_ephemeris(subs: &[Subframe]) -> Option<BrdcEph> {
     if iode != iode3 || iode != (iodc & 0xFF) {
         return None;
     }
+    // carry the IODE: WAAS long-term corrections name the ephemeris issue
+    // they were generated against, and the application must match it
+    // (DO-229D Table A-10 Note 3); RINEX has no IODE, so BRDC-parsed
+    // ephemerides stay None (unverifiable) and only self-decoded ones gate
+    e.iode = Some(iode as u8);
     if !(5000.0..5500.0).contains(&e.sqrt_a) || !(0.0..0.05).contains(&e.e) {
         return None;
     }
@@ -209,6 +214,14 @@ mod tests {
             assert!((e.toe - toe).abs() < 1.0, "PRN {prn} toe {} vs {toe}", e.toe);
             assert!((e.e - ecc).abs() < 1e-8, "PRN {prn} e {} vs {ecc}", e.e);
         }
+    }
+
+    #[test]
+    fn iode_is_carried_into_the_ephemeris() {
+        // the LT-correction gate needs it: WAAS publishes the IODE its
+        // correction was generated against (DO-229D Table A-10 Note 3)
+        let e = eph_for(20).expect("PRN 20 decodes");
+        assert!(e.iode.is_some(), "decoded ephemeris must carry its IODE");
     }
 
     #[test]
