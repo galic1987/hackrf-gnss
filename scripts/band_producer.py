@@ -139,8 +139,7 @@ def measure_waas():
     iq.real, iq.imag = d[0::2], d[1::2]
     iq.tofile("/tmp/band_waas.f32")
     try:
-        out = subprocess.run([SBAS, "/tmp/band_waas.f32", "8000000", "4000"],
-                             capture_output=True, text=True, timeout=240).stdout
+        out = run_acq([SBAS, "/tmp/band_waas.f32", "8000000", "4000"], timeout=240)
     except Exception:
         return None, health
     hits = []
@@ -167,11 +166,19 @@ MY_BANDS = {"L1 / WAAS"} | ROTATING
 _seen = {}              # band -> last epoch with data
 
 
+def _nice19():
+    """Child-side nice(19): acquisition analysis is offline CPU-heavy work
+    and must never out-compete live_radio — a >115 ms scheduling stall
+    overflows the ~190 ms USB queue and realigns every tracker channel
+    (the 2026-08-26 galileo_acq/glonass_acq/e5_acq incidents)."""
+    os.nice(19)
+
+
 def run_acq(cmd, timeout=600):
     """Run an acquisition binary; return stdout or None on any failure."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout).stdout
+                              timeout=timeout, preexec_fn=_nice19).stdout
     except Exception:
         return None
 
@@ -236,9 +243,8 @@ def measure_glo_g2():
 def measure_gps():
     """GPS C/A PRNs on the same baseband the WAAS run just used — free row."""
     try:
-        out = subprocess.run([ACQ, "/tmp/band_waas.f32", "8000000",
-                              "-3000", "3000", "250", "4000"],
-                             capture_output=True, text=True, timeout=300).stdout
+        out = run_acq([ACQ, "/tmp/band_waas.f32", "8000000",
+                       "-3000", "3000", "250", "4000"], timeout=300)
         res = json.loads(out)
         return [r for r in res if r.get("acquired") and r["prn"] <= 32]
     except Exception:
@@ -254,8 +260,7 @@ def measure_glonass():
     if not ok:
         return None
     try:
-        out = subprocess.run([GLO, GLO_SNAP, "8000000", "1600000000", "5"],
-                             capture_output=True, text=True, timeout=300).stdout
+        out = run_acq([GLO, GLO_SNAP, "8000000", "1600000000", "5"], timeout=300)
     except Exception:
         return None
     hits = re.findall(r"chan\s+([+-]?\d+)\s+\(([\d.]+) MHz\):\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== SATELLITE", out)
@@ -271,8 +276,7 @@ def measure_beidou():
     if not ok:
         return None
     try:
-        out = subprocess.run([BDS, BDS_SNAP, "8000000", "1561098000", "6"],
-                             capture_output=True, text=True, timeout=300).stdout
+        out = run_acq([BDS, BDS_SNAP, "8000000", "1561098000", "6"], timeout=300)
     except Exception:
         return None
     hits = re.findall(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== ACQUIRED", out)
@@ -338,9 +342,8 @@ def main():
             gps = None
             if health:
                 try:
-                    out = subprocess.run([ACQ, "/tmp/band_waas.f32", "8000000",
-                                          "-3000", "3000", "500", "2000"],
-                                         capture_output=True, text=True, timeout=300).stdout
+                    out = run_acq([ACQ, "/tmp/band_waas.f32", "8000000",
+                                   "-3000", "3000", "500", "2000"], timeout=300)
                     res = json.loads(out)
                     gps = [r for r in res if r.get("acquired") and r["prn"] <= 32] or None
                 except Exception:
