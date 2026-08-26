@@ -112,6 +112,7 @@
   .sumcard .sb { font-size: 0.83em; color: var(--dim); line-height: 1.45; }
   .sumacc-amber { border-left: 3px solid var(--amber); }
   .sumacc-green { border-left: 3px solid var(--green); }
+  .sumacc-red   { border-left: 3px solid var(--red); }
   .sumacc-cyan  { border-left: 3px solid var(--cyan); }
 
   table { border-collapse: collapse; width: 100%; }
@@ -931,10 +932,21 @@ function renderSummary(st) {
   if (src) {
     var enu = fixToEnu(src, POS_SITE);
     var hd = Math.sqrt(enu[0] * enu[0] + enu[1] * enu[1]);
+    var ageS = src.epoch ? Math.max(0, (st.epoch || Date.now() / 1000) - src.epoch) : null;
     headline = hd.toFixed(1) + " m";
+    // Round-13 honesty: distance-scaled color, never a blanket green — a
+    // trusted fix hundreds of metres from the (self-bootstrapped, never
+    // surveyed) anchor is a WARNING sign, not a success banner. Green is
+    // metre-class (< 25 m), amber to 100 m, red beyond. The sentence shows
+    // the fix's own age, GDOP and RMS so "trusted" stays inspectable.
     sentence = "latest TRUSTED fix sits this far horizontally from the site anchor (Up " +
-      sgn(enu[2]) + Math.abs(enu[2]).toFixed(1) + " m) — a static station should hold metre-class.";
-    cardColor = "green";
+      sgn(enu[2]) + Math.abs(enu[2]).toFixed(1) + " m)" +
+      (ageS !== null ? ", " + (ageS > 90 ? (ageS / 60).toFixed(0) + " min" : ageS.toFixed(0) + " s") + " old" : "") +
+      (src.gdop !== undefined && src.gdop !== null ? ", GDOP " + Number(src.gdop).toFixed(1) : "") +
+      (src.residual_rms_m !== undefined && src.residual_rms_m !== null
+        ? ", rms " + Number(src.residual_rms_m).toFixed(1) + " m" : "") +
+      " — a static station should hold metre-class; the anchor itself is self-bootstrapped, never surveyed.";
+    cardColor = hd < 25 ? "green" : hd < 100 ? "amber" : "red";
   }
   cards.push(sumCard(cardColor, "Position", headline, sentence,
     "Position — the bottom line",
