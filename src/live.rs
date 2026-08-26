@@ -1003,16 +1003,18 @@ impl Channel {
             .filter(|(_, (_, _, t))| now - t < 60.0)
             .map(|(&prn, &(prc_m, udrei, t))| (prn, prc_m, udrei, now - t))
             .collect();
-        // do-not-use records ride the fast-correction freshness window:
-        // the eviction decision stems from the same MT2-5/MT6/MT24 stream,
-        // and a provider that stops asserting don't-use for 60 s of stream
-        // time is no longer asserting it. Rows carry the UDREI that caused
-        // the eviction (14 = not-monitored, 15 = don't-use — DO-229
-        // distinguishes the severities; both exclude).
+        // do-not-use records ride the LONG-TERM validity window (360 s):
+        // a 60 s DNU against a 360 s LT row let a decode outage of 61-360 s
+        // convert a don't-use satellite into an LT-corrected one (round-10b
+        // live proof: PRNs appeared in dont_use and lt_corr simultaneously).
+        // Silence does not re-enable — only a fresh usable fast row does.
+        // Rows carry the UDREI that caused the eviction (14 = not-monitored,
+        // 15 = don't-use — DO-229 distinguishes the severities; both
+        // exclude).
         let dont_use: Vec<(u8, f64, u8)> = self
             .sbas_dnu
             .iter()
-            .filter(|&(_, &(t, _))| now - t < 60.0)
+            .filter(|&(_, &(t, _))| now - t < 360.0)
             .map(|(&prn, &(t, u))| (prn, now - t, u))
             .collect();
         // long-term corrections have their own, longer validity: DO-229D
@@ -1100,6 +1102,7 @@ impl Channel {
                             self.sbas_dnu.remove(&prn);
                         } else {
                             self.sbas_prc.remove(&prn);
+                            self.sbas_lt.remove(&prn);
                             self.sbas_dnu.insert(prn, (t_s, u));
                         }
                     }
@@ -1148,7 +1151,13 @@ impl Channel {
                 if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
                     for h in [a, b] {
                         for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, h) {
-                            self.sbas_lt.insert(corr.prn, (corr, t_s));
+                            // a don't-use satellite has NO usable corrections:
+                            // never cache an LT row under a live DNU record
+                            let dnu_live = matches!(self.sbas_dnu.get(&corr.prn),
+                                Some(&(t, _)) if t_s - t < 360.0);
+                            if !dnu_live {
+                                self.sbas_lt.insert(corr.prn, (corr, t_s));
+                            }
                         }
                     }
                 }
@@ -1170,11 +1179,18 @@ impl Channel {
                             self.sbas_dnu.remove(&prn);
                         } else {
                             self.sbas_prc.remove(&prn);
+                            self.sbas_lt.remove(&prn);
                             self.sbas_dnu.insert(prn, (t_s, u));
                         }
                     }
                     for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt) {
-                        self.sbas_lt.insert(corr.prn, (corr, t_s));
+                        // same DNU gate as the MT25 path — including a PRN
+                        // this message's OWN fast half just evicted
+                        let dnu_live = matches!(self.sbas_dnu.get(&corr.prn),
+                            Some(&(t, _)) if t_s - t < 360.0);
+                        if !dnu_live {
+                            self.sbas_lt.insert(corr.prn, (corr, t_s));
+                        }
                     }
                 }
             }
@@ -3893,6 +3909,35 @@ mod tests {
         assert!(sums.last().unwrap().dont_use.iter().any(|r| r.0 == 17));
     }
 
+    /// The MT24 fast half must evict the LT row too (round-10b live proof:
+    /// PRNs appeared in dont_use and lt_corr simultaneously on all three
+    /// GEOs), and an LT half must never cache under a live DNU — including
+    /// the record this same message just created.
+    #[test]
+    fn sbas_mt24_eviction_drops_lt_and_lt_insert_respects_dnu() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots: Vec<u8> = (3u8..=15).chain([17, 19]).collect();
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            // MT25 vc=0 halves put LT rows on ordinals 1 and 3 (PRN 3, 5):
+            sbas_block(3, 25, &mt25_payload([1, 3], 0)),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(ch.sbas_lt.contains_key(&3), "LT row cached pre-eviction");
+        // now an MT2 don't-use for PRN 3 (ordinal 1): LT must die with it
+        let mut bad = [0u8; 13];
+        bad[0] = 14;
+        feed_sbas_blocks(&mut ch, 4.0, &[sbas_block(4, 2, &mt2_payload(0, 0, &[8i16; 13], &bad))]);
+        assert!(!ch.sbas_lt.contains_key(&3), "fast eviction must drop the LT row");
+        assert!(ch.sbas_dnu.contains_key(&3));
+        // and a later MT25 naming ordinal 1 must NOT re-cache under the DNU
+        feed_sbas_blocks(&mut ch, 5.0, &[sbas_block(5, 25, &mt25_payload([1, 3], 0))]);
+        assert!(!ch.sbas_lt.contains_key(&3), "LT never caches under a live DNU");
+        assert!(ch.sbas_lt.contains_key(&5), "the unaffected ordinal re-caches");
+    }
+
     /// MT6 integrity UDREIs address mask ORDINALS 1..=51 (same through-mask
     /// mapping as MT2-5); a UDREI >= 14 there evicts the satellite's cached
     /// fast AND long-term corrections.
@@ -4052,14 +4097,17 @@ mod tests {
         ch.sbas_mask = Some((vec![3u8, 7, 12], 0));
         ch.sbas_dnu.insert(7, (100.0, 14));
         ch.sbas_dnu.insert(9, (175.0, 14));
+        // Round-10b: the DNU window is the LONG-TERM window (360 s) — a 60 s
+        // DNU against a 360 s LT row let a 61-360 s decode outage convert a
+        // don't-use satellite into an LT-corrected one. 81 s is LIVE now.
         let s = ch.sbas_tick(181.0).expect("summary");
-        assert!(
-            s.dont_use.iter().all(|r| r.0 != 7),
-            "an 81 s old record must not publish: {:?}",
-            s.dont_use
-        );
+        let rec7 = s.dont_use.iter().find(|r| r.0 == 7).expect("81 s is inside the 360 s window");
+        assert!((rec7.1 - 81.0).abs() < 1e-9, "published age: {rec7:?}");
         let rec = s.dont_use.iter().find(|r| r.0 == 9).expect("fresh record");
         assert!((rec.1 - 6.0).abs() < 1e-9, "published age: {rec:?}");
+        // but 361 s is out
+        let s2 = ch.sbas_tick(176.0 + 361.0 + 6.0).expect("summary");
+        assert!(s2.dont_use.iter().all(|r| r.0 != 9), "a 361 s old record must not publish");
     }
 
     /// REGRESSION (dead-LT finding): a decoded velocity-code-1 MT25 half
