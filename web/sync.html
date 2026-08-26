@@ -347,8 +347,8 @@
     <div id="domelegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
     <div id="skytable" style="display:none;margin-top:0.6em"></div>
     <span class="cap">Same data as the sky-visibility card, seen as a dome.
-    <span style="color:#a5d6a7">green</span> = GPS, <span style="color:#ef9a9a">red</span> = BeiDou, <span style="color:#90caf9">blue</span> = Galileo, <span style="color:#ce93d8">violet</span> = SBAS;
-    filled = tracked, dim = expected but absent, amber halo = tracked below the mask (reflection/spoof candidate).
+    <span style="color:#a5d6a7">green</span> = GPS, <span style="color:#ef9a9a">red</span> = BeiDou, <span style="color:#90caf9">blue</span> = Galileo, <span style="color:#ce93d8">violet</span> = SBAS, <span style="color:#fff59d">yellow</span> = GLONASS;
+    filled = tracked, dim = expected but absent, hollow = predicted-only (GLONASS: G1 1602 MHz FDMA lies outside this station's 1568.25 MHz tune — broadcast-ephemeris positions, never observable here), amber halo = tracked below the mask (reflection/spoof candidate).
     Marker size follows C/N&#8320;; the <span style="color:#80d8ff">blue</span>/<span style="color:#ffab91">orange</span> ring is the sign of the live Doppler (approaching/receding).
     The per-satellite altitude/speed/heading table appears below the legend only when the sky producer exports those fields.</span>
   </div>
@@ -1829,7 +1829,8 @@ function render(st) {
         (s.cn0 !== null && s.cn0 !== undefined ? ", C/N₀ " + s.cn0.toFixed(1) : ""));
       return '<span class="tip ' + cls + '" data-tip-title="' + esc(s.sys + " " + s.prn) +
         '" data-tip="' + tip + '" style="margin-right:0.8em;white-space:nowrap">' +
-        (s.sys === "gps" ? "G" : s.sys === "beidou" ? "C" : "?") +
+        (s.sys === "gps" ? "G" : s.sys === "beidou" ? "C" : s.sys === "galileo" ? "E"
+          : s.sys === "glonass" ? "R" : s.sys === "sbas" ? "S" : "?") +
         (s.prn < 10 ? "0" + s.prn : s.prn) + " " +
         s.az_deg.toFixed(0) + "°/" + s.el_deg.toFixed(0) + "°</span>";
     };
@@ -1840,6 +1841,8 @@ function render(st) {
       "<b>" + sc.tracked + "</b> tracked of <b>" + sc.expected + "</b> expected above the mask" +
       ' &nbsp;·&nbsp; <span class="' + (sc.absent ? "neg" : "dim") + '">' + sc.absent + " absent</span>" +
       ' &nbsp;·&nbsp; <span class="' + (sc.unexpected ? "warn" : "dim") + '">' + sc.unexpected + " below-mask</span>" +
+      (sc.predicted ? ' &nbsp;·&nbsp; <span class="dim">' + sc.predicted +
+        " GLONASS predicted-only (not receivable here)</span>" : "") +
       (sc.unmodeled ? ' &nbsp;·&nbsp; <span class="dim">' + sc.unmodeled + " locked w/o ephemeris (" +
         esc((sky.unmodeled_sats || []).join(", ")) + ")</span>" : "") +
       ' &nbsp;·&nbsp; <span class="dim">' + age(sky.epoch || st.epoch) +
@@ -2227,10 +2230,17 @@ function drawDome(st) {
     var s = it.s;
     var col = SYSCOL[s.sys] || "#9e9e9e";
     var tracked = s.cls === "tracked";
+    var predicted = s.cls === "predicted";   // modeled, never observable here (GLONASS)
     var r = 3 + Math.min(4, Math.max(0, ((s.cn0 || 30) - 25) / 6));
-    ctx.globalAlpha = tracked ? 0.95 : 0.4;
-    ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(it.x, it.y, r, 0, 6.2832); ctx.fill();
+    if (predicted) {
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = col; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.arc(it.x, it.y, r, 0, 6.2832); ctx.stroke();
+    } else {
+      ctx.globalAlpha = tracked ? 0.95 : 0.4;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(it.x, it.y, r, 0, 6.2832); ctx.fill();
+    }
     ctx.globalAlpha = 1;
     if (s.doppler_hz !== null && s.doppler_hz !== undefined) {
       ctx.strokeStyle = s.doppler_hz >= 0 ? "#80d8ff" : "#ffab91";
@@ -2255,6 +2265,9 @@ function drawDome(st) {
     if (sc.tracked !== undefined)
       bits.push("<b>" + sc.tracked + "</b> tracked / " + sc.expected + " expected · " + sc.absent +
         " absent · " + sc.unexpected + " below-mask");
+    if (sc.predicted)
+      bits.push('<span style="color:' + SYSCOL.glonass + '">○ ' + sc.predicted +
+        " GLONASS predicted-only</span>");
     bits.push('<span style="color:#80d8ff">◦ approaching (+Doppler)</span> · <span style="color:#ffab91">◦ receding (−)</span>');
     bits.push(nBinsDrawn ? nBinsDrawn + " learned mask bins drawn"
       : "mask floor el ≥ " + elMin + "°" + (sky.mask && sky.mask.learned_bins !== undefined

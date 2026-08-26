@@ -99,6 +99,100 @@ def main():
     check("thin bin not masked", not sp.bin_masked({"exp": 3, "lock": 0}))
     check("healthy bin not masked", not sp.bin_masked({"exp": 100, "lock": 40}))
 
+    # --- Galileo / GLONASS parsing + propagation -------------------------------
+    def rnx_rec(letter, prn, fields8):
+        hdr = f"{letter}{prn:2d} 2026 08 26 12 00 00" + "".join(
+            f"{v:19.9e}" for v in fields8[0])
+        body = ["    " + "".join(f"{v:19.9e}" for v in row)
+                for row in fields8[1:]]
+        return "\n".join([hdr] + body)
+
+    # Galileo E record: circular a=29600 km (alt ~23222), i0=0.96 rad
+    gal = rnx_rec("E", 11, [
+        (1e-5, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, math.sqrt(29600e3)),
+        (430000.0, 0.0, 1.0, 0.0),
+        (0.96, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 2433.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0)])
+    # GLONASS R records: circular equatorial r=25508 km; ECEF-frame speed
+    # (n - Omega)*r (the broadcast frame is the rotating PZ-90)
+    r_glo = 25508.0
+    n_glo = math.sqrt(sp.MU_GLO / (r_glo * 1e3) ** 3)
+    v_glo = (n_glo - sp.OMEGA_GLO) * r_glo  # km/s
+    glo_a = rnx_rec("R", 5, [
+        (1e-4, 1e-12, 43200.0),
+        (r_glo, 0.0, 0.0, 0.0),
+        (0.0, v_glo, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0)])
+    glo_b = rnx_rec("R", 5, [       # same PRN, tb 30 min later
+        (1e-4, 1e-12, 45000.0),
+        (r_glo * math.cos(0.224), -v_glo * math.sin(0.224), 0.0, 0.0),
+        (r_glo * math.sin(0.224), v_glo * math.cos(0.224), 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0)]).replace("12 00 00", "12 30 00")
+    glo_sick = rnx_rec("R", 6, [    # Bn != 0 -> must be skipped
+        (1e-4, 1e-12, 43200.0),
+        (r_glo, 0.0, 0.0, 1.0),
+        (0.0, v_glo, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0)])
+    mini = ("     3.05           NAVIGATION DATA     MIXED               "
+            "RINEX VERSION / TYPE\n"
+            "                                                            "
+            "END OF HEADER\n"
+            + gal + "\n" + glo_a + "\n" + glo_b + "\n" + glo_sick + "\n")
+    days = sp.jdn(2026, 8, 26) - sp.jdn(1980, 1, 6)
+    now_sow = (days * 86400 + 12 * 3600 + 28 * 60 + 18.0) % sp.WEEK_S
+    eph = sp.parse_rinex_nav(mini, now_sow=now_sow, leap_s=18.0)
+    check("galileo E record parsed", (2, 11) in eph)
+    check("glonass R record parsed, sick one skipped",
+          (3, 5) in eph and (3, 6) not in eph, f"keys={sorted(eph)}")
+    eg = eph.get((2, 11))
+    check("galileo sqrt_a right field",
+          eg and abs(eg["sqrt_a"] - math.sqrt(29600e3)) < 1e-3,
+          f"sqrt_a={eg and eg['sqrt_a']}")
+    pg = sp.sat_pos_ecef(eg, eg["toe"], sp.MU_GAL, sp.OMEGA_GAL)
+    rg = math.sqrt(sum(v * v for v in pg))
+    check("galileo radius ~29600 km", abs(rg - 29600e3) < 1e3, f"r={rg:.0f}")
+    alt_gal = (rg - sp.A_E) / 1e3
+    check("galileo alt ~23222 km", abs(alt_gal - 23222.0) < 50.0,
+          f"alt={alt_gal:.0f}")
+    gr = eph.get((3, 5))
+    check("glonass units km->m, nearest tb picked (12:30 not 12:00)",
+          gr and abs(gr["pos"][0] - r_glo * math.cos(0.224) * 1e3) < 1.0
+          and abs(gr["tb_sow"] - ((days * 86400 + 45000.0 + 18.0)
+                                  % sp.WEEK_S)) < 1e-6,
+          f"pos0={gr and gr['pos'][0]:.1f} tb={gr and gr['tb_sow']:.1f}")
+    # propagate the 12:30 record 30 s forward: radius must hold, motion sane
+    p1, v1 = sp.glo_state(gr, gr["tb_sow"] + 30.0)
+    r1 = math.sqrt(sum(v * v for v in p1))
+    s1 = math.sqrt(sum(v * v for v in v1))
+    check("glo RK4 holds radius (+30 s)", abs(r1 - r_glo * 1e3) < 200.0,
+          f"r={r1:.0f}")
+    check("glo ECEF speed ~ (n-Omega)*r", abs(s1 - v_glo * 1e3) < 50.0,
+          f"v={s1:.0f}")
+    moved = math.dist(p1, gr["pos"])
+    check("glo 30 s displacement ~63 km", 50e3 < moved < 80e3, f"d={moved:.0f}")
+    # inertial-frame speed must come out orbital (~3.95 km/s): v + Omega x r
+    wxr = (-sp.OMEGA_GLO * p1[1], sp.OMEGA_GLO * p1[0], 0.0)
+    vi = math.sqrt(sum((v1[k] + wxr[k]) ** 2 for k in range(3)))
+    check("glo inertial speed ~3.95 km/s", abs(vi - 3953.0) < 60.0, f"vi={vi:.0f}")
+    # long arc stability: a full orbit must not blow up (J2-only model)
+    old_fit = sp.GLO_FIT_S
+    sp.GLO_FIT_S = 1e9
+    p2, _ = sp.glo_state(eph[(3, 5)], gr["tb_sow"] + 40544.0)
+    sp.GLO_FIT_S = old_fit
+    r2 = math.sqrt(sum(v * v for v in p2))
+    check("glo RK4 stable over one full period",
+          abs(r2 - r_glo * 1e3) < 500e3, f"r={r2:.0f}")
+    try:
+        sp.glo_state(gr, gr["tb_sow"] + sp.GLO_FIT_S + 1.0)
+        check("glo fit window enforced", False)
+    except ValueError:
+        check("glo fit window enforced", True)
+
+
     # --- roller parser mapping -------------------------------------------------
     import archive_roller as roller
     line = {"t": 1787614546.0, "sats": [
@@ -127,6 +221,28 @@ def main():
               f"{[(s['sys'], s['prn'], s['el_deg']) for s in locked_low]}")
         check("some GPS sats modeled", sky["counts"]["modeled"] >= 4,
               f"modeled={sky['counts']['modeled']}")
+        gal = [s for s in sky["sats"] if s["sys"] == "galileo"]
+        glo = [s for s in sky["sats"] if s["sys"] == "glonass"]
+        check("galileo modeled from BRDC", len(gal) >= 4, f"gal={len(gal)}")
+        check("glonass modeled from BRDC", len(glo) >= 4, f"glo={len(glo)}")
+        check("glonass rows all predicted-only",
+              bool(glo) and all(s["cls"] == "predicted" for s in glo))
+        check("glonass alt ~19130 km",
+              bool(glo) and all(18500 <= s["alt_km"] <= 19800 for s in glo),
+              f"{[s['alt_km'] for s in glo][:6]}")
+        check("galileo alt plausible (E14/E18 are eccentric)",
+              bool(gal) and all(17000 <= s["alt_km"] <= 27000
+                                for s in gal))
+        cov = sum(1 for s in sky["sats"] if s["cls"] in ("tracked", "absent"))
+        check("predicted-only sats stay out of coverage counts",
+              sky["counts"]["expected"] == cov
+              and sky["counts"]["predicted"] == len(glo),
+              f"expected={sky['counts']['expected']} cov={cov} "
+              f"predicted={sky['counts']['predicted']} glo={len(glo)}")
+        gal_low = [s for s in gal
+                   if s["cls"] == "unexpected" and s["el_deg"] < -2.0]
+        check("no locked galileo deep below horizon", not gal_low,
+              f"{[(s['prn'], s['el_deg']) for s in gal_low]}")
     else:
         print("skip  live cross-check (no observations dir)")
 
