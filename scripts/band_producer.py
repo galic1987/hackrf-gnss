@@ -514,7 +514,10 @@ def main():
         # ATSC rows/residual_ppm/atsc_spread_ppm are owned by
         # phase_producer.py now; nothing to update here.
         if mean is not None:
-            state["consensus_ppm"] = round(mean, 4)
+            # single-owner law (round-10): the cross-producer consensus_ppm
+            # belongs to series_producer (state.series.json); this band-local
+            # mean keeps its own key so the two never merge-race.
+            state["band_consensus_ppm"] = round(mean, 4)
         state["alerts"] = alerts
         # CLKIN tri-state (round-8/9b reviews): the r9 probe measures the
         # CLKIN pin frequency in a 9-11 MHz window — i.e. "a 10 MHz-class

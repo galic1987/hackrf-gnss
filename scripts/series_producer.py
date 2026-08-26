@@ -195,7 +195,10 @@ def main():
                   and now - s.get("epoch", 0) < 1800]  # rotation-slowed voter window
         cons, xalerts, suspect = elect(voters)
         if cons is not None:
-            add("consensus", now, cons)
+            # null-consensus law, history side (round-10): suspect midpoints
+            # never enter the "consensus" series the panel graphs and derives
+            # statistics from — they go to a clearly-named candidate series.
+            add("candidate midpoint" if suspect else "consensus", now, cons)
         persist_alerts(xalerts, now)
 
         # PC clock drift: the 2-s SPI tick polls are a transfer oscillator.
