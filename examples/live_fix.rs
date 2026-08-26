@@ -253,8 +253,12 @@ fn main() {
         .and_then(|p| {
             let pos = &p["position"];
             let fresh = now - p["epoch"].as_f64().unwrap_or(0.0) < 900.0;
-            let gated = pos["gate"].as_str().unwrap_or("") == "redundant";
-            if fresh && gated {
+            // Recursive seeding requires explicit trust (round-8 review):
+            // gate == "redundant" only means an extra equation existed — a
+            // high-rms diagnostic fix must not steer the next solve.
+            // A missing trust field reads as false.
+            let trusted = pos["trusted_for_history"].as_bool().unwrap_or(false);
+            if fresh && trusted {
                 Some([
                     pos["lat"].as_f64()?,
                     pos["lon"].as_f64()?,
