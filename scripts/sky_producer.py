@@ -369,11 +369,16 @@ def _detect_ang(lines, hdr, want):
     "radians" | "semicircles" | "ambiguous". Per-record i0 votes over the
     WHOLE constellation (no early-exit cap: BKG files sort records by PRN
     and a capped early scan of a BDS constellation can see nothing but
-    unit-neutral GEOs). Both vote kinds present -> "ambiguous": the file is
-    internally inconsistent — fail closed, every record of the constellation
-    is rejected rather than guessed. No decided votes -> semicircles (spec
-    default; a GEO-only BDS constellation lands here). One corrupt record
-    earns no vote and cannot flip the file."""
+    unit-neutral GEOs). Decision law mirrors src/gps/broadcast.rs
+    detect_ang_unit: one unit voted by all decided votes wins outright;
+    when both drew votes the leader must hold >= 2/3 of them, else
+    "ambiguous" (fail closed — a lone corrupt-but-plausible record cannot
+    deadlock the constellation, a genuinely contested file is rejected).
+    No decided votes -> "radians": the SPEC default — RINEX-3.05 Table A6
+    footnote *** mandates the generator converts semi-circle angles to
+    radians (verified against rinex305.pdf; the BKG/IGS population
+    conforms). One corrupt record earns no vote and cannot flip the
+    file."""
     rad = sc = 0
     j = hdr
     while j + 4 < len(lines):
@@ -390,8 +395,13 @@ def _detect_ang(lines, hdr, want):
             continue
         j += 1
     if rad and sc:
-        return "ambiguous"
-    return "radians" if rad else "semicircles"
+        win = max(rad, sc)
+        if win * 3 < (rad + sc) * 2:
+            return "ambiguous"          # contested: fail closed
+        return "radians" if rad > sc else "semicircles"
+    if sc:
+        return "semicircles"
+    return "radians"                    # rad-only, or the spec default
 
 
 def _i0_sane(i0_raw, unit):

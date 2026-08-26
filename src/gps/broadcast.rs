@@ -137,7 +137,9 @@ pub(crate) fn iparse_strict(s: &str) -> Option<i64> {
 
 /// Inclination evidence bands for the radians-vs-semicircles unit decision
 /// (round-11 review of the old "first record's |i0| > 0.6" heuristic).
-/// RINEX-3.05 says semicircles; BKG/IGS mixed files carry RADIANS. Live MEO
+/// RINEX-3.05 MANDATES radians (Table A6 fn. ***: the generator converts
+/// semi-circle broadcasts to radians); a non-conforming generator can still
+/// write semicircles, which the vote catches. Live MEO
 /// GNSS inclinations span 53-59 deg and drifting BDS IGSOs exceed 60 deg
 /// (live BRDC 2026-08-26: C09 at i0 = 1.0523 rad = 60.3 deg): 0.93-1.06 rad
 /// or 0.294-0.336 semicircles. A record's raw |i0| is rad-like in
@@ -155,10 +157,14 @@ pub(crate) const I0_GREY: (f64, f64) = (0.36, 0.85);
 /// Angle-unit verdict for one constellation of a RINEX-3 nav file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AngUnit {
-    /// RINEX-3.05 spec: angles in semicircles, converted xPI on parse.
-    #[default]
+    /// A non-conforming generator that skipped the mandated conversion
+    /// (RINEX-3.05 Table A6 footnote ***: semi-circle angles "have to be
+    /// converted to radians by the RINEX generator"); multiplied by PI.
     Semicircles,
-    /// BKG/IGS mixed-file convention: angles already in radians.
+    /// RINEX-3.05 as specified: nav-file angles are already radians.
+    /// The zero-evidence default too (Table A6 fn. ***; the observed
+    /// BKG/IGS 3.05 population conforms).
+    #[default]
     Radians,
     /// Contradictory content with no supermajority (rad-like AND sc-like
     /// records present, neither holding >= 2/3 of the decided votes): the
@@ -190,8 +196,11 @@ impl AngUnit {
 /// Ambiguous and fails closed (a lone dissenting or corrupt-but-plausible
 /// record can no longer deadlock the whole constellation, but a genuinely
 /// contested file is still rejected rather than guessed). No decided
-/// votes -> Semicircles (spec default; a GEO-only BDS constellation lands
-/// here — GEOs carry no evidence and their Kepler math is unused anyway).
+/// votes -> Radians — the spec default: RINEX-3.05 Table A6 footnote ***
+/// mandates the radians conversion by the generator (verified against
+/// rinex305.pdf 2026-08-26; the observed BKG/IGS population conforms). A
+/// GEO-only BDS constellation lands here — GEOs carry no evidence and
+/// their Kepler math is unused by this station anyway.
 pub(crate) fn detect_ang_unit(lines: &[&str], hdr_end: usize, sys: char) -> AngUnit {
     let (mut rad, mut sc) = (0usize, 0usize);
     let mut j = hdr_end;
@@ -213,7 +222,7 @@ pub(crate) fn detect_ang_unit(lines: &[&str], hdr_end: usize, sys: char) -> AngU
     }
     let decided = rad + sc;
     if decided == 0 {
-        return AngUnit::Semicircles;
+        return AngUnit::Radians; // spec default (Table A6 fn. ***)
     }
     if sc == 0 {
         return AngUnit::Radians;
@@ -288,8 +297,10 @@ fn gps_sow(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> f64 {
 /// newest VALID issue per PRN. Returns {prn: BrdcEph} (the rejection ledger
 /// is logged; use [`parse_rinex_gps_nav`] to inspect it).
 ///
-/// Angle units: the RINEX spec says semicircles, but BKG's mixed files carry
-/// RADIANS (i0 = 0.957, not 0.306). The unit is decided per constellation by
+/// Angle units: RINEX-3.05 mandates radians (Table A6 fn. ***), and BKG's
+/// mixed files conform (i0 = 0.957 rad, not 0.306 sc) — but a generator that
+/// skips the conversion writes semicircles, so the unit is decided per
+/// constellation by
 /// per-record i0 votes ([`detect_ang_unit`]), applied to every angle field —
 /// the previous unconditional xPI produced near-equatorial orbits
 /// 15,000-44,000 km off (found by cross-checking against SGP4/TLE
