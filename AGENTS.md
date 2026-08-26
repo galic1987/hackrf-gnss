@@ -100,7 +100,7 @@ mask, dropout-cause suggestion). Schema/layout/query doc:
 logic. Gateware sims live in the firmware repo
 (`mac-archive/hackrf/firmware/fpga/tests/`, venv `tools/venv-fpga`).
 The anchored-PVT truth tool: `cargo run --release --example anchor_residuals`
-— per-satellite anchor residuals vs the surveyed site; GPS anchors must be
+— per-satellite anchor residuals vs the site anchor (observations/site.json, self-bootstrapped — never surveyed); GPS anchors must be
 meter-class before trusting any anchored solve (4-sat solves have zero
 residual by construction — rms is not a quality gate at n=4). Residuals are
 only measurable with >= 3 anchored GPS channels (fewer and the median pins

@@ -316,7 +316,7 @@
         <button class="segbtn" id="scat3dplay">&#9654; replay</button>
         <button class="segbtn" id="scat3dreset">reset view</button>
       </span></h2>
-    <div class="cvw tip" tabindex="0" data-tip-title="Merged 3D scatter" data-tip="All three ENU components at once. Point size/brightness encodes depth; colour = solve class (blue pure GPS, purple mixed GPS+BDS, gray 2D alt-hold); the white cross is the surveyed antenna point. Axes use the same robust median ± 8×MAD limits as the 2D views."><canvas id="scat3d" class="cv"></canvas></div>
+    <div class="cvw tip" tabindex="0" data-tip-title="Merged 3D scatter" data-tip="All three ENU components at once. Point size/brightness encodes depth; colour = solve class (blue pure GPS, purple mixed GPS+BDS, gray 2D alt-hold); the white cross is the site anchor (site.json — self-bootstrapped, never surveyed). Axes use the same robust median ± 8×MAD limits as the 2D views."><canvas id="scat3d" class="cv"></canvas></div>
     <div id="scat3dlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
   </div>
 
@@ -495,8 +495,9 @@
     chain is antenna &rarr; MAX2831 RF transceiver &rarr; MAX5864 ADC &rarr; SGPIO/CPLD &rarr; FPGA (CIC decimation, nibble
     timestamps, TDC) &rarr; ARM Cortex-M0/M4 &rarr; USB &rarr; this page &mdash; walk it live in the
     <b>Inside the HackRF Pro</b> card above.</p>
-    <p>Every clock in the radio derives from one 10 MHz reference through a Si5351 synthesizer; the discipline loop steers that
-    reference by writing the FPGA clock-correction register, which reprograms the Si5351's fractional dividers. One clock for
+    <p>Every clock in the radio derives from one 10 MHz reference through a Si5351 synthesizer; the discipline loop's lever on that
+    reference is the FPGA clock-correction register, which reprograms the Si5351's fractional dividers — but the loop currently runs
+    SHADOW: corrections are computed and logged, never written (every write was proven to collapse all tracker locks for ~1 min). One clock for
     everything is what makes the whole page coherent: an error in it shifts every band identically, so cross-band agreement
     isolates and removes it.</p>
   </div>
@@ -511,7 +512,7 @@
     table. Bit decode reads the 50 bit/s nav message; its ephemeris predicts where the satellite was at transmit time, and its
     time-of-week anchors absolute time.</p>
     <p>The PVT solver turns pseudoranges into position + clock about once a minute; the discipline loop compares the near-stationary
-    GEO carriers against the local clock and nudges the correction register in &plusmn;0.1 ppm steps. Architecturally, each
+    GEO carriers against the local clock and computes the correction in &plusmn;0.1 ppm steps — shadow-only today: logged, never written. Architecturally, each
     producer process writes only its own state file and the server merges them at read time with expiry &mdash; no producer can
     corrupt another, and a dead one simply fades out. <span id="l4live"></span></p>
     <div class="cvw tip" tabindex="0" data-tip-title="Acquisition heatmap" data-tip="One cell per (Doppler, code-delay) hypothesis; brightness = correlation. The white frame is the serial searcher stepping cell to cell; the bright blob is the satellite. Search finds it coarsely; the DLL/PLL then track it finely, 1,000× tighter than a cell. Illustrative teaching animation — a representative peak, not this second's actual search grid."><canvas id="l4cv" class="cv"></canvas></div>
@@ -875,17 +876,17 @@ function renderJourney(st) {
       ? "±" + d.step_limit_ppm + " ppm steps · ±" + d.clamp_ppm + " ppm clamp"
       : "±0.1 ppm steps · ±2 ppm clamp"),
     "Discipline loop",
-    "A slow software loop compares the WAAS GEO carriers — near-zero Doppler, so convenient always-on frequency references (GEO motion floors them at ~±0.03 ppm) — against the local clock. Discipline currently runs SHADOW: the correction is computed and logged but never written, because every write was proven to collapse all tracker locks for ~1 min (122/122 in the archive)."));
+    "A slow software loop compares the WAAS GEO carriers — near-zero Doppler, so convenient always-on frequency references (GEO motion floors them at ~±0.01 ppm: ±0.5–3 m/s line-of-sight range-rate ÷ c) — against the local clock. Discipline currently runs SHADOW: the correction is computed and logged but never written, because every write was proven to collapse all tracker locks for ~1 min (122/122 in the archive)."));
 
-  // 7. Disciplined clock out
+  // 7. Clock out (CLKOUT) — undisciplined while the loop runs SHADOW
   var res = c.residual_ppm;
-  nodes.push(journeyNode("Disciplined clock out",
+  nodes.push(journeyNode("Clock out (CLKOUT)",
     (res !== undefined && res !== null) ? "<b>" + sgn(res) + Math.abs(res).toFixed(3) + "</b> ppm residual" : "—",
     (c.tick_rate_drift_ppm_vs_session_ref !== undefined
       ? "tick " + sgn(c.tick_rate_drift_ppm_vs_session_ref) + Math.abs(c.tick_rate_drift_ppm_vs_session_ref).toFixed(1) + " ppm vs session ref (PC-read)" : ""),
     (res !== undefined && res !== null) ? "≈ ±" + fmtInt(Math.abs(res * 1000)) + " ns/s" : "≈ — ns/s",
-    "Disciplined clock out",
-    "What leaves the box: a 32 MHz tick (31.25 ns per count) driving every timestamp, and 10 MHz on CLKOUT for the second radio. residual_ppm is the error the references still measure after correction — multiply ppm by 1,000 to get ns of time error per second. The session-ref tick drift is PC-read jitter, diagnostics only."));
+    "Clock out — undisciplined while SHADOW",
+    "What leaves the box: a 32 MHz tick (31.25 ns per count) driving every timestamp, and 10 MHz on CLKOUT for the second radio. While the discipline loop runs SHADOW nothing steers this clock. residual_ppm is the error the references still measure on the uncorrected clock — multiply ppm by 1,000 to get ns of time error per second. The session-ref tick drift is PC-read jitter, diagnostics only."));
 
   document.getElementById("journey").innerHTML =
     nodes.join('<div class="jarrow">→</div>');
@@ -901,10 +902,10 @@ function renderSummary(st) {
     cons !== null ? sgn(cons) + Math.abs(cons).toFixed(3) + " ppm" : "—",
     cons !== null
       ? "= " + fmtNs(cons * 1000) + ". Left undisciplined the clock would wander " + fmtPerHour(cons * 1000) +
-        "; the loop currently holds it in its deadband."
+        " — and with the loop shadow-only it does; the shadow estimate logs what it would correct."
       : "waiting for references…",
     "Timekeeping — the bottom line",
-    "One clock, measured by every reference on this page, steered to zero by the discipline loop. 1 ppb = 1 ns of error per second; under ±0.05 ppm (±50 ns/s) is healthy for this station."));
+    "One clock, measured by every reference on this page, with the discipline loop as a shadow estimate — computed and logged, never actuated. 1 ppb = 1 ns of error per second; under ±0.05 ppm (±50 ns/s) is healthy for this station."));
 
   // Position: latest fix vs the site anchor (uses POS_SITE updated in render)
   var fixes = st.position_history || [];
@@ -929,7 +930,7 @@ function renderSummary(st) {
   }
   cards.push(sumCard("green", "Position", headline, sentence,
     "Position — the bottom line",
-    "The latest fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). A static station should sit within a few metres; residual rms and the gate flag say how much to believe any single fix, and a fix far from the survey is marked untrusted rather than hidden."));
+    "The latest fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). A static station should sit within a few metres; residual rms and the gate flag say how much to believe any single fix, and a fix far from the site anchor is marked untrusted rather than hidden."));
 
   // Displacement
   var ph = st.phase;
@@ -1368,7 +1369,7 @@ var GLOSSARY = {
   "TDC": "Time-to-Digital Converter — a carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period. Current figure (~0.5 ns) is a provisional ring-oscillator self-test estimate; external single-edge calibration is pending (P2a).",
   "PPS": "Pulse Per Second — a timing receiver's hardware UTC mark, accurate to ~ns. The planned absolute anchor for this station.",
   "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. The HackRF One is slaved to the Pro this way.",
-  "CLKOUT": "clock output SMA: the Pro exports its disciplined 10 MHz here.",
+  "CLKOUT": "clock output SMA: the Pro exports its 10 MHz reference here — currently undisciplined; the discipline loop runs shadow-only (correction computed and logged, never written).",
   "SPI": "Serial Peripheral Interface — the control bus between the HackRF's processor and FPGA. Reading the tick counter over SPI carries ±ms of USB jitter.",
   "ADEV": "Allan deviation — clock stability vs averaging time. A τ⁻¹ slope means white measurement noise averaging down, not oscillator physics.",
   "σ": "sigma — one standard deviation: the honest uncertainty of a measurement. '±σ' tells you how much to trust the number it follows.",
@@ -1442,7 +1443,7 @@ var GLOSSARY = {
   "RHCP": "Right-Hand Circular Polarization — GNSS signals spin like a corkscrew. A matching patch antenna receives the direct wave and rejects the opposite-spin first ground bounce: free multipath defense.",
   "ionosphere": "the charged upper atmosphere (60–1000 km); delays GNSS signals 1–15 m. Dispersive — the delay shrinks with frequency² — so dual-frequency or the SBAS grid removes most of it.",
   "troposphere": "the lower weather atmosphere; delays all GNSS frequencies equally by ~2.3 m at zenith. Not dispersive, so it can only be modeled, not measured away.",
-  "Si5351": "the clock-synthesizer chip that derives the radio's sample clocks from the 10 MHz reference. The FPGA correction register reprograms its fractional dividers — that is how the discipline loop physically steers the hardware.",
+  "Si5351": "the clock-synthesizer chip that derives the radio's sample clocks from the 10 MHz reference. The FPGA correction register reprograms its fractional dividers — that is the lever the discipline loop would pull; it currently runs SHADOW and never writes.",
   "SGPIO": "Serial General-Purpose I/O — the high-speed parallel-sample bus carrying I/Q data into the FPGA/processor.",
   "CPLD": "a small programmable logic device gluing the sample bus (SGPIO) into the rest of the radio.",
   "CIC": "Cascaded Integrator-Comb — a multiplier-free hardware decimation filter in the FPGA; the extended-precision image runs CIC 4× to stream 8 Msps of 12-bit samples.",
@@ -1628,7 +1629,7 @@ function render(st) {
     var mps = Math.abs(res) * 299.792458;   // ppm -> m/s range-rate
     var corrNow = c.correction_ppm || 0;
     fpga += (Math.abs(corrNow) > 0.001
-      ? "The discipline loop holds the reference at correction <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
+      ? "The shadow correction estimate stands at <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
         " ppm</b>; the live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>"
       : "The uncorrected live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>") +
       " = " + sgn(res) + Math.abs(res * 1000).toFixed(0) +
@@ -2521,8 +2522,8 @@ function renderRfChain(st) {
   nodes.push(journeyNode("Cortex-M0", "control core",
     "SPI house-keeping · clock-correction register " +
       (d.correction_ppm !== undefined ? "<b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm</b>" : "—"),
-    "steers the Si5351",
-    "Cortex-M0 + correction register", "The small ARM core runs control: SPI reads and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop pulls, in ±0.1 ppm steps."));
+    "would steer the Si5351 (SHADOW: no writes)",
+    "Cortex-M0 + correction register", "The small ARM core runs control: SPI reads and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
   nodes.push(journeyNode("Cortex-M4", "app core", "packetizes the sample stream → USB", "heavy lifting",
     "Cortex-M4", "The main ARM core moves the sample stream to USB and services host requests. Its timing is software-class — hence the FPGA timestamps."));
   nodes.push(journeyNode("USB → PC", "this page",
@@ -3035,7 +3036,7 @@ var TOUR = [
   { sel: "h1", title: "Welcome to the sync station",
     text: "This page is both a live instrument panel and a course, measured by two radios on this box right now. Nine short stops — Escape or dismiss anytime." },
   { sel: "#live", title: "The headline number",
-    text: "Consensus ppm: the weighted agreement of every independent reference measuring ONE clock. 1 ppm = 1,000 ns of time error per second; this station holds sub-ppm, disciplined to zero." },
+    text: "Consensus ppm: the weighted agreement of every independent reference measuring ONE clock. 1 ppm = 1,000 ns of time error per second; this station measures sub-ppm, with the discipline loop shadow-only (the correction is computed, never written)." },
   { sel: "#journey", title: "The signal journey",
     text: "Every measurement's path — satellites, ionosphere, radio front-end, tracking loops, solver, discipline loop — each stage showing its live value and the precision it can honestly claim." },
   { sel: "#skydome", title: "Where the satellites are",

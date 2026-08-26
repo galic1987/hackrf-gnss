@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08-26)** — the 2026-08-25 archive retro found that every observable correction write (122/122, down to ±0.01 ppm) was followed by a tracker-wide lock collapse and ~1 min relock, contradicting this note's "phase-continuous / no capture-boundary requirement" verdict; the discipline loop now runs SHADOW-only (`HACKRF_GNSS_ACTUATE=1` to actuate). Authoritative state: `docs/superpowers/specs/2026-08-25-clock-write-continuity-experiment.md`. Retained for history; do not cite the verdict below.
+
 # P0c gate: does a live clock-correction write break received phase continuity?
 
 Date: 2026-08-25. Read-only analysis; no radio touched, no process signalled.
