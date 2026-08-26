@@ -236,7 +236,7 @@
     <h2>60 Hz carrier phase &mdash; relative displacement (diagnostic)</h2>
     <div id="phase"><span class="dim">waiting for phase producer&hellip;</span></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Carrier-phase displacement" data-tip="Unwrapped carrier phase of the ATSC ch35 pilot × λ (≈497.7 mm), in mm of relative path change, last 60 s. Sub-mm sensitivity; the absolute zero wanders with multipath and atmosphere, so read the wiggles, not the offset."><canvas id="phasechart" class="cv"></canvas></div>
-    <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the CLKIN-locked One;
+    <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the HackRF One (cabled CLKOUT&rarr;CLKIN; lock unverified while the phase producer holds it full-time);
     unwrapped carrier phase &times; &lambda; (&asymp;497.7 mm) = relative path displacement, last 60 s.
     Absolute zero wanders with multipath/atmosphere &mdash; sensitivity, not absolute accuracy, is the spec.</span>
   </div>
@@ -370,17 +370,17 @@
         <tr><td>Nibble-embedded timestamps</td><td class="num">25&ndash;31.25 ns, 0 jitter</td><td class="num">7.5&ndash;9.4 m</td>
             <td class="ok">LIVE &mdash; verified on hardware 2026-08-23: 2.84M sequence-validated anchors, exact tick recovery from the stream (ext 12-bit mode incl. 8 Msps boost; slot-2 streams only, not 8-bit)</td></tr>
         <tr><td>Clock correction register</td><td class="num">fp_1_63, &plusmn;1% window</td><td class="num" id="correq">&mdash;</td>
-            <td class="warn">live value above; auto re-applied after bitstream load. CAUTION (P0c open): a correction write reprograms Si5351 MS0/MS1 with an SGPIO stream restart &mdash; treat corrections as capture-boundary operations until phase continuity is proven</td></tr>
+            <td class="warn">SHADOW — never written while actuate is off (the 122/122 write-collapse retro retired live writes; P0c is closed as negative evidence, not "open"). Any future write is a capture-boundary operation pending the continuity experiment</td></tr>
         <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;9.4 m</td>
             <td class="ok">live &mdash; awaiting PPS source (ZED-F9T)</td></tr>
         <tr><td>Carry-chain TDC (48-tap, rev3b)</td><td class="num">&asymp;0.5 ns provisional self-test estimate</td><td class="num">~15 cm</td>
             <td class="warn">PROVISIONAL &mdash; on-die RO stimulus with ~3.6 edges in flight breaks the single-edge popcount model; external trigger input not yet wired in gateware (Task-6 hook). External single-edge calibration with atomic coarse+fine capture = P2a</td></tr>
         <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps (projection)</td><td class="num">~1&ndash;1.5 cm</td>
             <td class="dim">unvalidated projection &mdash; needs ZED-F9T PPS on the trigger pin AND the P2a external calibration first</td></tr>
-        <tr><td>ATSC pilot carrier PLL</td><td class="num">~1 mm @ 60 Hz</td><td class="num">relative displacement</td>
-            <td class="ok">live &mdash; see chart</td></tr>
-        <tr><td>Cross-radio interferometer</td><td class="num">~0.1 mm, clock-free</td><td class="num">differential path</td>
-            <td class="dim">design &mdash; needs trigger sync</td></tr>
+        <tr><td>ATSC pilot carrier PLL</td><td class="num">σ ~86&ndash;99 mm over 10 s, live</td><td class="num">relative displacement</td>
+            <td class="ok">live &mdash; see chart; sub-mm is the theoretical phase granularity, achieved stability is multipath-limited</td></tr>
+        <tr><td>Cross-radio interferometer</td><td class="num">~0.1 mm (design target)</td><td class="num">differential path</td>
+            <td class="dim">design &mdash; needs trigger sync; the shared-clock premise itself is unverified (CLKIN lock never established — the One is held full-time by the phase producer, so the detection read can't open it)</td></tr>
       </tbody>
     </table>
   </div>
@@ -406,7 +406,7 @@
     <h2 class="tip" tabindex="0" data-tip-title="Inside the HackRF Pro" data-tip="The hardware path every sample travels, animated left to right. Live values are bolted onto the stages that expose them: the FPGA tick rate, the discipline correction, and the consensus the whole chain is held to.">Inside the HackRF Pro &mdash; the measurement chain, live</h2>
     <div class="jchain" id="rfchain"><span class="dim">waiting for data&hellip;</span></div>
     <span class="cap">Everything is slaved to ONE clock tree (Si5351 synthesizer &larr; the FPGA correction register &larr; the discipline loop),
-    which is why cross-band consensus can cancel clock error at all. The second radio (HackRF One) runs on the same reference via CLKOUT&rarr;CLKIN.</span>
+    which is why cross-band consensus can cancel clock error at all. The second radio (HackRF One) is cabled to the same reference via CLKOUT&rarr;CLKIN — but the lock is unverified: the CLKIN status read cannot open the One while the phase producer holds it, so treat its rows as possibly a second clock.</span>
   </div>
 
   <!-- academy view D2: physical chain — antenna to screen (end-to-end zoom) -->
@@ -840,7 +840,7 @@ function renderJourney(st) {
     "SPI tick poll · ±30 ppm read jitter",
     "everything on ONE clock — common-mode errors → consensus works",
     "SDR front-end — one clock",
-    "Both radios sample against a single 32 MHz FPGA counter (the HackRF One is slaved to the Pro's CLKOUT via CLKIN). Any clock error shifts every band identically, so cross-band agreement — the consensus — cancels it; that common-mode property is exactly why multi-band consensus works. The Hz shown is the SPI tick poll: ±30 ppm of PC-read jitter, level is diagnostic only."));
+    "Both radios are cabled to a single 32 MHz reference (CLKOUT&rarr;CLKIN), but the One's lock is unverified while the phase producer occupies it. Only when the lock is verified does any clock error shift every band identically, making cross-band consensus cancel it — until then the ATSC-vs-WAAS disagreement may be two clocks, not one. The Hz shown is the SPI tick poll: ±30 ppm of PC-read jitter, level is diagnostic only."));
 
   // 4. Tracking loops
   var nLock = sats.filter(function (s) { return s.lock_s > 0; }).length;
@@ -943,7 +943,7 @@ function renderSummary(st) {
       ? "carrier-phase noise over 10 s at 60 epochs/s — sub-mm sensitivity to path change; the absolute zero wanders with the atmosphere."
       : "no carrier lock on the TV pilot right now; the tracker re-locks automatically when the signal returns.",
     "Displacement — the bottom line",
-    "The ATSC ch35 pilot is GPS-disciplined at the transmitter; tracking its carrier phase on the CLKIN-slaved radio resolves sub-millimetre relative path change at 60 epochs per second. σ over 10 s is the honest noise figure — smaller is better, multipath sets the floor."));
+    "The ATSC ch35 pilot is GPS-disciplined at the transmitter; tracking its carrier phase on the second radio (cabled CLKOUT&rarr;CLKIN, lock unverified) reads relative path change at 60 epochs per second. σ over 10 s is the honest noise figure — 86–99 mm this era: multipath sets the floor, not the electronics; sub-mm is only the theoretical phase granularity."));
 
   document.getElementById("jsummary").innerHTML = cards.join("");
 }
@@ -1368,7 +1368,7 @@ var GLOSSARY = {
   "FPGA": "Field-Programmable Gate Array — the iCE40UP5K chip on the HackRF Pro whose logic we reprogram: the timestamp counter, notch filter and TDC all live here.",
   "TDC": "Time-to-Digital Converter — a carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period. Current figure (~0.5 ns) is a provisional ring-oscillator self-test estimate; external single-edge calibration is pending (P2a).",
   "PPS": "Pulse Per Second — a timing receiver's hardware UTC mark, accurate to ~ns. The planned absolute anchor for this station.",
-  "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. The HackRF One is slaved to the Pro this way.",
+  "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. The HackRF One is cabled to the Pro this way; the lock is currently unverified (the detection read cannot open the One while the phase producer holds it).",
   "CLKOUT": "clock output SMA: the Pro exports its 10 MHz reference here — currently undisciplined; the discipline loop runs shadow-only (correction computed and logged, never written).",
   "SPI": "Serial Peripheral Interface — the control bus between the HackRF's processor and FPGA. Reading the tick counter over SPI carries ±ms of USB jitter.",
   "ADEV": "Allan deviation — clock stability vs averaging time. A τ⁻¹ slope means white measurement noise averaging down, not oscillator physics.",
@@ -1588,7 +1588,10 @@ function render(st) {
   }
   // headline = the REAL clock number (consensus of independent references);
   // the SPI-poll tick rate is PC-read jitter — diagnostics, demoted below.
-  if (st.consensus_ppm !== undefined) {
+  // Round-8 null-consensus law: a suspect midpoint publishes consensus_ppm:null
+  // plus candidate_midpoint_ppm — the headline must never render null as a
+  // number (Math.abs(null) === 0 would fake a perfect clock).
+  if (st.consensus_ppm !== undefined && st.consensus_ppm !== null) {
     var cp = st.consensus_ppm;
     document.getElementById("livedata").textContent =
       "consensus " + sgn(cp) + Math.abs(cp).toFixed(3) + " ppm" +
@@ -1598,6 +1601,11 @@ function render(st) {
     if (st.consensus_suspect)
       document.getElementById("livedata").innerHTML +=
         ' <span class="pill warn">UNARBITRATED</span>';
+  } else if (st.consensus_suspect && st.candidate_midpoint_ppm !== undefined && st.candidate_midpoint_ppm !== null) {
+    var cm = st.candidate_midpoint_ppm;
+    document.getElementById("livedata").innerHTML =
+      "consensus <b>unarbitrated</b> — midpoint candidate " + sgn(cm) + Math.abs(cm).toFixed(3) +
+      ' ppm <span class="pill warn">trust neither</span>';
   }
   if (c.live_tick_hz) {
     var drift = c.tick_rate_drift_ppm_vs_session_ref;
@@ -1608,8 +1616,9 @@ function render(st) {
   }
   var anchor = c.utc_known ? '<span class="pill ok">FPGA counter anchored</span>'
                            : '<span class="pill warn">anchor: ' + esc(c.anchor || "none") + "</span>";
-  var cons = st.consensus_ppm !== undefined
-    ? ' &nbsp;·&nbsp; consensus <b>' + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>" : "";
+  var cons = (st.consensus_ppm !== undefined && st.consensus_ppm !== null)
+    ? ' &nbsp;·&nbsp; consensus <b>' + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>"
+    : (st.consensus_suspect ? ' &nbsp;·&nbsp; consensus <span class="pill warn">unarbitrated</span>' : "");
   var corrTxt = (c.correction_ppm === undefined || c.correction_ppm === null)
     ? "correction register <b>0 ppm</b> (cleared by reflash)"
     : "clock: correction <b>" + (c.correction_ppm >= 0 ? "+" : "") + c.correction_ppm.toFixed(2) + " ppm</b>";
@@ -1637,7 +1646,7 @@ function render(st) {
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
       "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
       "the TDC adds sub-tick phase at a provisional ~0.5 ns (15 cm) self-test estimate, pending external calibration (P2a). " +
-      "The HackRF One is slaved to this same reference via CLKOUT→CLKIN, so every row above measures one clock.";
+      "The HackRF One is cabled to this same reference via CLKOUT→CLKIN. If the lock is active, every row above measures one clock — but the lock is unverified (the One is held full-time by the phase producer), so ATSC-vs-WAAS disagreement may be two clocks, not one.";
   }
   if (st.atsc_spread_ppm !== undefined) {
     fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
@@ -2532,13 +2541,13 @@ function renderRfChain(st) {
     "CIC 4× decimation · nibble-embedded timestamps · carry-chain TDC ≈0.5 ns (provisional)",
     "40-bit tick = 31.25 ns",
     "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — zero-jitter timing proven on hardware. The CIC filter decimates, and the carry-chain TDC aims to subdivide one tick to ~0.5 ns (provisional self-test figure). The Hz shown is the live tick poll — PC-read jitter applies."));
-  nodes.push(journeyNode("Cortex-M0", "control core",
-    "SPI house-keeping · clock-correction register " +
+  nodes.push(journeyNode("Cortex-M4", "control core",
+    "USB stack · SPI house-keeping · clock-correction register " +
       (d.correction_ppm !== undefined ? "<b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm</b>" : "—"),
     "would steer the Si5351 (SHADOW: no writes)",
-    "Cortex-M0 + correction register", "The small ARM core runs control: SPI reads and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
-  nodes.push(journeyNode("Cortex-M4", "app core", "packetizes the sample stream → USB", "heavy lifting",
-    "Cortex-M4", "The main ARM core moves the sample stream to USB and services host requests. Its timing is software-class — hence the FPGA timestamps."));
+    "Cortex-M4 + correction register", "The main ARM core runs the USB stack, host requests, SPI register access and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
+  nodes.push(journeyNode("Cortex-M0", "SGPIO dataplane", "serializes the sample stream → USB queue", "91.9% loaded at 20 Msps",
+    "Cortex-M0", "The small co-processor runs the SGPIO assembly server — it services the high-speed serial interface transaction by transaction, shoveling 16 Msps of interleaved I/Q into the USB transfer queue (~92% of its cycles at full rate). Its timing is hardware-scheduled — but zero-jitter timestamps still come from the FPGA, not from either core."));
   nodes.push(journeyNode("USB → PC", "this page",
     (st.consensus_ppm !== undefined && st.consensus_ppm !== null
       ? "consensus <b>" + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>" : "consensus —") +

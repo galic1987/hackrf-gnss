@@ -514,6 +514,10 @@ def main():
         if mean is not None:
             state["consensus_ppm"] = round(mean, 4)
         state["alerts"] = alerts
+        # CLKIN tri-state (round-8 review): the One is held full-time by
+        # phase_producer, so the CLKIN-detection read usually can't open it —
+        # publish True/False/None and never let "cabled" read as "locked".
+        state.setdefault("clock", {})["clkin_verified"] = locked
         tmp = STATE + ".band.tmp"   # unique tmp: sync/phase producers share STATE
         json.dump(state, open(tmp, "w"), indent=1)
         os.replace(tmp, STATE)
