@@ -3,7 +3,11 @@
 
 Tracks the ATSC ch35 pilot (true 602.30944 MHz, GPS-disciplined Tx,
 ~+43 dB over noise on the ClearStream) on the HackRF One, which is
-CLKIN-locked to the Pro's disciplined 10 MHz. One continuous
+cabled CLKOUT→CLKIN to the Pro's 10 MHz. The cable is in, but the lock
+is NOT verified: this producer holds the One full-time, so the
+CLKIN-detection read can't open it (clkin_signal_present stays null).
+Until a verified lock exists, ATSC rows are labeled cabled-but-unverified
+and excluded from the clock consensus vote. One continuous
 hackrf_transfer is held for the producer's whole lifetime, tuned
 500 kHz above the pilot so the line sits at -500 kHz (off the DC spike).
 Samples arrive over a FIFO (mkfifo) — never a spooling file — so disk
