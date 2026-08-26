@@ -85,12 +85,17 @@ fn jdn(y: i64, m: i64, d: i64) -> i64 {
     d + (153 * mm + 2) / 5 + 365 * yy + yy / 4 - yy / 100 + yy / 400 - 32045
 }
 
-/// GPS seconds-of-week for a UTC calendar epoch (adds the 18 s GPS-UTC leap so
-/// it is consistent with a time-of-week derived the same way).
+/// GPS seconds-of-week for a GPS RINEX nav-record epoch. RINEX-3 G-record
+/// epochs are already GPS time (RINEX 3.05 time-system code G = GPST;
+/// GLONASS is the system whose records ride UTC) — adding the 18 s leap was
+/// double-counting, proven empirically on the live BRDC: across 126 G
+/// records, toe - toc == 0 exactly when the epoch is read as GPST, and -18 s
+/// with the old leap-adding read. The 18 s toc displacement made sat_clock's
+/// af1*(t-toc) wrong by up to ~11 cm of range on high-drift clocks.
 fn gps_sow(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> f64 {
     let gps_epoch = jdn(1980, 1, 6);
     let days = jdn(y, mo, d) - gps_epoch;
-    let secs = days * 86400 + h * 3600 + mi * 60 + s + 18;
+    let secs = days * 86400 + h * 3600 + mi * 60 + s;
     (secs as f64).rem_euclid(WEEK_S)
 }
 
@@ -290,6 +295,11 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         assert_eq!(e.prn, 1);
         assert!((e.sqrt_a - 5153.6).abs() < 1e-6);
         assert!((e.toe - 345600.0).abs() < 1e-6);
+        // toc regression (round-10 review): RINEX-3 G epochs are GPST, so a
+        // record whose calendar epoch equals toe's GPST second must parse
+        // toc == toe exactly; the old code added the 18 s GPS-UTC leap on
+        // top (toe-toc == -18 s on every one of 126 live BRDC records).
+        assert!((e.toc - 345600.0).abs() < 1e-6, "toc {} must equal toe (GPST epochs)", e.toc);
         assert!((e.af0 - (-1.0e-4)).abs() < 1e-12);
         // angular field converted semicircles -> radians (M0 = 0.3 * pi)
         assert!((e.m0 - 0.3 * PI).abs() < 1e-9);
