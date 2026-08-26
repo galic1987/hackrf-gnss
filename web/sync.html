@@ -1881,6 +1881,12 @@ function render(st) {
     var above = (sky.sats || []).filter(function (s) { return s.el_deg >= sky.mask.el_min_deg; })
       .sort(function (a, b) { return b.el_deg - a.el_deg; });
     var unx = (sky.sats || []).filter(function (s) { return s.cls === "unexpected"; });
+    // many-satellite layout: actionable classes (tracked/absent/unexpected)
+    // stay visible in a height-capped scroller; the predicted-only GLONASS
+    // chips (dozens, never receivable here) fold into a <details> so the
+    // card stops stretching the page (round-15 UX).
+    var actionable = above.filter(function (s) { return s.cls !== "predicted"; });
+    var predicted = above.filter(function (s) { return s.cls === "predicted"; });
     skyEl.innerHTML =
       "<b>" + sc.tracked + "</b> tracked of <b>" + sc.expected + "</b> expected above the mask" +
       ' &nbsp;·&nbsp; <span class="' + (sc.absent ? "neg" : "dim") + '">' + sc.absent + " absent</span>" +
@@ -1896,7 +1902,13 @@ function render(st) {
         ? '<div class="warn">⚠ tracked below the mask — reflection/spoof candidates: ' +
           unx.map(chip).join("") + "</div>"
         : "") +
-      '<div style="margin-top:0.4em;line-height:1.9">' + above.map(chip).join("") + "</div>";
+      '<div style="margin-top:0.4em;line-height:1.9;max-height:8.5em;overflow-y:auto">' +
+        actionable.map(chip).join("") + "</div>" +
+      (predicted.length
+        ? '<details style="margin-top:0.3em"><summary class="dim">' + predicted.length +
+          " predicted-only GLONASS (positions, never tracked here) — show</summary>" +
+          '<div style="line-height:1.9">' + predicted.map(chip).join("") + "</div></details>"
+        : "");
   } else {
     skyEl.innerHTML = '<span class="dim">waiting for sky producer&hellip;</span>';
   }
@@ -2374,11 +2386,13 @@ function renderSkyTable(st) {
       cell(s.doppler_hz, function (v) { return sgn(v) + fmtInt(Math.abs(v)) + " Hz"; }) +
       '<td class="' + clsCol + '">' + esc(s.cls) + "</td></tr>";
   });
-  el.innerHTML = "<table><thead><tr><th>Satellite</th><th>Az</th><th>El</th>" +
+  el.innerHTML = '<div style="max-height:22em;overflow-y:auto">' +
+    "<table><thead style=\"position:sticky;top:0;background:var(--bg1,#141414)\"><tr><th>Satellite</th><th>Az</th><th>El</th>" +
     '<th><span class="tip" tabindex="0" data-tip-title="Altitude" data-tip="Satellite altitude above Earth, from the broadcast ephemeris orbit. MEO ≈ 20,000–23,000 km; GEO ≈ 35,786 km.">altitude</span></th>' +
     '<th><span class="tip" tabindex="0" data-tip-title="Speed" data-tip="Orbital speed from ephemeris velocity: ~3.9 km/s for MEO, ~3.1 km/s for GEO. It is this motion that Doppler-shifts the carrier.">speed</span></th>' +
     '<th><span class="tip" tabindex="0" data-tip-title="Track direction" data-tip="Heading of the satellite ground track, degrees clockwise from north.">direction</span></th>' +
-    "<th>Doppler</th><th>class</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
+    "<th>Doppler</th><th>class</th></tr></thead><tbody>" + rows.join("") + "</tbody></table></div>" +
+    '<div class="dim" style="font-size:0.85em;margin-top:0.2em">' + rows.length + " above horizon — scrolls</div>";
 }
 // --- academy B: wave arrival + Doppler stretching (live-parameterized) ---
 var ORBIT_KM = { gps: 20180, galileo: 23222, beidou: 21150, sbas: 35786 };
