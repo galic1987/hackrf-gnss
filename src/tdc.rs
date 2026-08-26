@@ -4,8 +4,8 @@
 //! Gateware side: `CarryChainTDC` in firmware/fpga/dsp/tdc.py, integrated
 //! in top/timing.py (image 0) with SPI readout at 0x20-0x31.
 //!
-//! The gateware freezes a raw 64-tap thermometer code per event (zero-padded
-//! to the 16-byte register block; taps beyond the chain always read 0).
+//! The gateware freezes a raw 48-tap thermometer code per event (the rev3c
+//! chain; the 6-byte register block 0x20-0x25 holds taps 0-47, LSB-first).
 //! Single-registered sampling means the code contains occasional
 //! metastability bubbles (e.g. 0b10111), so the fine value is the POPCOUNT,
 //! not an edge position — a bubble moves a bit but never changes the count.
@@ -21,9 +21,10 @@
 
 /// Popcount of the frozen thermometer code (bubble-tolerant fine value).
 ///
-/// `bytes` is the 16-byte register block 0x20-0x2F; byte 0 holds taps 0-7,
-/// LSB-first within a byte.
-pub fn popcount_thermo(bytes: &[u8; 16]) -> u32 {
+/// `bytes` is the register block at 0x20: 6 bytes / 48 taps in the shipped
+/// rev3c image (the legacy 64-tap/16-byte variant works too — a popcount
+/// does not care about the block length).
+pub fn popcount_thermo(bytes: &[u8]) -> u32 {
     bytes.iter().map(|b| b.count_ones()).sum()
 }
 

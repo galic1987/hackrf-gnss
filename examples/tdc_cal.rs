@@ -59,12 +59,10 @@ fn main() -> anyhow::Result<()> {
     let n = recs.len();
     // Cross-check: host-side popcount of the raw block must equal the
     // CLI's popcount (validates the byte-lane order contract).
-    let bytes_of = |hex: &str| -> [u8; 16] {
-        let mut a = [0u8; 16];
-        for i in 0..16 {
-            a[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
-        }
-        a
+    let bytes_of = |hex: &str| -> Vec<u8> {
+        (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
     };
     for r in &recs {
         assert_eq!(popcount_thermo(&bytes_of(&r.thermo)), r.popcount);

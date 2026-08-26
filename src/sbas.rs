@@ -877,6 +877,17 @@ pub fn parse_block(bits: &[u8]) -> Option<Message> {
             Message::FastDegradation { latency, iodp, ai }
         }
         9 => {
+            // MT9 layout (DO-229 Table A-15): [IODN/spare 8][t0 13][URA 4]
+            // [XG 30][YG 30][ZG 25][XG' 17][YG' 17][ZG' 18][XG'' 10]
+            // [YG'' 10][ZG'' 10][aGf0 12][aGf1 8] = 212 bits exactly.
+            // Cross-validated field-for-field against RTKLIB 2.4.3
+            // decode_sbstype9 (src/sbas.c: t0 at its buffer offset 22 with
+            // the type field at offset 8 -> payload+8, URA at +21, XG at
+            // +25, ..., aGf1 at +204): RTKLIB never reads the leading
+            // "spare" byte, which DO-229D labels IODN. A re-review claiming
+            // "IODN at the payload tail, t0 first" (round 13/15) is refuted
+            // by that offset table — an 8-bit shift would not close at 212
+            // bits with these widths and would garbage every GEO position.
             let iodn = d.u(8) as u8;
             let t0_s = d.u(13) as u32 * 16;
             let ura = d.u(4) as u8;
