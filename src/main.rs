@@ -145,7 +145,9 @@ struct Args {
 
     /// Extended-precision capture: samples are little-endian int16 I/Q
     /// (12-bit data from the ext_precision_rx gateware, load it first with
-    /// `hackrf_debug -P 2`). Requires --fs-hz <= 2.5 MHz.
+    /// `hackrf_debug -P 2`). Requires --fs-hz <= 8 MHz (the gateware
+    /// decimates 4x-32x; 8 Msps int16 = 32 MB/s, the validated USB envelope —
+    /// the GNSS tracker sustains the same 32 MB/s daily at 16 Msps 8-bit).
     #[arg(long, default_value_t = false)]
     ext16: bool,
 

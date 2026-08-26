@@ -2,10 +2,16 @@
 # capture_extprec_l1.sh — extended-precision (12-bit) GPS/Galileo L1 capture
 # on the HackRF Pro with the Taoglas AA.250.
 #
-# The 2_extprec_rx gateware decimates >=16x, so the usable rate is
-# 40 MHz AFE / 16 = 2.5 Msps complex (12-bit I/Q). GPS L1 C/A needs >=2.046 MHz,
-# so 2.5 Msps works, centred so L1 (1575.42) sits at +1.0 MHz IF with the DC
-# spike 1 MHz away from the carrier. Narrowband slice: no BeiDou B1 here
+# The 2_extprec_rx gateware decimates 4x-32x (the halfband tail was
+# removed), so the usable range is 32 MHz AFE / 32 .. 32 MHz / 4 =
+# 1-8 Msps complex (12-bit I/Q, int16 lanes). Default here is 2.5 Msps
+# (16x on 40 MHz), centred so L1 (1575.42) sits at +1.0 MHz IF with the DC
+# spike 1 MHz away from the carrier; GPS L1 C/A needs >=2.046 MHz. For the
+# full-rate mode: FS=8000000 (4x on 32 MHz) — 8 Msps int16 = 32 MB/s, the
+# byte rate the live tracker already sustains daily at 16 Msps 8-bit with
+# ~55 ms processing against the ~190 ms USB queue (no host buffer changes
+# needed; the queue time-depth argument is identical at equal byte rate).
+# Narrowband slice: no BeiDou B1 here
 # (use capture_dualband_gnss.sh for the wide multi-constellation setup).
 #
 # Why bother: 12-bit vs 8-bit gives ~20 dB more dynamic range below full
@@ -17,7 +23,7 @@ BASE="${1:-extprec_l1}"
 SECS="${2:-60}"
 
 PRO_SERIAL="${PRO_SERIAL:-0000000000000000977c64de2b557213}"
-FS=2500000
+FS="${FS:-2500000}"      # up to 8000000 (4x decimation); see header
 FC=1574420000          # L1 at +1.0 MHz IF
 L="${L:-40}"           # IF gain — ext chain runs quiet, needs more than std
 G="${G:-44}"           # BB gain
