@@ -208,7 +208,7 @@ def test_watcher():
                             "source": "test-fixture"}}
         json.dump(fix, open(position_watch.STATE_IN, "w"))
 
-        seen = position_watch.cycle(None)
+        seen, seen_diag = position_watch.cycle(None, None)
         assert seen == ep0
         lines = open(position_watch.HISTORY).read().strip().splitlines()
         assert len(lines) == 1
@@ -221,13 +221,13 @@ def test_watcher():
         assert len(st["position_history"]) == 1 and st["site"]["lat"] == SITE["lat"]
 
         # same epoch again: heartbeat rewrites state, no duplicate history
-        seen = position_watch.cycle(seen)
+        seen, seen_diag = position_watch.cycle(seen, seen_diag)
         assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 1
 
         # new epoch appends; corrupt file must raise (main() guards it)
         fix["epoch"] = ep0 + 300.0
         json.dump(fix, open(position_watch.STATE_IN, "w"))
-        position_watch.cycle(seen)
+        position_watch.cycle(seen, seen_diag)
         assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
 
         # untrusted fix (integrity failed): diagnostic log only — the
@@ -237,7 +237,7 @@ def test_watcher():
         fix["position"]["trusted_for_history"] = False
         fix["position"]["residual_rms_m"] = 179.4
         json.dump(fix, open(position_watch.STATE_IN, "w"))
-        seen = position_watch.cycle(ep0 + 300.0)
+        seen, seen_diag = position_watch.cycle(ep0 + 300.0, seen_diag)
         assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
         dlines = open(position_watch.HISTORY_DIAG).read().strip().splitlines()
         assert len(dlines) == 1
@@ -245,13 +245,13 @@ def test_watcher():
         del fix["position"]["trusted_for_history"]     # missing == false
         fix["epoch"] = ep0 + 900.0
         json.dump(fix, open(position_watch.STATE_IN, "w"))
-        position_watch.cycle(seen)
+        position_watch.cycle(seen, seen_diag)
         assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
         assert len(open(position_watch.HISTORY_DIAG).read().strip().splitlines()) == 2
 
         open(position_watch.STATE_IN, "w").write("{corrupt")
         try:
-            position_watch.cycle(ep0 + 300.0)
+            position_watch.cycle(ep0 + 300.0, seen_diag)
             raise AssertionError("corrupt state did not raise")
         except json.JSONDecodeError:
             pass
