@@ -509,7 +509,12 @@ def main():
                         "value": round(ppm, 4), "sigma": 0.005,
                         "ref_hz": F_PILOT, "epoch": round(t, 2),
                         "sats": ["GPS-disciplined Tx"],
-                        "anchor": "CLKIN-locked to Pro",
+                        # honesty (round-13): the One is CABLED to the Pro's
+                        # CLKOUT, but lock was never verified — the r9 probe
+                        # measures a 10 MHz-class signal at the pin at most,
+                        # and the One is busy here so even that is usually
+                        # unreadable. Never claim "locked".
+                        "anchor": "One ← Pro CLKOUT cable (lock unverified)",
                         "ns_per_s": round(ppm * 1000.0, 1),
                         "m_per_s": round(ppm * 1e-6 * C_MPS, 2),
                     }
