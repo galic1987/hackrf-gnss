@@ -101,6 +101,26 @@ fn publish_position(fix_json: serde_json::Value, plausible: bool, trusted: bool,
     std::fs::rename(&tmp, OUT).unwrap();
 }
 
+/// Round-14: the exit(5) plausibility failures (rms > 2000 m, insane
+/// altitude) used to go completely dark — nothing recorded anywhere. They
+/// now route through the SAME publication law as every other solve: a
+/// minimal fix_json lands in `position_diagnostic` (implausible AND
+/// untrusted; the last trusted fix is preserved), THEN the caller's
+/// exit(5) still signals position_producer as before.
+fn publish_rejection(mode: &str, n_sat: usize, rms_m: f64, alt_km: f64, reason: &str, now: f64) {
+    let fix_json = serde_json::json!({
+        "mode": mode,
+        "n_sat": n_sat,
+        "residual_rms_m": rms_m,
+        "alt_km": alt_km,
+        "gate": format!("rejected: {reason}"),
+        "plausibility_pass": false,
+        "trusted_for_history": false,
+        "epoch": now,
+    });
+    publish_position(fix_json, false, false, now);
+}
+
 /// Multi-GEO merge of one fast-correction row into the map: several locked
 /// SBAS channels (different GEOs) can publish a row for the same GPS PRN.
 /// Keep the row with the freshest insert age; a material disagreement
@@ -259,6 +279,18 @@ fn main() {
                     hackrf_gnss::gps::broadcast::BrdcEph,
                 >(e.clone())
                 {
+                    // health belt (round-14): never merge a KNOWN-unhealthy
+                    // self-decode — the tracker now gates this at the source
+                    // (live.rs rejects the decode and drops the incumbent),
+                    // but a cache written by an older binary can still carry
+                    // one
+                    if let Some(h) = eph.health.filter(|&h| h != 0) {
+                        eprintln!(
+                            "live_fix: self-decoded ephemeris sys {} PRN {} rejected — SV health {}",
+                            eph.sys, eph.prn, h
+                        );
+                        continue;
+                    }
                     let cur = if eph.sys == 1 {
                         bds_ephs.get(&eph.prn)
                     } else {
@@ -972,18 +1004,24 @@ fn main() {
         if let Some(f) = solved {
             if f.residual_rms_m > 2000.0 {
                 // same publish gate as the snapshot path: a fix this loose
-                // is meaningless — keep showing the previous good fix
+                // is meaningless — but the worst solve class must not go
+                // dark: it lands in position_diagnostic through the one
+                // publication law, THEN exit(5) signals position_producer
                 eprintln!(
-                    "live_fix: anchored fix rms {:.0} m — too coarse to publish ({} sats, {mode})",
+                    "live_fix: anchored fix rms {:.0} m — too coarse, published as diagnostic ({} sats, {mode})",
                     f.residual_rms_m, f.n_sat
                 );
+                publish_rejection(mode, f.n_sat, f.residual_rms_m, f.alt_km,
+                    &format!("rms {:.0} m too coarse to publish", f.residual_rms_m), now);
                 std::process::exit(5);
             }
             if !alt_sane(f.alt_km, dyn_lla[2] / 1000.0, site_alt_km) {
                 eprintln!(
-                    "live_fix: impossible altitude {:.1} km — not publishing ({} sats, {mode})",
+                    "live_fix: impossible altitude {:.1} km — published as diagnostic ({} sats, {mode})",
                     f.alt_km, f.n_sat
                 );
+                publish_rejection(mode, f.n_sat, f.residual_rms_m, f.alt_km,
+                    &format!("impossible altitude {:.1} km", f.alt_km), now);
                 std::process::exit(5);
             }
             // honesty gate: 4 sats / 4 unknowns is an EXACT solve — rms is
@@ -1032,19 +1070,25 @@ fn main() {
     match snapshot_fix(&obs, &ephs, site_lla(), tow) {
         Some(f) => {
             if f.residual_rms_m > 2000.0 {
-                // a coarse-snapshot fix this loose is meaningless — don't
-                // publish (the panel keeps showing the previous good fix)
+                // a coarse-snapshot fix this loose is meaningless — but it
+                // must not go dark: position_diagnostic through the one
+                // publication law, THEN exit(5) signals position_producer
+                // (the panel keeps showing the previous good fix)
                 eprintln!(
-                    "live_fix: fix rms {:.0} m — too coarse to publish ({} sats)",
+                    "live_fix: fix rms {:.0} m — too coarse, published as diagnostic ({} sats)",
                     f.residual_rms_m, f.n_sat
                 );
+                publish_rejection("snapshot", f.n_sat, f.residual_rms_m, f.alt_km,
+                    &format!("rms {:.0} m too coarse to publish", f.residual_rms_m), now);
                 std::process::exit(5);
             }
             if !alt_sane(f.alt_km, dyn_lla[2] / 1000.0, site_alt_km) {
                 eprintln!(
-                    "live_fix: impossible altitude {:.1} km — not publishing (snapshot)",
+                    "live_fix: impossible altitude {:.1} km — published as diagnostic (snapshot)",
                     f.alt_km
                 );
+                publish_rejection("snapshot", f.n_sat, f.residual_rms_m, f.alt_km,
+                    &format!("impossible altitude {:.1} km", f.alt_km), now);
                 std::process::exit(5);
             }
             let gate = if f.n_sat >= 5 {

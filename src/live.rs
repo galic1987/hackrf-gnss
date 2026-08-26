@@ -2063,7 +2063,33 @@ impl Band {
                                     let newer = ch.eph.as_ref().map_or(true, |cur| {
                                         (e.week, e.toe) > (cur.week, cur.toe)
                                     });
-                                    if newer {
+                                    // Same issue, health newly set: the SV
+                                    // flipped unhealthy WITHOUT a new issue —
+                                    // evict too, or a stale-healthy incumbent
+                                    // rides the flip (round-14 residual).
+                                    let same_issue = ch.eph.as_ref().is_some_and(|cur| {
+                                        (e.week, e.toe) == (cur.week, cur.toe)
+                                    });
+                                    // Two-sided SV-health law (round-14): the
+                                    // RINEX parsers hard-exclude a KNOWN-
+                                    // unhealthy record, so the self-decode path
+                                    // must too — else removing the BRDC record
+                                    // lets an unhealthy decode win unchallenged.
+                                    // But a stale HEALTHY incumbent must not
+                                    // ride forever either: when the strictly
+                                    // newer issue decodes unhealthy the SV has
+                                    // STARTED broadcasting unhealthy, so the
+                                    // incumbent is dropped — an SV that went
+                                    // unhealthy stops being used. A same-issue
+                                    // health flip (same week/toe, health newly
+                                    // set) evicts identically.
+                                    if let Some(h) = e.health.filter(|&h| h != 0) {
+                                        eprintln!("live[{}]: self-decoded ephemeris for PRN {} rejected — SV health {}",
+                                                  self.name, ch.prn, h);
+                                        if newer || same_issue {
+                                            ch.eph = None;
+                                        }
+                                    } else if newer {
                                         e.prn = ch.prn as u8;
                                         eprintln!("live[{}]: {}ephemeris for PRN {} (week {} toe {:.0})",
                                                   self.name,
@@ -2098,7 +2124,27 @@ impl Band {
                                     let newer = ch.eph.as_ref().map_or(true, |cur| {
                                         (e.week, e.toe) > (cur.week, cur.toe)
                                     });
-                                    if newer {
+                                    // Same issue, health newly set: the SV
+                                    // flipped unhealthy WITHOUT a new issue —
+                                    // evict too, or a stale-healthy incumbent
+                                    // rides the flip (round-14 residual).
+                                    let same_issue = ch.eph.as_ref().is_some_and(|cur| {
+                                        (e.week, e.toe) == (cur.week, cur.toe)
+                                    });
+                                    // Same two-sided SV-health law as GPS above
+                                    // (round-14): a known-unhealthy decode is
+                                    // rejected, and a strictly newer unhealthy
+                                    // issue drops the stale-healthy incumbent —
+                                    // an SV that started broadcasting unhealthy
+                                    // stops being used; a same-issue health
+                                    // flip evicts identically (GPS comment).
+                                    if let Some(h) = e.health.filter(|&h| h != 0) {
+                                        eprintln!("live[{}]: self-decoded D1 ephemeris for BDS PRN {} rejected — SatH1 {}",
+                                                  self.name, ch.prn, h);
+                                        if newer || same_issue {
+                                            ch.eph = None;
+                                        }
+                                    } else if newer {
                                         e.prn = ch.prn as u8;
                                         eprintln!("live[{}]: {}D1 ephemeris for BDS PRN {} (week {} toe {:.0})",
                                                   self.name,

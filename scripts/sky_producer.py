@@ -410,8 +410,14 @@ def _i0_sane(i0_raw, unit):
     inside the grey band. The sanity range deliberately does NOT gate
     inclination — drifting BDS IGSOs legitimately exceed 60 deg (live
     BRDC 2026-08-26 C09); garbage protection is the grey band plus the
-    vote detection."""
+    vote detection. Round-14 minority-unit quarantine: a record whose raw
+    i0 sits in the LOSING unit's evidence band is rejected — admitted, it
+    would get every angular field scaled by the winner's factor (silently
+    garbage orbit)."""
     if i0_raw < 0.0 or I0_GREY[0] < i0_raw < I0_GREY[1]:
+        return False
+    loser = I0_RAD_LIKE if unit == "semicircles" else I0_SC_LIKE
+    if loser[0] <= i0_raw <= loser[1]:
         return False
     return i0_raw <= (1.0 if unit == "semicircles" else math.pi)
 
@@ -627,6 +633,11 @@ def load_ephemeris(now=None):
             if sysid not in SYS_NAME or not prn:
                 continue
             if sysid == 1 and prn in BDS_GEO_PRNS:
+                continue
+            # belt for the two-sided health law (round-14): the tracker no
+            # longer WRITES unhealthy decodes here, but a pre-fix cache row
+            # or a same-issue flip in flight must still not be modeled.
+            if e.get("health") not in (None, 0, 0.0):
                 continue
             if not e.get("sqrt_a"):
                 continue

@@ -566,7 +566,10 @@ pub fn parse_rinex_bds_nav(text: &str) -> RinexParse {
 /// One 8-line BDS nav record -> BrdcEph, STRICT (round-11 review): every
 /// consumed field must parse — a blank/malformed core field rejects the
 /// record (None) where the old df() silently zero-filled. SatH1 (health) is
-/// blank-tolerant but malformed-rejecting. The raw i0 must pass [`i0_sane`]
+/// blank-tolerant but malformed-rejecting — and a KNOWN-unhealthy record
+/// (SatH1 != 0) is rejected outright, the same hard-exclusion the GPS
+/// parser has (round-14): an unhealthy SV's ephemeris must never win
+/// selection. The raw i0 must pass [`i0_sane`]
 /// for the constellation's unit verdict — which is what keeps a GEO's tiny
 /// inclination (i0 ~ 0.02-0.12 rad, unit-neutral) from flipping the file,
 /// while MEO/IGSO i0 (~0.93-1.03 rad vs ~0.31 semicircles) decides it.
@@ -595,6 +598,13 @@ fn parse_bds_record(ln: &str, b: &[&str], unit: AngUnit) -> Option<BrdcEph> {
         Some(_) => return None,
         None => None,
     };
+    // A known-unhealthy SV (SatH1 != 0) is hard-excluded at the source — the
+    // same law as the GPS parser (broadcast.rs parse_gps_record): an
+    // unhealthy SV's ephemeris must never win selection, even when it is the
+    // only record on file for the PRN. None (no health field) stays eligible.
+    if matches!(health, Some(h) if h != 0) {
+        return None;
+    }
     Some(BrdcEph {
         sys: 1,
         prn,
@@ -1089,6 +1099,12 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
     /// must not reject). Every written field is exactly 19 columns, first
     /// field at col 4.
     fn bds_rinex_record(prn: u8, week: f64, toe: f64, i0: &str) -> String {
+        bds_rinex_record_h(prn, week, toe, i0, "0.000000000000D+00")
+    }
+
+    /// bds_rinex_record with L7 field 2 (SatH1) parameterised, for the
+    /// health selection tests.
+    fn bds_rinex_record_h(prn: u8, week: f64, toe: f64, i0: &str, health: &str) -> String {
         format!(
             "C{prn:02} 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00\n\
              \x20    1.000000000000D+02-5.000000000000D+00 4.000000000000D-09 3.000000000000D-01\n\
@@ -1096,7 +1112,7 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
              \x20   {toe:19.12E} 1.000000000000D-08-2.500000000000D+00 2.000000000000D-08\n\
              \x20   {i0:>19} 2.000000000000D+02-5.000000000000D-01-8.000000000000D-09\n\
              \x20   -2.600000000000D-10                  {week:19.12E}\n\
-             \x20    2.000000000000D+00 0.000000000000D+00 4.499999928242D-09 4.500000000000D-09\n\
+             \x20    2.000000000000D+00{health:>19} 4.499999928242D-09 4.500000000000D-09\n\
              \x20   {toe:19.12E} 1.000000000000D+00"
         )
     }
@@ -1165,5 +1181,64 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         assert_eq!(r.unit, AngUnit::Radians);
         assert_eq!(r.rejected, 0);
         assert!((r.ephs[&9].i0 - 1.052303169428).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bds_unhealthy_records_never_win_selection() {
+        // SatH1 != 0 hard-excludes at the source (round-14) — the same law
+        // the GPS parser has: an unhealthy NEWER record loses to a healthy
+        // older one
+        let healthy_old =
+            bds_rinex_record_h(22, 1077.0, 345_600.0, "3.000000000000D-01", "0.000000000000D+00");
+        let unhealthy_new =
+            bds_rinex_record_h(22, 1077.0, 349_200.0, "3.000000000000D-01", "1.000000000000D+00");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{healthy_old}\n{unhealthy_new}"));
+        assert_eq!(r.rejected, 1, "the unhealthy record is hard-excluded");
+        assert_eq!(
+            r.ephs[&22].toe,
+            sow_bdt_to_gpst(345_600.0),
+            "the healthy older record wins"
+        );
+        // ...and selects nothing even when it is the ONLY record on file
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{unhealthy_new}"));
+        assert_eq!(r.rejected, 1);
+        assert!(r.ephs.get(&22).is_none(), "an unhealthy-only PRN selects nothing");
+        // health unknown (blank SatH1 field -> None) stays eligible
+        let blank_health = bds_rinex_record_h(23, 1077.0, 345_600.0, "3.000000000000D-01", "");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{blank_health}"));
+        assert_eq!(r.rejected, 0);
+        assert_eq!(r.ephs[&23].health, None);
+    }
+
+    #[test]
+    fn bds_minority_unit_records_are_quarantined() {
+        // round-14, the shared i0_sane law: a record whose raw i0 voted for
+        // the LOSING unit is rejected, never scaled by the winner's factor.
+        // Semicircles file + a rad-band record:
+        let txt = format!(
+            "{RNX_HDR}{}\n{}\n{}\n{}",
+            bds_rinex_record(22, 1077.0, 345_600.0, "3.000000000000D-01"),
+            bds_rinex_record(23, 1077.0, 345_600.0, "3.100000000000D-01"),
+            bds_rinex_record(24, 1077.0, 345_600.0, "3.200000000000D-01"),
+            bds_rinex_record(25, 1077.0, 345_600.0, "9.600000000000D-01"),
+        );
+        let r = parse_rinex_bds_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Semicircles);
+        assert_eq!(r.rejected, 1, "the rad-band record lost the vote");
+        assert!(!r.ephs.contains_key(&25) && r.ephs.len() == 3);
+        // radians file + an sc-band record; a unit-neutral GEO still passes
+        let txt = format!(
+            "{RNX_HDR}{}\n{}\n{}\n{}\n{}",
+            bds_rinex_record(9, 1077.0, 345_600.0, "9.500000000000D-01"),
+            bds_rinex_record(11, 1077.0, 345_600.0, "9.600000000000D-01"),
+            bds_rinex_record(12, 1077.0, 345_600.0, "9.700000000000D-01"),
+            bds_rinex_record(25, 1077.0, 345_600.0, "3.000000000000D-01"),
+            bds_rinex_record(1, 1077.0, 345_600.0, "2.000000000000D-02"),
+        );
+        let r = parse_rinex_bds_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 1, "the sc-band record lost the vote");
+        assert!(!r.ephs.contains_key(&25));
+        assert!(r.ephs.contains_key(&1), "unit-neutral records still pass");
     }
 }

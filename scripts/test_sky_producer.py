@@ -276,6 +276,36 @@ def main():
           and (st.get("units") or {}).get("C") == "radians",
           f"stats={st} keys={sorted(eph2)}")
 
+    # --- round-14: minority-unit records are quarantined -------------------
+    # a record whose raw i0 voted for the LOSING unit is rejected, never
+    # scaled by the winner's factor into a silently garbage orbit
+    txt = (hdr2 + g_rec(7) + "\n" + g_rec(8, i0=0.31) + "\n"
+           + g_rec(9, i0=0.32) + "\n" + g_rec(10, i0=0.96) + "\n")
+    st = {}
+    eph2 = sp.parse_rinex_nav(txt, stats=st)
+    check("semicircles winner: rad-band record quarantined",
+          (st.get("units") or {}).get("G") == "semicircles"
+          and st.get("rejected") == 1 and (0, 10) not in eph2
+          and (0, 7) in eph2
+          and abs(eph2[(0, 7)]["m0"] - 0.3 * math.pi) < 1e-9,
+          f"stats={st} keys={sorted(eph2)}")
+    txt = (hdr2 + g_rec(7, i0=0.95) + "\n" + g_rec(8, i0=0.96) + "\n"
+           + g_rec(9, i0=0.97) + "\n" + g_rec(10, i0=0.30) + "\n")
+    st = {}
+    eph2 = sp.parse_rinex_nav(txt, stats=st)
+    check("radians winner: sc-band record quarantined",
+          (st.get("units") or {}).get("G") == "radians"
+          and st.get("rejected") == 1 and (0, 10) not in eph2
+          and abs(eph2[(0, 7)]["m0"] - 0.3) < 1e-12,
+          f"stats={st} keys={sorted(eph2)}")
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + g_rec(7, i0=0.95) + "\n"
+                            + g_rec(8, i0=0.10) + "\n", stats=st)
+    check("unit-neutral record still passes under the winner",
+          st.get("rejected") == 0 and (0, 8) in eph2
+          and (st.get("units") or {}).get("G") == "radians",
+          f"stats={st} keys={sorted(eph2)}")
+
 
     # --- THE J2-sign regression test (round-9b) -----------------------------
     # Real consecutive broadcast records (BRDC 2026-08-26, GLONASS PRN 1):

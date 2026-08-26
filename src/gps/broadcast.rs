@@ -64,8 +64,12 @@ pub struct BrdcEph {
     /// word 3 bits 17-22, IS-GPS-200 20.3.3.3.1.4 — 0 = healthy). BDS:
     /// line 7 field 2 = SatH1 (D1 subframe 1 word 2 bit 13). None where
     /// the source record doesn't carry it. ENFORCED at RINEX selection:
-    /// a record with known health != 0 is hard-excluded (parse_gps_record),
-    /// so an unhealthy SV's ephemeris can never win — None stays eligible.
+    /// a record with known health != 0 is hard-excluded (parse_gps_record
+    /// and parse_bds_record alike), so an unhealthy SV's ephemeris can
+    /// never win — None stays eligible. The live self-decode refresh
+    /// applies the same law two-sided (src/live.rs): an unhealthy decode
+    /// is rejected, and a strictly newer unhealthy issue drops the
+    /// stale-healthy incumbent.
     #[serde(default)]
     pub health: Option<u8>,
     /// Fit interval in hours (RINEX-3.05 GPS nav line 8 field 2; the spec's
@@ -246,8 +250,21 @@ pub(crate) fn detect_ang_unit(lines: &[&str], hdr_end: usize, sys: char) -> AngU
 /// unit. (The unit's garbage protection is the grey band plus the vote
 /// detection; the sanity range deliberately does NOT gate inclination —
 /// drifting BDS IGSOs legitimately exceed 60 deg, live BRDC 2026-08-26 C09.)
+/// Round-14 minority-unit quarantine: a record whose raw i0 sits in the
+/// LOSING unit's evidence band is rejected — admitted, it would get every
+/// angular field scaled by the winner's factor (silently garbage orbit).
+/// Its i0 vote in detect_ang_unit still counted (that is how the winner was
+/// decided); the record just never parses or enters the per-PRN selection.
 pub(crate) fn i0_sane(i0_raw: f64, unit: AngUnit) -> bool {
     if i0_raw < 0.0 || (I0_GREY.0..I0_GREY.1).contains(&i0_raw) {
+        return false;
+    }
+    let loser_band = match unit {
+        AngUnit::Semicircles => I0_RAD_LIKE,
+        AngUnit::Radians => I0_SC_LIKE,
+        AngUnit::Ambiguous => return false,
+    };
+    if (loser_band.0..=loser_band.1).contains(&i0_raw) {
         return false;
     }
     match unit {
@@ -762,7 +779,10 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
     fn unit_vote_supermajority_resolves_a_lone_dissenter() {
         // 134 sc-like records vs 1 rad-like dissenter: the supermajority
         // rules. The old any-mix law failed the WHOLE constellation closed
-        // over one corrupt-but-plausible record.
+        // over one corrupt-but-plausible record — and round-14 quarantines
+        // the dissenter itself: it voted for the losing unit, so admitting
+        // it would scale every angular field by the winner's factor (a
+        // silently garbage orbit).
         let mut txt = String::from(RNX_HDR);
         for k in 0..134u32 {
             let prn = (k % 32 + 1) as u8;
@@ -773,9 +793,62 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         txt.push_str(&rinex_record(33, 2350.0, 345_600.0, "9.600000000000D-01"));
         let r = parse_rinex_gps_nav(&txt);
         assert_eq!(r.unit, AngUnit::Semicircles, "134 vs 1: the supermajority wins");
-        assert_eq!(r.rejected, 0, "the dissenter is unit-sane under semicircles (0.96 <= 1)");
-        assert_eq!(r.ephs.len(), 33);
+        assert_eq!(r.rejected, 1, "the losing-unit dissenter is quarantined, not scaled");
+        assert_eq!(r.ephs.len(), 32);
+        assert!(!r.ephs.contains_key(&33), "the minority-unit record never enters the map");
         assert!((r.ephs[&1].m0 - 0.3 * PI).abs() < 1e-9, "the majority unit is applied");
+    }
+
+    #[test]
+    fn minority_unit_records_are_quarantined() {
+        // round-14: a record whose raw i0 voted for the LOSING unit is
+        // rejected (counted in the ledger) — never scaled by the winner's
+        // factor. Semicircles file + a rad-band record:
+        let txt = format!(
+            "{RNX_HDR}{}\n{}\n{}\n{}",
+            rinex_record(5, 2350.0, 345_600.0, "3.000000000000D-01"),
+            rinex_record(6, 2350.0, 345_600.0, "3.100000000000D-01"),
+            rinex_record(7, 2350.0, 345_600.0, "3.200000000000D-01"),
+            rinex_record(8, 2350.0, 345_600.0, "9.600000000000D-01"),
+        );
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Semicircles);
+        assert_eq!(r.rejected, 1, "the rad-band record lost the vote");
+        assert!(!r.ephs.contains_key(&8) && r.ephs.len() == 3);
+        // radians file + an sc-band record (the pre-round-14 leak: 0.30 sc
+        // passed the [0, PI] sanity and stayed UNSCALED — a garbage orbit):
+        let txt = format!(
+            "{RNX_HDR}{}\n{}\n{}\n{}",
+            rinex_record(5, 2350.0, 345_600.0, "9.500000000000D-01"),
+            rinex_record(6, 2350.0, 345_600.0, "9.600000000000D-01"),
+            rinex_record(7, 2350.0, 345_600.0, "9.700000000000D-01"),
+            rinex_record(8, 2350.0, 345_600.0, "3.000000000000D-01"),
+        );
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 1, "the sc-band record lost the vote");
+        assert!(!r.ephs.contains_key(&8) && r.ephs.len() == 3);
+        assert!((r.ephs[&5].m0 - 0.3).abs() < 1e-12, "radians pass through unscaled");
+        // unit-neutral records (i0 < 0.25: no evidence either way) still
+        // pass under either winner
+        let txt = format!(
+            "{RNX_HDR}{}\n{}",
+            rinex_record(5, 2350.0, 345_600.0, "9.500000000000D-01"),
+            rinex_record(9, 2350.0, 345_600.0, "1.000000000000D-01"),
+        );
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 0);
+        assert!(r.ephs.contains_key(&9));
+        let txt = format!(
+            "{RNX_HDR}{}\n{}",
+            rinex_record(5, 2350.0, 345_600.0, "3.000000000000D-01"),
+            rinex_record(9, 2350.0, 345_600.0, "1.000000000000D-01"),
+        );
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Semicircles);
+        assert_eq!(r.rejected, 0);
+        assert!(r.ephs.contains_key(&9));
     }
 
     #[test]
