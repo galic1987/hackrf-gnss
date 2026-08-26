@@ -338,7 +338,13 @@ pub fn find_candidates(bits: &[u8]) -> Vec<D1Subframe> {
 /// time (lifecycle honesty: the tracker_eph.json cache envelope is
 /// re-stamped on every write and must not be read as issue freshness).
 pub fn parse_ephemeris(subs: &[D1Subframe]) -> Option<BrdcEph> {
-    for a in subs.iter().filter(|s| s.frid == 1) {
+    // Anchor on SF1s NEWEST-first (round-13 review): the live buffer is
+    // append-only, so the oldest-first walk always rebuilt the OLDEST issue
+    // and the channel could never refresh. b/c stay pinned by bit_index +
+    // SOW (positional coherence), so each anchor assembles its own
+    // broadcast triple; sanity/orbit failures fall through to the
+    // next-older anchor.
+    for a in subs.iter().filter(|s| s.frid == 1).rev() {
         let b = subs.iter().find(|s| {
             s.frid == 2 && s.bit_index == a.bit_index + 300 && s.sow_bdt == (a.sow_bdt + 6) % WEEK_S as u32
         });
@@ -918,6 +924,58 @@ mod tests {
         let p = sat_pos_ecef_bds(&e, e.toe);
         let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
         assert!(r > 27_500_000.0 && r < 28_300_000.0, "MEO radius {r}");
+    }
+
+    /// Round-13: the buffer is append-only and the anchor walk used to be
+    /// oldest-first, so a live channel always rebuilt the OLDEST issue and
+    /// could never refresh. The parse must anchor newest-first and return
+    /// the newest COMPLETE issue.
+    #[test]
+    fn d1_ephemeris_picks_the_newest_complete_issue() {
+        let put_u = |d: &mut [u8; 300], pos: usize, n: usize, v: u64| {
+            for j in 0..n {
+                d[pos + j] = ((v >> (n - 1 - j)) & 1) as u8;
+            }
+        };
+        let put2 = |d: &mut [u8; 300], p1: usize, l1: usize, p2: usize, l2: usize, v: u64| {
+            put_u(d, p1, l1, v >> l2);
+            put_u(d, p2, l2, v & ((1 << l2) - 1));
+        };
+        // one MEO-sane issue triple starting at sow0 with the given toe
+        let mk = |sow0: u32, toe: u32| {
+            let mut z = |_| 0;
+            let mut d = [subframe_data(1, sow0, &mut z),
+                         subframe_data(2, sow0 + 6, &mut z),
+                         subframe_data(3, sow0 + 12, &mut z)];
+            put_u(&mut d[0], 60, 13, 900);                       // week
+            put2(&mut d[0], 73, 9, 90, 8, (toe / 8) as u64);     // toc
+            put2(&mut d[1], 250, 12, 270, 20,
+                 (5283.0 / 2f64.powi(-19)).round() as u64);      // sqrtA (MEO)
+            put_u(&mut d[1], 290, 2, ((toe / 8) >> 15) as u64);  // toe msb
+            put2(&mut d[2], 42, 10, 60, 5, ((toe / 8) & 0x7FFF) as u64);
+            d
+        };
+        let old = mk(234_600, 234_552);
+        let new = mk(234_600 + 18, 234_552 + 7200);
+        let mut stream: Vec<u8> = Vec::new();
+        for dd in old.iter().chain(new.iter()) {
+            stream.extend_from_slice(&subframe_encode(dd));
+        }
+        let subs = find_subframes(&stream);
+        assert_eq!(subs.len(), 6);
+        let e = parse_ephemeris(&subs).expect("a complete issue exists");
+        assert!((e.toe - sow_bdt_to_gpst(241_752.0)).abs() < 1.0,
+                "the newer issue must win: toe {}", e.toe);
+
+        // break the newer triple (no SF2): fall back to the older one
+        let mut stream2: Vec<u8> = Vec::new();
+        for dd in old.iter().chain([new[0], new[2]].iter()) {
+            stream2.extend_from_slice(&subframe_encode(dd));
+        }
+        let e2 = parse_ephemeris(&find_subframes(&stream2))
+            .expect("the older complete issue exists");
+        assert!((e2.toe - sow_bdt_to_gpst(234_552.0)).abs() < 1.0,
+                "fallback to the old issue: toe {}", e2.toe);
     }
 
     // ---------------- NH20 -----------------------------------------------

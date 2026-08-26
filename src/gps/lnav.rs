@@ -5,7 +5,6 @@
 //! (word_decode / find_subframes / parse_ephemeris) and validated against the
 //! simulator's ground-truth nav bits.
 
-use std::collections::HashMap;
 
 use super::broadcast::BrdcEph;
 
@@ -112,15 +111,52 @@ pub fn find_subframes(bits: &[u8]) -> Vec<Subframe> {
 }
 
 /// Assemble subframes 1/2/3 into a broadcast ephemeris (SI units, radians).
-/// Returns None if any of the three are missing or fail the consistency checks.
+/// Returns None if no coherent set exists. The live channel's bit buffer is
+/// append-only, so first-of-each-id assembly always rebuilds the OLDEST
+/// issue in the window and the channel could never refresh (round-13
+/// review): SF3 anchors are walked newest-first, and each is completed by
+/// ISSUE IDENTITY — the newest SF2 with the same IODE and the newest SF1
+/// whose IODC low byte matches — so a mid-upload buffer can never tear a
+/// torn SF1-from-new-issue + SF2/SF3-from-old-issue mix into the map.
 pub fn parse_ephemeris(subs: &[Subframe]) -> Option<BrdcEph> {
-    let mut got: HashMap<u8, &Vec<[u8; 24]>> = HashMap::new();
-    for s in subs {
-        got.entry(s.sfid).or_insert(&s.words);
+    for i3 in (0..subs.len()).rev() {
+        if subs[i3].sfid != 3 {
+            continue;
+        }
+        // Assemble by ISSUE IDENTITY (round-13): the anchor SF3 names the
+        // IODE; the newest SF2 carrying that IODE and the newest SF1 whose
+        // IODC low byte matches complete the set. Time/nearest-pairing is
+        // NOT the law: a buffer that starts mid-sequence holds its matching
+        // SF1 AFTER the SF2/SF3 (next 30 s frame, same 2 h issue), and a
+        // mid-upload buffer holds a new SF1 beside old SF2/SF3 — only
+        // IODE-equal fields may be combined. Incoherent/missing partners
+        // fall through to the next-older SF3 anchor.
+        let iod = bu(&subs[i3].words[9], 1, 8); // IODE3
+        let find = |id: u8| -> Option<usize> {
+            (0..subs.len()).rev().find(|&i| {
+                if subs[i].sfid != id {
+                    return false;
+                }
+                match id {
+                    1 => bu(&subs[i].words[7], 1, 8) == iod, // IODC low 8
+                    _ => bu(&subs[i].words[2], 1, 8) == iod, // IODE (SF2)
+                }
+            })
+        };
+        let (Some(i1), Some(i2)) = (find(1), find(2)) else {
+            continue;
+        };
+        // orbit sanity + the belt-and-suspenders coherence recheck inside
+        if let Some(e) = parse_set(&subs[i1].words, &subs[i2].words, &subs[i3].words) {
+            return Some(e);
+        }
     }
-    let w1 = got.get(&1)?;
-    let w2 = got.get(&2)?;
-    let w3 = got.get(&3)?;
+    None
+}
+
+/// Decode one SF1+SF2+SF3 set. Returns None on IODC/IODE incoherence or an
+/// insane orbit.
+fn parse_set(w1: &[[u8; 24]], w2: &[[u8; 24]], w3: &[[u8; 24]]) -> Option<BrdcEph> {
 
     let mut e = BrdcEph::default();
     // subframe 1: clock + week + TGD + health + IODC. Word 3 layout
@@ -295,5 +331,70 @@ mod tests {
         let p = super::super::broadcast::sat_pos_ecef(&e, e.toe);
         let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
         assert!(r > 26_000_000.0 && r < 27_100_000.0, "radius {r}");
+    }
+
+    /// Minimal synthetic subframe for parse_ephemeris issue-selection tests:
+    /// only the fields parse_set reads — coherence (IODC/IODE), a sane
+    /// orbit (sqrtA 5153, e = 0), and the distinguishing toe.
+    fn synth_sf(sfid: u8, iod: u64, toe_raw: u64, week: u64, bit_index: usize) -> Subframe {
+        fn put(w: &mut [u8; 24], pos: usize, n: usize, v: u64) {
+            for j in 0..n {
+                w[pos - 1 + j] = ((v >> (n - 1 - j)) & 1) as u8;
+            }
+        }
+        let mut words = vec![[0u8; 24]; 10];
+        match sfid {
+            1 => {
+                put(&mut words[2], 1, 10, week); // week
+                put(&mut words[2], 23, 2, iod >> 8); // IODC msb
+                put(&mut words[7], 1, 8, iod & 0xFF); // IODC lsb
+                put(&mut words[7], 9, 16, toe_raw); // toc
+            }
+            2 => {
+                put(&mut words[2], 1, 8, iod); // IODE
+                put(&mut words[9], 1, 16, toe_raw); // toe
+                let raw = (5153.0 * 2f64.powi(19)).round() as u64; // sqrtA sane
+                put(&mut words[7], 17, 8, raw >> 24);
+                put(&mut words[8], 1, 24, raw & 0xFF_FFFF);
+            }
+            _ => {
+                put(&mut words[9], 1, 8, iod); // IODE3
+            }
+        }
+        Subframe { sfid, tow_next: (bit_index / 300 + 1) as u32, words, bit_index }
+    }
+
+    /// Round-13: the buffer is append-only, so first-of-each-id assembly
+    /// always rebuilt the OLDEST issue and a live channel could never
+    /// refresh. The parse must return the NEWEST coherent SF1+SF2+SF3 set.
+    #[test]
+    fn parse_ephemeris_picks_the_newest_coherent_issue() {
+        let mut subs: Vec<Subframe> = Vec::new();
+        for (k, &id) in [1u8, 2, 3].iter().enumerate() {
+            subs.push(synth_sf(id, 0x15, 21000, 900, k * 300)); // old issue
+        }
+        for (k, &id) in [1u8, 2, 3].iter().enumerate() {
+            subs.push(synth_sf(id, 0x2A, 21600, 900, 900 + k * 300)); // new issue
+        }
+        let e = parse_ephemeris(&subs).expect("a coherent set exists");
+        assert_eq!(e.toe, 21600.0 * 16.0, "the newer issue must win: toe {}", e.toe);
+        assert_eq!(e.iode, Some(0x2A));
+    }
+
+    /// A newest triple whose IODC/IODE disagree (a mid-upload capture) must
+    /// not parse — the walk falls back to the older coherent set.
+    #[test]
+    fn parse_ephemeris_falls_back_when_the_newest_set_is_incoherent() {
+        let mut subs: Vec<Subframe> = Vec::new();
+        for (k, &id) in [1u8, 2, 3].iter().enumerate() {
+            subs.push(synth_sf(id, 0x15, 21000, 900, k * 300)); // old, coherent
+        }
+        // new triple: SF1+SF3 carry 0x19, SF2 carries 0x2A -> incoherent
+        subs.push(synth_sf(1, 0x19, 21600, 900, 900));
+        subs.push(synth_sf(2, 0x2A, 21600, 900, 1200));
+        subs.push(synth_sf(3, 0x19, 21600, 900, 1500));
+        let e = parse_ephemeris(&subs).expect("the older coherent set exists");
+        assert_eq!(e.toe, 21000.0 * 16.0, "fallback to the old issue: toe {}", e.toe);
+        assert_eq!(e.iode, Some(0x15));
     }
 }
