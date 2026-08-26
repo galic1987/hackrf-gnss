@@ -907,30 +907,29 @@ function renderSummary(st) {
     "Timekeeping — the bottom line",
     "One clock, measured by every reference on this page, with the discipline loop as a shadow estimate — computed and logged, never actuated. 1 ppb = 1 ns of error per second; under ±0.05 ppm (±50 ns/s) is healthy for this station."));
 
-  // Position: latest fix vs the site anchor (uses POS_SITE updated in render)
+  // Position: latest TRUSTED fix vs the site anchor (uses POS_SITE updated in render).
+  // Round-10: the headline reports trusted history only — position_history
+  // holds trusted_for_history==true rows by construction now. The untrusted
+  // live fix (st.position) is diagnostic and never anchors the top-line claim.
   var fixes = st.position_history || [];
   var src = null, i;
   for (i = fixes.length - 1; i >= 0; i--) {
     if (fixes[i].lat !== undefined && fixes[i].lat !== null) { src = fixes[i]; break; }
   }
-  if (!src && st.position && st.position.lat !== undefined) src = st.position;
-  var headline = "—", sentence = "waiting for the first fix…";
+  var headline = "no trusted fix", sentence =
+      "only diagnostic solves so far (Position fix card below) — nothing has met the trust bar for history yet.",
+      cardColor = "amber";
   if (src) {
     var enu = fixToEnu(src, POS_SITE);
     var hd = Math.sqrt(enu[0] * enu[0] + enu[1] * enu[1]);
-    if (hd > 1e5) {
-      headline = "fix untrusted";
-      sentence = "last solve landed " + fmtInt(hd / 1000) +
-        " km from the site anchor — shown for honesty, ignored for precision (see Position fix card).";
-    } else {
-      headline = hd.toFixed(1) + " m";
-      sentence = "latest fix sits this far horizontally from the site anchor (Up " +
-        sgn(enu[2]) + Math.abs(enu[2]).toFixed(1) + " m) — a static station should hold metre-class.";
-    }
+    headline = hd.toFixed(1) + " m";
+    sentence = "latest TRUSTED fix sits this far horizontally from the site anchor (Up " +
+      sgn(enu[2]) + Math.abs(enu[2]).toFixed(1) + " m) — a static station should hold metre-class.";
+    cardColor = "green";
   }
-  cards.push(sumCard("green", "Position", headline, sentence,
+  cards.push(sumCard(cardColor, "Position", headline, sentence,
     "Position — the bottom line",
-    "The latest fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). A static station should sit within a few metres; residual rms and the gate flag say how much to believe any single fix, and a fix far from the site anchor is marked untrusted rather than hidden."));
+    "The latest trusted fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). Only fixes that pass redundancy AND integrity gates enter this history; exact or integrity-failed solves stay visible as diagnostics on the Position card, never here."));
 
   // Displacement
   var ph = st.phase;
@@ -1331,9 +1330,15 @@ function drawSeries(cid, legendId, series, prefix, unit) {
     var va = 0;
     fresh.forEach(function (p) { va += (p[1] - mean) * (p[1] - mean); });
     var sd = Math.sqrt(va / fresh.length);
-    legend.push('<span style="color:' + col + '">●</span> <span class="tip" data-tip-title="' +
-      esc(label) + '" data-tip="' + esc(label + ": mean " + mean.toFixed(3) + " " + unit + ", σ " + sd.toFixed(3) +
-      " over " + fresh.length + " samples in the last hour") + '">' + esc(label) + "</span>");
+    var tipTxt = label + ": mean " + mean.toFixed(3) + " " + unit + ", σ " + sd.toFixed(3) +
+      " over " + fresh.length + " samples in the last hour";
+    if (k === "candidate midpoint")
+      tipTxt = "UNARBITRATED 2-voter midpoint — never a reference, diagnostics only. " + tipTxt;
+    legend.push('<span style="color:' + col + (k === "candidate midpoint" ? ';opacity:.45' : '') +
+      '">●</span> <span class="tip" data-tip-title="' +
+      esc(label) + '" data-tip="' + esc(tipTxt) + '"' +
+      (k === "candidate midpoint" ? ' style="opacity:.55"' : '') + '>' + esc(label) +
+      (k === "candidate midpoint" ? " (unarbitrated)" : "") + "</span>");
     if (k === "consensus") {                    // consensus as a line
       ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath();
       var started = false;
@@ -1431,7 +1436,7 @@ var GLOSSARY = {
   "SAW": "Surface Acoustic Wave filter — the AA.250's built-in bandpass; why cellular doesn't desense it (and why Iridium rolls off).",
   "SOF": "Start of Frame — a USB heartbeat from the host (1 ms frames; 125 µs microframes at high-speed). Planned use: an M4 software latch for host↔device time transfer at ~10–50 µs — NOT a TDC calibration source.",
   "DNL": "Differential Non-Linearity — per-bin width error of the TDC delay chain; measured by code-density calibration.",
-  "nibble": "4 bits. In ext-precision mode, the top nibble of each 12-bit sample carries the FPGA timestamp INSIDE the data stream — zero-jitter timing.",
+  "nibble": "4 bits. In ext-precision mode, the top nibble of each 12-bit sample carries the FPGA timestamp INSIDE the data stream — 31.25 ns-quantized timing with fixed pipeline delay (the nibble/IQ association skew of a few samples is under review).",
   "cycle slip": "when the PLL loses count of whole carrier cycles (deep fade) — shows as a phase jump; flagged, not hidden.",
   "multipath": "signal bouncing off buildings/ground before the antenna — the slow cm–m wander on top of every phase measurement.",
   "PVT": "Position, Velocity, Time — the standard GNSS solve: where am I, how fast am I moving, what time is it.",
@@ -1633,7 +1638,7 @@ function render(st) {
   // FPGA section: what the timestamp chain buys, location-wise
   var res = c.residual_ppm;
   var fpga = "The 40-bit counter in the iCE40 counts adclk cycles; nibble embedding stamps every sample with " +
-    "<b>zero-jitter</b> ticks recovered straight from the stream (proven: 2.84M anchors, exact 40 MHz domain). ";
+    "<b>bounded-uncertainty</b> ticks recovered from the stream (2.84M sequence-validated anchors; nibble/IQ association skew of a few samples under review). ";
   if (res !== undefined) {
     var mps = Math.abs(res) * 299.792458;   // ppm -> m/s range-rate
     var corrNow = c.correction_ppm || 0;
@@ -2540,14 +2545,14 @@ function renderRfChain(st) {
     c.live_tick_hz ? "<b>" + (c.live_tick_hz / 1e6).toFixed(6) + "</b> MHz" : "—",
     "CIC 4× decimation · nibble-embedded timestamps · carry-chain TDC ≈0.5 ns (provisional)",
     "40-bit tick = 31.25 ns",
-    "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — zero-jitter timing proven on hardware. The CIC filter decimates, and the carry-chain TDC aims to subdivide one tick to ~0.5 ns (provisional self-test figure). The Hz shown is the live tick poll — PC-read jitter applies."));
+    "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — 31.25 ns-quantized timing recovered on hardware (2.84M anchors); the nibble/IQ association carries a few-sample skew under review, so these are bounded-uncertainty anchors, not zero-jitter. The CIC filter decimates, and the carry-chain TDC aims to subdivide one tick to ~0.5 ns (provisional self-test figure). The Hz shown is the live tick poll — PC-read jitter applies."));
   nodes.push(journeyNode("Cortex-M4", "control core",
     "USB stack · SPI house-keeping · clock-correction register " +
       (d.correction_ppm !== undefined ? "<b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm</b>" : "—"),
     "would steer the Si5351 (SHADOW: no writes)",
     "Cortex-M4 + correction register", "The main ARM core runs the USB stack, host requests, SPI register access and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
   nodes.push(journeyNode("Cortex-M0", "SGPIO dataplane", "serializes the sample stream → USB queue", "91.9% loaded at 20 Msps",
-    "Cortex-M0", "The small co-processor runs the SGPIO assembly server — it services the high-speed serial interface transaction by transaction, shoveling 16 Msps of interleaved I/Q into the USB transfer queue (~92% of its cycles at full rate). Its timing is hardware-scheduled — but zero-jitter timestamps still come from the FPGA, not from either core."));
+    "Cortex-M0", "The small co-processor runs the SGPIO assembly server — it services the high-speed serial interface transaction by transaction, shoveling 16 Msps of interleaved I/Q into the USB transfer queue (~92% of its cycles at full rate). Its timing is hardware-scheduled — but the quantized timestamps come from the FPGA, not from either core."));
   nodes.push(journeyNode("USB → PC", "this page",
     (st.consensus_ppm !== undefined && st.consensus_ppm !== null
       ? "consensus <b>" + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>" : "consensus —") +
@@ -2624,7 +2629,7 @@ function renderPhysChain(st) {
     "slot 0 timing image: 48-tap carry-chain TDC + 40-bit tick counter · slot 2 ext-precision RX: NCO mix + CIC 4× decimation, nibble timestamps in-stream",
     "40-bit tick = 31.25 ns",
     "FPGA — what fabric does, and why",
-    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (≈0.5 ns provisional self-test) that subdivides it; the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — zero-jitter timing, proven on hardware with 2.84M sequence-validated anchors. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register and CLKOUT."));
+    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (≈0.5 ns provisional self-test) that subdivides it; the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — 31.25 ns-quantized timing, 2.84M sequence-validated anchors on hardware; the nibble/IQ association skew (a few samples) is under review, so bounded-uncertainty, not zero-jitter. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register and CLKOUT."));
 
   // 8. LPC4320
   nodes.push(journeyNode("LPC4320 MCU",
