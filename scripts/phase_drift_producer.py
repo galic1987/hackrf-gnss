@@ -34,7 +34,8 @@ Making the row a RAW-TCXO measurement comparable to every other voter
 (ATSC ch35 via CLKOUT, PC clock). Like the code row, GEO line-of-sight
 motion Doppler is NOT subtracted (the tracker publishes no sat velocity;
 the code row absorbs it in its sigma floor). The honest fit sigma is
-published as-is; inter-source systematics (GEO motion ±0.025 ppm, CLKOUT
+published as-is; inter-source systematics (GEO motion floor +-0.025 ppm —
+covers the +-0.01 ppm range-rate bound +-0.5-3 m/s ÷ c, with margin; CLKOUT
 chain) are visible in the scatter.
 
 NON-VOTING (systems review 2026-08-25, finding 6): this chain is an

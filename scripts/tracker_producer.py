@@ -209,7 +209,9 @@ def publish(sats, now, disc=None):
             "band": MY_BAND,
             "name": "WAAS GEO live Doppler + corr register · Pro+AA.250, 1 Hz tracker",
             "kind": "ClockDriftPpm",
-            # sigma floors at GEO motion Doppler (+-0.025 ppm), not the PLL's
+            # sigma floors at GEO motion Doppler (+-0.025 ppm — covers the
+            # +-0.01 ppm range-rate bound: +-0.5-3 m/s line of sight / c,
+            # plus inter-source margin), not the PLL's
             # short-term precision — path systematics dominate inter-source
             # comparison
             "value": round(ppm, 4), "sigma": 0.03,
