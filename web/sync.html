@@ -282,7 +282,7 @@
     <div id="posenulegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Inter-system clock strip" data-tip="GPS minus BeiDou receiver clock from the mixed solves, in km of light-travel. A stable line means both constellations agree; a spoofer faking one side breaks it — this is the anti-spoof observable."><canvas id="posisx" class="cv"></canvas></div>
     <div id="posisxlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
-    <span class="cap">Every 5-min snapshot fix, converted to <b>ENU</b> metres relative to the site anchor, last 3 h.
+    <span class="cap">Every snapshot fix, converted to <b>ENU</b> metres relative to the site anchor, last 3 h.
     <span class="ok">teal</span> = East, <span class="warn">amber</span> = North, <span style="color:#90caf9">blue</span> = Up.
     <b>Filled</b> markers = gated (redundant) fixes; <b>open</b> = ungated exact solves (unverifiable &mdash; honesty stays visible);
     <span style="color:#ce93d8">purple edge</span> = mixed GPS+BDS solve. The y axis is robust: median &plusmn; 8&times;<span class="tip" tabindex="0" data-tip-title="MAD" data-tip="Median Absolute Deviation — the median of |value − median|. Robust to outliers the way the plain standard deviation is not: one 500 km blip cannot stretch this axis.">MAD</span>
@@ -510,7 +510,7 @@
     time, a PLL the carrier's phase, an FLL the frequency during pull-in &mdash; their live lock durations are in the satellite
     table. Bit decode reads the 50 bit/s nav message; its ephemeris predicts where the satellite was at transmit time, and its
     time-of-week anchors absolute time.</p>
-    <p>The PVT solver turns pseudoranges into position + clock every 5 minutes; the discipline loop compares the near-stationary
+    <p>The PVT solver turns pseudoranges into position + clock about once a minute; the discipline loop compares the near-stationary
     GEO carriers against the local clock and nudges the correction register in &plusmn;0.1 ppm steps. Architecturally, each
     producer process writes only its own state file and the server merges them at read time with expiry &mdash; no producer can
     corrupt another, and a dead one simply fades out. <span id="l4live"></span></p>
@@ -913,7 +913,7 @@ function renderSummary(st) {
     if (fixes[i].lat !== undefined && fixes[i].lat !== null) { src = fixes[i]; break; }
   }
   if (!src && st.position && st.position.lat !== undefined) src = st.position;
-  var headline = "—", sentence = "waiting for the first 5-min fix…";
+  var headline = "—", sentence = "waiting for the first fix…";
   if (src) {
     var enu = fixToEnu(src, POS_SITE);
     var hd = Math.sqrt(enu[0] * enu[0] + enu[1] * enu[1]);
@@ -1018,7 +1018,7 @@ function drawPosEnu(fixes) {
   });
   if (pts.length < 2) {
     lg.textContent = pts.length ? "one fix so far — need two to draw" :
-      "waiting for position history (position_watch.py appends each 5-min fix)";
+      "waiting for position history (position_watch.py appends each fix)";
     return;
   }
   var scale = posEnuScale([0, 1, 2].map(function (c) {
@@ -1070,7 +1070,7 @@ function drawPosEnu(fixes) {
       ctx.stroke();
     });
   });
-  // current-fix marker: white rings that glide between 5-min fixes (car mode)
+  // current-fix marker: white rings that glide between fixes (car mode)
   var curEnu = posGlidePos();
   if (curEnu) {
     var lastT = pts[pts.length - 1].epoch;
@@ -1090,7 +1090,7 @@ function drawPosEnu(fixes) {
     '">purple edge</span> = mixed GPS+BDS' +
     ' &nbsp;·&nbsp; y clipped to median ± 8×MAD per component: ' +
     lo.toFixed(1) + " … " + (hi >= 0 ? "+" : "") + hi.toFixed(1) + " m" +
-    (curEnu ? ' &nbsp;·&nbsp; <span style="color:#eceff1">○</span> current fix (glides between 5-min fixes)' : "") +
+    (curEnu ? ' &nbsp;·&nbsp; <span style="color:#eceff1">○</span> current fix (glides between fixes)' : "") +
     (nOut ? ' &nbsp;·&nbsp; <span class="neg">✕ ' + nOut + " outlier(s) at edge</span>" : "");
 }
 function drawPosIsx(fixes) {
@@ -1204,7 +1204,7 @@ function drawScatterOne(cid, fixes, ai, bi, xlabel, ylabel, curEnu) {
     }
   });
   ctx.globalAlpha = 1;
-  // current-fix marker: white ring gliding between 5-min fixes
+  // current-fix marker: white ring gliding between fixes
   if (curEnu) {
     var mx2 = Math.min(Math.max(sx(curEnu[ai]), 5), W - 5);
     var my2 = Math.min(Math.max(sy(curEnu[bi]), 5), H - 5);
@@ -1740,7 +1740,7 @@ function render(st) {
   } else {
     lt.innerHTML = '<span class="dim">waiting for tracker producer&hellip;</span>';
   }
-  // position fix section (position_producer / live_fix, every 5 min)
+  // position fix section (position_producer / live_fix, about once a minute)
   var pos = st.position;
   var posEl = document.getElementById("position");
   if (pos && pos.lat !== undefined) {
@@ -1763,7 +1763,17 @@ function render(st) {
     var rmsKnown = pos.residual_rms_m !== undefined && pos.residual_rms_m !== null &&
       isFinite(pos.residual_rms_m);
     var honest = !implausible && rmsKnown && pos.residual_rms_m < 1000 && !exactSolve;
-    var qual = implausible
+    // trust split (review round 6): redundancy is geometry, not validity.
+    // trusted_for_history = redundant AND integrity-valid; integrity_valid
+    // alone = plausible but unproven; exact solves stay unverifiable.
+    var trustPill = pos.trusted_for_history === true
+      ? ' <span class="pill ok" title="Redundant geometry AND integrity-plausible (rms, inter-system bias, altitude all sane) — this fix may enter trusted history">TRUSTED</span>'
+      : pos.integrity_valid === true
+        ? ' <span class="pill info" title="Plausible but not redundant — diagnostic only, not trusted for history">DIAGNOSTIC</span>'
+        : pos.integrity_valid === false
+          ? ' <span class="pill warn" title="Failed an integrity bound (residual rms, inter-system bias, or altitude) — do not trust">NOT VALID</span>'
+          : ""; // old producer build without the fields: no pill
+    var qual = trustPill + (implausible
       ? ' <span class="pill warn">IMPLAUSIBLE — ' + distKm.toFixed(0) +
         " km from the site anchor; 4-sat solve has no redundancy to catch a bad anchor</span>"
       : !rmsKnown
@@ -1772,7 +1782,7 @@ function render(st) {
           ? ' <span class="pill warn">rms ' + pos.residual_rms_m.toFixed(1) +
             " m exact-by-construction (" + pos.n_sat + " sats) — unverifiable</span>"
           : ' <span class="pill ' + (honest ? "ok" : "warn") + '">rms ' +
-            pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>";
+            pos.residual_rms_m.toFixed(1) + " m" + (honest ? "" : " — untrustworthy") + "</span>");
     posEl.innerHTML =
       "<b>" + pos.lat.toFixed(6) + "°, " + pos.lon.toFixed(6) + "°</b>, alt " +
       (pos.alt_km !== undefined && pos.alt_km !== null ? (pos.alt_km * 1000).toFixed(0) : "—") + " m" + qual +
@@ -1961,7 +1971,7 @@ function last60Fixes(st) {
     return { epoch: g.epoch, mode: g.mode || "", gate: g.gate || "", enu: fixToEnu(g, POS_SITE) };
   });
 }
-// --- current-fix glide: fixes land every ~5 min; the "current position"
+// --- current-fix glide: fixes land about once a minute; the "current position"
 // marker eases to the newest fix over ~1 s instead of snapping (car mode).
 // Missing/non-finite interpolation data = snap, never NaN.
 var POS_GLIDE_S = 1.0;
@@ -2012,7 +2022,7 @@ function drawScat3d(st) {
   var pts = last60Fixes(st);
   if (pts.length < 2) {
     ctx.fillStyle = "#607d8b"; ctx.font = "12px Menlo, monospace";
-    ctx.fillText("waiting for fix history — one 5-min snapshot fix lands here at a time", 12, 22);
+    ctx.fillText("waiting for fix history — one snapshot fix lands here at a time", 12, 22);
     if (lg) lg.textContent = "need at least 2 fixes to draw the cloud";
     return;
   }
@@ -2062,7 +2072,7 @@ function drawScat3d(st) {
     ctx.beginPath(); ctx.arc(q.x, q.y, 1.8 + 2.2 * depth, 0, 6.2832); ctx.fill();
   });
   ctx.globalAlpha = 1;
-  // current-fix marker: white ring gliding between 5-min fixes (hidden while replaying)
+  // current-fix marker: white ring gliding between fixes (hidden while replaying)
   if (!S3.playing) {
     var cur3 = posGlidePos();
     if (cur3) {
