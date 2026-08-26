@@ -6,6 +6,7 @@ writes only to a temp dir.
   python3 scripts/test_series_producer.py
 """
 import json
+import math
 import os
 import sys
 import tempfile
@@ -69,6 +70,48 @@ def main():
     rec = json.loads(lines[-1])
     check("history rows carry time + set", rec["t"] == 1090.0
           and rec["alerts"] == ["a", "b"])
+
+    # --- CLKIN soft verification (round-14) ------------------------------------
+    # shared clock: both series ride ONE oscillator — a large common wander
+    # cancels in the diff; only small independent measurement noise remains.
+    t0, n, dt = 1000.0, 50, 30.0
+    common = [0.30 * math.sin(i * dt / 1800.0) for i in range(n)]
+    atsc = [[t0 + i * dt, common[i] + 0.002 * math.sin(i * 1.7)] for i in range(n)]
+    waas = [[t0 + i * dt, common[i] + 0.008 * math.sin(i * 2.9 + 1.0)] for i in range(n)]
+    v, d = sp.clkin_soft_verify(atsc, waas)
+    check("shared clock verifies", v is True,
+          f"rms={d['diff_rms_ppm']} slope={d['diff_slope_ppm_per_min']}")
+    check("diag carries pairs/window/stats", d["pairs"] == n and d["window_s"] == sp.SOFT_WINDOW
+          and d["diff_rms_ppm"] is not None and d["mean_diff_ppm"] is not None, f"{d}")
+
+    # independent TCXOs: the One's own wander does NOT cancel — diff wanders
+    # and drifts well beyond the gates (0.06 ppm amplitude, 240 s period).
+    atsc_free = [[t0 + i * dt, common[i] + 0.06 * math.sin(i * dt / 240.0)] for i in range(n)]
+    v, d = sp.clkin_soft_verify(atsc_free, waas)
+    check("independent-TCXO wander does not verify", v is False,
+          f"rms={d['diff_rms_ppm']} slope={d['diff_slope_ppm_per_min']}")
+
+    # a constant per-transmitter offset is NOT clock information: offset-
+    # invariant gates still verify (measured ch35 bias ≈ -0.05 ppm).
+    atsc_bias = [[t, x - 0.05] for t, x in atsc]
+    v, d = sp.clkin_soft_verify(atsc_bias, waas)
+    check("constant transmitter offset still verifies", v is True,
+          f"mean={d['mean_diff_ppm']} rms={d['diff_rms_ppm']}")
+
+    # insufficient pairs -> None (unknown): the gate stays closed, never guesses
+    v, d = sp.clkin_soft_verify(atsc[:10], waas[:10])
+    check("insufficient pairs -> null", v is None and d["pairs"] == 10, f"{d}")
+    sparse = [[t0 + i * 200.0, 0.0] for i in range(n)]        # 200-s grid
+    off_grid = [[t0 + 100.0 + i * 200.0, 0.0] for i in range(n)]  # 100 s away
+    v, d = sp.clkin_soft_verify(sparse, off_grid)
+    check("unpairable epochs -> null", v is None and d["pairs"] == 0, f"{d}")
+
+    # voter gate: hard probe primary, soft inference fallback (review's OR)
+    check("probe True votes", sp.atsc_may_vote(True, None) is True)
+    check("probe None + soft True votes", sp.atsc_may_vote(None, True) is True)
+    check("probe None + soft False closed", sp.atsc_may_vote(None, False) is False)
+    check("probe None + soft None closed", sp.atsc_may_vote(None, None) is False)
+    check("probe False + soft True votes (spec OR)", sp.atsc_may_vote(False, True) is True)
 
     print(f"\n{len(FAILURES)} failure(s)" if FAILURES else "\nall tests passed")
     sys.exit(1 if FAILURES else 0)

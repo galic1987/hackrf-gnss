@@ -16,7 +16,7 @@ Race-free: this file is written by nobody else (tmp + os.replace). ttl_s=120
 tells the server to drop this file's contribution ~2 min (4 missed polls)
 after this producer dies — the band_series chart must vanish, not freeze.
 """
-import json, os, time, urllib.request
+import json, math, os, time, urllib.request
 
 OBS = "/Volumes/Radiator 8TB/gnss/observations"
 STATE = f"{OBS}/state.series.json"
@@ -87,6 +87,84 @@ def elect(voters):
             alerts.append(f"{b}: {diff:+.3f} ppm vs the only other voter "
                           f"({z[b]:+.1f} sigma) — 2-voter midpoint meaningless, trust neither")
     return cons, alerts, suspect
+
+
+# --- CLKIN soft verification (pure; unit-tested) ------------------------------
+# The hard probe (band_producer's clkin_signal_present, `hackrf_clock -i` on
+# the One) must OPEN the One, which phase_producer holds full-time, so it
+# reads None (unknown) essentially always. Fallback inference: if the One
+# truly runs from the Pro's CLKOUT 10 MHz, the One's clock error IS the
+# Pro's, and the One-side ATSC pilot series and the Pro-side WAAS-GEO drift
+# series move 1:1 — their paired difference (atsc - waas) then wanders only
+# with measurement noise and the GEO motion floor (~±0.01 ppm), while two
+# free-running TCXOs migrate apart visibly. The constant term of the diff
+# (per-transmitter pilot offset minus GEO mean motion; measured ≈ -0.05 ppm
+# for ch35, +0.07 ppm for ch23) is NOT clock information, so the gates are
+# offset-invariant: wander RMS about the window mean, and window slope.
+# Measured on 47 h of telemetry pairs (2026-08-24→26, 13919 pairs, 30-min
+# windows): drift-locked era wander-RMS p50 0.008 ppm, |slope| p90
+# 0.002 ppm/min; free-running era wander-RMS p50 0.052 ppm, |slope| p50
+# 0.004 ppm/min, secular migration -0.05 → -2.0 ppm over 38 h. At the gates
+# below: locked-era windows verify 68% (tracker-realign transients fail
+# closed — correct), free-era false-verify 1/11502 windows. Fail-closed:
+# insufficient pairs → None (unknown) — never guess.
+SOFT_WINDOW = 1800.0            # 30-min paired-diff window
+SOFT_MIN_PAIRS = 20             # live cadence ~2 pts/min → ~60 pairs/window
+SOFT_RMS_PPM = 0.015            # just above the ±0.01 ppm GEO-motion floor;
+                                # free-running p50 is 3.5x above this
+SOFT_SLOPE_PPM_MIN = 0.003      # locked p90 0.002; free p50 0.004; the
+                                # differential-TCXO class is 0.01-0.1 ppm/min
+SOFT_TOL_S = 30.0               # epoch-match tolerance (both series ~30 s)
+SOFT_ATSC = "ATSC ch35"         # One: phase_producer 60-Hz pilot track
+SOFT_WAAS = "L1 / WAAS (live)"  # Pro: tracker 1-Hz WAAS-GEO Doppler mean
+
+
+def clkin_soft_verify(atsc_pts, waas_pts, window=SOFT_WINDOW,
+                      min_pairs=SOFT_MIN_PAIRS, rms_ppm=SOFT_RMS_PPM,
+                      slope_ppm_min=SOFT_SLOPE_PPM_MIN, tol_s=SOFT_TOL_S):
+    """Pair each WAAS point with the nearest ATSC point within tol_s, keep
+    the last `window` seconds of pairs, and judge drift-lock from the diff's
+    wander RMS (about the window mean) and least-squares slope. Returns
+    (verdict, diag); verdict is True/False, or None when pairs < min_pairs
+    (insufficient evidence — the gate stays closed)."""
+    import bisect
+    at = [p[0] for p in atsc_pts]
+    pairs = []
+    for wt, wv in waas_pts:
+        i = bisect.bisect_left(at, wt)
+        best = None
+        for j in (i - 1, i):
+            if 0 <= j < len(at) and (best is None or abs(at[j] - wt) < abs(at[best] - wt)):
+                best = j
+        if best is not None and abs(at[best] - wt) <= tol_s:
+            pairs.append((wt, atsc_pts[best][1] - wv))
+    if pairs:
+        cutoff = pairs[-1][0] - window
+        pairs = [p for p in pairs if p[0] >= cutoff]
+    diag = {"pairs": len(pairs), "window_s": window,
+            "diff_rms_ppm": None, "diff_slope_ppm_per_min": None,
+            "mean_diff_ppm": None}
+    if len(pairs) < min_pairs:
+        return None, diag
+    n = len(pairs)
+    ds = [d for _, d in pairs]
+    mean = sum(ds) / n
+    rms = math.sqrt(sum((d - mean) ** 2 for d in ds) / n)
+    tb = sum(t for t, _ in pairs) / n
+    sxx = sum((t - tb) ** 2 for t, _ in pairs)
+    slope = (sum((t - tb) * (d - mean)
+                 for (t, _), d in zip(pairs, ds)) / sxx * 60.0) if sxx > 0 else 0.0
+    diag.update({"diff_rms_ppm": round(rms, 4),
+                 "diff_slope_ppm_per_min": round(slope, 5),
+                 "mean_diff_ppm": round(mean, 4)})
+    return (rms < rms_ppm and abs(slope) < slope_ppm_min), diag
+
+
+def atsc_may_vote(clkin_signal_present, clkin_soft_verified):
+    """ATSC voter gate (round-14 review): the hardware probe is primary; the
+    soft drift-lock inference is the fallback while the probe is unreadable
+    (None). Everything else about the vote is unchanged."""
+    return clkin_signal_present is True or clkin_soft_verified is True
 
 
 ALERT_HIST = f"{OBS}/alert_history.jsonl"
@@ -188,10 +266,16 @@ def main():
         # cross-producer consensus: weighted mean over ALL live drift rows,
         # regardless of which producer wrote them — with outlier arbitration
         # (quarantine when arbitrable, suspect-midpoint when not). ATSC rows
-        # ride the second radio via CLKOUT→CLKIN: with no positively verified
-        # shared clock they are NOT an independent voter (round-10 review) —
-        # keep them charted, out of the vote.
-        clkin_ok = (st.get("clock") or {}).get("clkin_signal_present") is True
+        # ride the second radio via CLKOUT→CLKIN: they vote only on POSITIVE
+        # shared-clock evidence (round-10 review) — the hardware probe
+        # (clkin_signal_present is True) or, since the probe can almost
+        # never open the One, the soft drift-lock inference between the
+        # One's ATSC series and the Pro's WAAS-GEO series (round-14 review).
+        # Otherwise: keep them charted, out of the vote.
+        clkin_probe = (st.get("clock") or {}).get("clkin_signal_present")
+        soft, soft_diag = clkin_soft_verify(series.get(SOFT_ATSC, []),
+                                            series.get(SOFT_WAAS, []))
+        clkin_ok = atsc_may_vote(clkin_probe, soft)
         voters = [(s["band"], s["value"], max(s.get("sigma") or 0.05, 0.05))
                   for s in st.get("sources", [])
                   if s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
@@ -234,6 +318,11 @@ def main():
             "ttl_s": 120,
             "band_series": {k: v for k, v in sorted(series.items())},
             "alerts": xalerts,
+            # software INFERENCE from drift-lock — clearly NOT the hardware
+            # probe: clkin_signal_present (state.band.json, band_producer)
+            # keeps its own semantics, untouched here
+            "clkin_soft_verified": soft,
+            "clkin_soft": soft_diag,
         }
         if cons is not None:
             if suspect:
