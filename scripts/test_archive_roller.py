@@ -121,6 +121,8 @@ def main():
                   by_sat[("glonass", 5)]["cls"] == "predicted"
                   and by_sat[("gps", 30)]["cls"] == "tracked")
             check("telemetry-sourced row keeps cls null", row["cls"] is None)
+            check("impossible rho_m archived as NULL (round-14)",
+                  row["rho_m"] is None, "fixture carries rho_m=-1.0")
             tt = roller.pq.read_table(os.path.join(adir, "telemetry" + ext))
             trow = tt.to_pylist()[0]
             check("telemetry reserved temp/gain/radio null",

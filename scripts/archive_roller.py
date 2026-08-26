@@ -170,10 +170,18 @@ def parse_telemetry(d):
     out = {}
     sats = d.get("sats") or []
     if sats:
+        def rho_phys(v):
+            # rho_m from an unanchored channel is stream-offset dominated
+            # (up to a week of TOW vs stream-time — ±1.8e14 m observed),
+            # not a pseudorange. Archive only physical-class values
+            # (GNSS geometric range plus anchored-clock margin); the rest
+            # reads NULL instead of poisoning analysis (round-14: ~44k
+            # impossible rows/day were landing in the satellite stream).
+            return v if isinstance(v, (int, float)) and 1.5e7 <= v <= 5.0e7 else None
         out["satellite"] = [
             {"epoch": s.get("epoch", t), "sys": s.get("sys"), "prn": s.get("prn"),
              "cn0": s.get("cn0_proxy", s.get("cn0")), "doppler_hz": s.get("doppler_hz"),
-             "lock_s": s.get("lock_s"), "rho_m": s.get("rho_m"),
+             "lock_s": s.get("lock_s"), "rho_m": rho_phys(s.get("rho_m")),
              "t_tx": s.get("t_tx"), "ppm": s.get("ppm"),
              "az_deg": None, "el_deg": None, "residual_m": None, "cls": None}
             for s in sats]
