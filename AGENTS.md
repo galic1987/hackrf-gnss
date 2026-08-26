@@ -59,7 +59,7 @@ class). Producers with nothing to report must still heartbeat their file.
 | series_producer | state.series.json | 30 s; rolling 1-h band series, consensus, spoof z-alerts (sigma floor 0.05 ppm) |
 | band_producer | state.band.json | snapshot rotation — CANNOT snapshot while tracker owns the Pro; rows age, file heartbeats |
 | position_producer | state.position.json | runs examples/live_fix every 5 min; refreshes BRDC from BKG HOURLY (the ±4 h ephemeris fit window makes a 6-h refresh guarantee a modeled-sky blind gap) |
-| sky_producer | state.sky.json | 30 s; az/el from BRDC+live eph vs tracker: GPS/BDS/Galileo Kepler (Galileo SIS-ICD constants, GST≈GPST) + GLONASS PZ-90 state-vector RK4 — GLONASS is `cls:"predicted"` (G1 1602 MHz FDMA outside the L1 tune: sky map + trails only, never the tracked/absent/expected coverage counts or the learned mask); tracked/absent/unexpected; learns 5°×5° sky_mask.json; appends sky_history.jsonl; per-sat alt_km/speed_mps/track_deg + 30-min recent_trails; re-reads **observations/site.json every pass** (the canonical anchor — no hardcoded coordinates anywhere; a missing anchor is an error heartbeat, never a guess) |
+| sky_producer | state.sky.json | 30 s; az/el from BRDC+live eph vs tracker: GPS/BDS/Galileo Kepler (Galileo SIS-ICD constants, GST≈GPST) + GLONASS PZ-90 state-vector RK4 — GLONASS is `cls:"predicted"` (G1 1602 MHz FDMA outside the L1 tune: sky map + trails only, never the tracked/absent/expected coverage counts or the learned mask); tracked/absent/unexpected; learns 5°×5° sky_mask.json (schema 2: provenance block — site identity, rig string from the tracker's GPS L1 source, created/learn-start epochs, pass counts; learning GATED on tracker health — fresh within ttl, ≥ MASK_MIN_LOCKED=8 locked, ≥80% of lock ages ≥ the 30 s window — gated passes classify but teach nothing, so receiver outages/realigns never paint the mask; schema- or site/rig-mismatched masks on load are moved to sky_mask.json.quarantine-* and learning restarts empty); appends sky_history.jsonl; per-sat alt_km/speed_mps/track_deg + 30-min recent_trails; re-reads **observations/site.json every pass** (the canonical anchor — no hardcoded coordinates anywhere; a missing anchor is an error heartbeat, never a guess) |
 
 ## Consensus semantics (hard-won)
 
@@ -95,8 +95,9 @@ mask, dropout-cause suggestion). Schema/layout/query doc:
 - Tests: `python3 scripts/test_archive_roller.py` (sandboxed via
   HACKRF_GNSS_OBS / HACKRF_GNSS_CRATE env overrides; never touches live
   observations), `python3 scripts/test_sky_producer.py` (plain asserts;
-  the final cross-check runs a live pass when observations exist — it
-  writes one sky_history row), `python3 scripts/test_series_producer.py`
+  every pass_once runs in a tmp sandbox via sky_producer.bind_obs — the
+  live cross-check copies the live INPUTS, so production state/mask/
+  history are never touched), `python3 scripts/test_series_producer.py`
   (consensus election + alert history), `python3
   scripts/test_position_watch.py` (plausibility gate), and `node
   web/smoke_sync.js` for the panel (live API or a fixture; exits nonzero

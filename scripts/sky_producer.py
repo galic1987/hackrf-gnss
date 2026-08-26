@@ -33,7 +33,14 @@ other producers' state):
   observations/state.sky.json      merged by the panel server at read time
   observations/sky_mask.json       persistent 5°x5° az/el lock histogram —
                                    over days this paints the antenna's true
-                                   visibility, including reflection islands
+                                   visibility, including reflection islands.
+                                   Schema 2: provenance block (site / rig /
+                                   epochs / pass counts) and learning GATED
+                                   on tracker health — bins are taught only
+                                   from fresh, healthy, non-realigning
+                                   tracker state; a stale-schema or
+                                   site/rig-mismatched mask is quarantined
+                                   aside on load, never silently kept
   observations/sky_history.jsonl   append-only per-sat az/el/visibility rows
                                    (rolled into the archive by
                                    scripts/archive_roller.py)
@@ -52,33 +59,57 @@ import os
 import sys
 import time
 
-OBS = os.environ.get("HACKRF_GNSS_OBS", "/Volumes/Radiator 8TB/gnss/observations")
-STATE = os.path.join(OBS, "state.sky.json")
-MASK_PATH = os.path.join(OBS, "sky_mask.json")
-HIST = os.path.join(OBS, "sky_history.jsonl")
-TRACKER_STATE = os.path.join(OBS, "state.tracker.json")
-TRACKER_EPH = os.path.join(OBS, "tracker_eph.json")
-BRDC = os.path.join(OBS, "brdc_latest.rnx")
-
-def _load_site():
-    """Canonical site anchor: observations/site.json. NO hardcoded
+def _load_site(obs):
+    """Canonical site anchor: <obs>/site.json. NO hardcoded
     coordinates: a missing anchor is an operator-visible error state, never
     a guessed location. Returns (lat, lon, h_m) or None."""
     try:
-        with open(os.path.join(OBS, "site.json")) as f:
+        with open(os.path.join(obs, "site.json")) as f:
             s = json.load(f)
         return float(s["lat"]), float(s["lon"]), float(s.get("h_m", 20.0))
     except Exception:
         return None
 
 
-SITE = _load_site()  # mast by the window — None when site.json is absent
+def bind_obs(obs_dir):
+    """(Re)bind every observation path to obs_dir. HACKRF_GNSS_OBS sets this
+    at import; tests rebind to a tmp sandbox so they NEVER touch live state
+    (state.sky.json / sky_mask.json / sky_history.jsonl writes included)."""
+    global OBS, STATE, MASK_PATH, HIST, TRACKER_STATE, TRACKER_EPH, BRDC, SITE
+    OBS = obs_dir
+    STATE = os.path.join(OBS, "state.sky.json")
+    MASK_PATH = os.path.join(OBS, "sky_mask.json")
+    HIST = os.path.join(OBS, "sky_history.jsonl")
+    TRACKER_STATE = os.path.join(OBS, "state.tracker.json")
+    TRACKER_EPH = os.path.join(OBS, "tracker_eph.json")
+    BRDC = os.path.join(OBS, "brdc_latest.rnx")
+    SITE = _load_site(OBS)  # mast by the window — None when site.json absent
+
+
+bind_obs(os.environ.get("HACKRF_GNSS_OBS",
+                        "/Volumes/Radiator 8TB/gnss/observations"))
 CADENCE_S = 30.0
 TTL_S = 90.0                       # 3 missed cycles before we tombstone out
 EL_MASK_DEG = 5.0                  # static horizon mask until learned
 BIN_DEG = 5                        # az/el histogram resolution
 MASK_MIN_SAMPLES = 30              # bin needs this many expected samples ...
 MASK_MAX_FRAC = 0.05               # ... and <5% lock rate to count as masked
+
+MASK_SCHEMA = 2           # 2 = provenance block + tracker-health-gated
+                          # learning (2026-08-26); anything older/foreign is
+                          # retired to a .quarantine-* file on load, never
+                          # silently kept — the pre-gate mask taught itself
+                          # receiver outages/realigns as sky blockage
+MASK_MIN_LOCKED = 8       # healthy-track floor: this station holds 9-14 L1
+                          # locks (GPS+BDS+GAL) on a normal pass; below it the
+                          # receiver is degraded (post-restart acquisition, USB
+                          # churn, fade) and absences are receiver artifacts,
+                          # not sky truth
+MASK_LOCK_AGE_FRAC = 0.8  # most locks must predate the covered window (age >=
+                          # CADENCE_S): a realign reseeds every lock age to ~0,
+                          # so this rejects fresh all-zero realign eras
+MASK_SITE_TOL_DEG = 0.005 # ~550 m: anchor self-tightening must not reset the
+                          # mask; a physical antenna move is far larger
 
 # WGS-84 / IS-GPS-200 constants (match src/gps/broadcast.rs)
 A_E = 6378137.0
@@ -517,6 +548,44 @@ def load_tracked(now):
         return {}, True
 
 
+def rig_identity():
+    """Antenna/radio config string for mask provenance: the tracker's GPS L1
+    source name carries rig + antenna + tune (e.g. 'C/A live track ·
+    Pro+AA.250, 16 Msps @ 1568.25 · Presence'). None when unpublished — a
+    mask created then adopts the rig once it appears (see load_mask)."""
+    try:
+        with open(TRACKER_STATE) as fobj:
+            d = json.load(fobj)
+        for s in d.get("sources") or []:
+            if "GPS L1" in (s.get("band") or ""):
+                return s.get("name")
+    except Exception:
+        pass
+    return None
+
+
+def tracker_health(tracked, tracker_stale):
+    """May this pass TEACH the mask? -> (ok, "learning" | "gated:<reason>").
+
+    A dead or realigning receiver reports absences that are receiver
+    artifacts, not sky truth, so gated passes still classify (the panel
+    wants the picture) but never increment the bins. Gates: tracker state
+    fresh (its ttl honoured), >= MASK_MIN_LOCKED channels locked, and
+    >= MASK_LOCK_AGE_FRAC of those locks older than the covered window
+    (a realign reseeds every lock age to ~0; per-sat slip flags are
+    momentary loop events and deliberately NOT a veto — only the wholesale
+    age reset marks a realign era)."""
+    if tracker_stale:
+        return False, "gated:tracker-stale"
+    locked = [r for r in tracked.values() if (r.get("lock_s") or 0) > 0]
+    if len(locked) < MASK_MIN_LOCKED:
+        return False, "gated:few-locks"
+    mature = sum(1 for r in locked if r["lock_s"] >= CADENCE_S)
+    if mature < MASK_LOCK_AGE_FRAC * len(locked):
+        return False, "gated:locks-young"
+    return True, "learning"
+
+
 # --- learned mask -----------------------------------------------------------------
 
 def bin_key(az, el):
@@ -525,16 +594,70 @@ def bin_key(az, el):
     return f"A{a:03d}E{e:+03d}"
 
 
-def load_mask():
+def new_mask(site_ll, rig, now=None):
+    """Empty schema-2 mask with its provenance block. Per-bin sample counts
+    live in bins (exp = expected passes, lock = observed passes)."""
+    now = time.time() if now is None else now
+    return {"schema": MASK_SCHEMA, "bin_deg": BIN_DEG, "epoch": now,
+            "provenance": {
+                "site": {"lat": site_ll[0], "lon": site_ll[1], "h_m": site_ll[2]}
+                        if site_ll else None,
+                "rig": rig,
+                "created_epoch": now,
+                "learn_start_epoch": None,   # first gated-IN pass
+                "passes_learned": 0,
+                "passes_gated": 0,
+            },
+            "bins": {}}
+
+
+def _quarantine_mask(reason):
+    """Move an unusable mask aside — stale knowledge is retired, never
+    silently kept, but also never destroyed (auditability)."""
+    try:
+        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        dst = f"{MASK_PATH}.quarantine-{ts}-{os.getpid()}-{time.time_ns() % 10**9}"
+        os.replace(MASK_PATH, dst)
+        print(f"sky_mask retired ({reason}) -> {os.path.basename(dst)}",
+              file=sys.stderr)
+    except OSError:
+        pass
+
+
+def load_mask(site_ll, rig):
+    """Load the learned mask, enforcing schema + provenance. A mask whose
+    schema predates the gated-learning change, or whose site/rig identity
+    mismatches the current station, is quarantined and learning restarts
+    from an empty mask."""
     try:
         with open(MASK_PATH) as fobj:
             d = json.load(fobj)
-        if isinstance(d.get("bins"), dict):
-            return d
+    except FileNotFoundError:
+        return new_mask(site_ll, rig)
     except Exception:
-        pass
-    return {"bin_deg": BIN_DEG, "site": list(_load_site()) if _load_site() else None,
-            "epoch": 0, "bins": {}}
+        _quarantine_mask("unreadable")
+        return new_mask(site_ll, rig)
+    if d.get("schema") != MASK_SCHEMA or not isinstance(d.get("bins"), dict):
+        _quarantine_mask(f"schema {d.get('schema')!r} != {MASK_SCHEMA}")
+        return new_mask(site_ll, rig)
+    prov = d.setdefault("provenance", {})
+    psite = prov.get("site")
+    if site_ll and psite:
+        if abs(psite.get("lat", 1e9) - site_ll[0]) > MASK_SITE_TOL_DEG or \
+                abs(psite.get("lon", 1e9) - site_ll[1]) > MASK_SITE_TOL_DEG:
+            _quarantine_mask(f"site moved: mask {psite} != current {site_ll}")
+            return new_mask(site_ll, rig)
+    prig = prov.get("rig")
+    if rig and prig and rig != prig:
+        _quarantine_mask(f"rig changed: {prig!r} != {rig!r}")
+        return new_mask(site_ll, rig)
+    # adopt identity fields once known (mask may have been born while the
+    # tracker was down / site anchor briefly absent)
+    if rig and not prig:
+        prov["rig"] = rig
+    if site_ll and not psite:
+        prov["site"] = {"lat": site_ll[0], "lon": site_ll[1], "h_m": site_ll[2]}
+    return d
 
 
 def bin_masked(binc):
@@ -563,7 +686,7 @@ def pass_once(now=None):
     now = now if now is not None else time.time()
     # re-read the anchor every pass: operator edits propagate live, and a
     # missing anchor is an honest error heartbeat, never a guessed location
-    site_ll = _load_site()
+    site_ll = _load_site(OBS)
     if site_ll is None:
         atomic_json(STATE, {"epoch": now, "ttl_s": TTL_S, "sky": {
             "epoch": now, "site": None,
@@ -578,7 +701,9 @@ def pass_once(now=None):
     eph, leap_s, eph_notes = load_ephemeris(now)
     t_sow = gps_sow_unix(now, leap_s)
     tracked, tracker_stale = load_tracked(now)
-    mask = load_mask()
+    rig = rig_identity()
+    mask = load_mask(site_ll, rig)
+    learn_ok, learn_why = tracker_health(tracked, tracker_stale)
 
     sats = []
     counts = {"modeled": 0, "tracked": 0, "absent": 0,
@@ -626,12 +751,20 @@ def pass_once(now=None):
         row = tracked.get(key)
         observed = bool(row and (row.get("lock_s") or 0) > 0)
         bk = bin_key(az, el)
-        binc = mask["bins"].setdefault(bk, {"exp": 0, "lock": 0})
-        if el >= 0.0:
+        binc = mask["bins"].get(bk)
+        # Mask learning is GATED on tracker health: a stale/dead/realigning
+        # receiver must not teach absences — those are receiver artifacts,
+        # not sky truth. Gated passes classify but record nothing, which is
+        # the "receiver unavailable" vs "expected but not acquired"
+        # distinction. Bins are only created by a taught sample (no more
+        # all-zero keys for below-horizon sats).
+        if el >= 0.0 and learn_ok:
+            if binc is None:
+                binc = mask["bins"][bk] = {"exp": 0, "lock": 0}
             binc["exp"] += 1
             if observed:
                 binc["lock"] += 1
-        above = el >= EL_MASK_DEG and not bin_masked(binc)
+        above = el >= EL_MASK_DEG and not bin_masked(binc or {})
         if observed and above:
             cls, counts["tracked"] = "tracked", counts["tracked"] + 1
         elif observed:
@@ -673,12 +806,22 @@ def pass_once(now=None):
     recent_trails = [{"sys": SYS_NAME[k[0]], "prn": k[1], "trail": v}
                      for k, v in sorted(TRAILS.items()) if len(v) >= 2]
 
+    prov = mask.setdefault("provenance", {})
+    if learn_ok:
+        prov["passes_learned"] = int(prov.get("passes_learned", 0)) + 1
+        if not prov.get("learn_start_epoch"):
+            prov["learn_start_epoch"] = now
+    else:
+        prov["passes_gated"] = int(prov.get("passes_gated", 0)) + 1
+
     state = {
         "epoch": now, "ttl_s": TTL_S,
         "sky": {
             "epoch": now,
             "site": [site_lat, site_lon, site_h],
             "mask": {"el_min_deg": EL_MASK_DEG, "bin_deg": BIN_DEG,
+                     "schema": MASK_SCHEMA,
+                     "learning": learn_why,
                      "learned_bins": sum(1 for b in mask["bins"].values()
                                          if bin_masked(b))},
             "counts": counts,
@@ -738,6 +881,7 @@ def main():
                   f"modeled={c['modeled']} tracked={c['tracked']} "
                   f"absent={c['absent']} unexpected={c['unexpected']} "
                   f"predicted={c['predicted']} unmodeled={c['unmodeled']} "
+                  f"mask={st['sky']['mask']['learning']} "
                   f"eph={st['sky']['eph']}")
             if not checked:
                 checked = True

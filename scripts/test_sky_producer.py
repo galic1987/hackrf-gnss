@@ -5,17 +5,29 @@ Known cases:
   - satellite at the site zenith            -> el = +90 deg
   - satellite due east on the horizon       -> el = 0, az = 90 deg
   - circular equatorial orbit at toe        -> ECEF = (a, 0, 0) exactly
-  - live BRDC cross-check (if the real observations dir is present):
-    every currently-locked GPS sat must be above the horizon (sign check)
+  - gated mask learning: stale tracker / fresh realign era / lock floor all
+    gate learning OFF; a healthy tracker teaches "expected but not acquired"
+  - versioned mask load: schema-less / site- / rig-mismatched masks are
+    quarantined aside, matching provenance loads
+  - live BRDC cross-check (if the real observations dir is present): the
+    live INPUTS are copied into a tmp sandbox and pass_once runs there —
+    production state/mask/history are NEVER touched (round-10 finding)
 
   python3 scripts/test_sky_producer.py
 """
+import json
 import math
 import os
+import shutil
 import sys
+import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sky_producer as sp
+
+REAL_OBS = sp.OBS  # live obs dir captured at import — pass_once NEVER runs
+                   # against it; every pass below is rebound to a tmp sandbox
 
 FAILURES = []
 
@@ -228,15 +240,175 @@ def main():
           f"row={rows[0] if rows else None}")
     check("parse_sky survives junk", roller.parse_sky({}) == {})
 
-    # --- live cross-check against the real sky (skipped in sandboxes) -----------
-    if os.path.exists(sp.BRDC) and os.path.exists(sp.TRACKER_STATE):
-        import time as _t
-        st = sp.pass_once(_t.time())
+    # --- sandboxed pass_once: gated mask learning + mask versioning ----------
+    # Every pass_once below runs with paths rebound to a tmp sandbox via
+    # sp.bind_obs — production state.sky.json / sky_mask.json /
+    # sky_history.jsonl are NEVER touched (the old live cross-check mutated
+    # the production mask and appended a production history row: round-10).
+    def sandbox_site():
+        d = tempfile.mkdtemp(prefix="sky_test_")
+        json.dump({"lat": site_ll[0], "lon": site_ll[1], "h_m": site_ll[2]},
+                  open(os.path.join(d, "site.json"), "w"))
+        sp.bind_obs(d)
+        return d
+
+    def sat_row(prn, lock_s, sysn="gps"):
+        return {"prn": prn, "sys": sysn, "lock_s": lock_s,
+                "cn0_proxy": 40.0, "slip": False}
+
+    def tracker_file(d, sats, mtime, ttl=1200.0):
+        p = os.path.join(d, "state.tracker.json")
+        json.dump({"epoch": mtime, "ttl_s": ttl, "tracker": {"sats": sats}},
+                  open(p, "w"))
+        os.utime(p, (mtime, mtime))
+
+    # one GPS record whose sat sits above the site at fix_now (Kepler,
+    # radians — i0=0.96 > 0.6 flips the parser's unit detection; row layout
+    # mirrors the Galileo fixture above: sqrt_a on body line 2, toe/omega0 on
+    # body line 3)
+    days70 = sp.jdn(2026, 8, 26) - sp.jdn(1970, 1, 1)
+    fix_now = float(days70 * 86400 + 12 * 3600 + 28 * 60)   # 2026-08-26T12:28Z
+    toe = sp.gps_sow_unix(fix_now, 18.0)
+    omega0 = (math.radians(site_ll[1]) + sp.OMEGA_E * toe) % (2 * math.pi)
+    nav_txt = ("     3.05           NAVIGATION DATA     MIXED               "
+               "RINEX VERSION / TYPE\n"
+               + " " * 60 + "END OF HEADER\n"
+               + rnx_rec("G", 3, [
+                   (1e-5, 0.0, 0.0),
+                   (0.0, 0.0, 0.0, 0.0),
+                   (0.0, 0.0, 0.0, 5153.6),
+                   (toe, 0.0, omega0, 0.0),
+                   (0.96, 0.0, 0.0, 0.0),
+                   (0.0, 0.0, 2433.0, 0.0),
+                   (0.0, 0.0, 0.0, 0.0),
+                   (0.0, 0.0, 0.0, 0.0)]) + "\n")
+
+    healthy = [sat_row(p, 300.0) for p in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21)]
+
+    # stale tracker: "receiver unavailable" — nothing may be taught
+    d = sandbox_site()
+    open(sp.BRDC, "w").write(nav_txt)
+    tracker_file(d, healthy, fix_now - 3600.0)          # mtime way past ttl
+    st = sp.pass_once(fix_now)
+    m = json.load(open(sp.MASK_PATH))
+    check("stale tracker gates learning off",
+          st["sky"]["mask"]["learning"] == "gated:tracker-stale"
+          and m["bins"] == {})
+    check("gated pass counted as gated, not learned",
+          m["provenance"]["passes_gated"] == 1
+          and m["provenance"]["passes_learned"] == 0)
+    check("stale pass still classifies (panel picture)",
+          any(s["cls"] == "absent" for s in st["sky"]["sats"]))
+
+    # fresh realign era: locks younger than the covered window (post-restart)
+    d = sandbox_site()
+    open(sp.BRDC, "w").write(nav_txt)
+    young = [sat_row(p, 10.0) for p in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21)]
+    tracker_file(d, young, fix_now)
+    st = sp.pass_once(fix_now)
+    check("young locks (realign era) gate learning off",
+          st["sky"]["mask"]["learning"] == "gated:locks-young"
+          and json.load(open(sp.MASK_PATH))["bins"] == {})
+
+    # fresh but below the healthy lock floor
+    tracker_file(d, [sat_row(p, 300.0) for p in (3, 5, 7)], fix_now)
+    st = sp.pass_once(fix_now)
+    check("below lock floor gates learning off",
+          st["sky"]["mask"]["learning"] == "gated:few-locks"
+          and json.load(open(sp.MASK_PATH))["bins"] == {})
+
+    # healthy tracker: learning ON; modeled+locked sat tracked
+    d = sandbox_site()
+    open(sp.BRDC, "w").write(nav_txt)
+    tracker_file(d, healthy, fix_now)
+    st = sp.pass_once(fix_now)
+    g3 = [s for s in st["sky"]["sats"] if s["sys"] == "gps" and s["prn"] == 3]
+    m = json.load(open(sp.MASK_PATH))
+    check("healthy tracker teaches the mask (exp+lock)",
+          st["sky"]["mask"]["learning"] == "learning"
+          and sum(b["exp"] for b in m["bins"].values()) == 1
+          and sum(b["lock"] for b in m["bins"].values()) == 1,
+          f"bins={m['bins']}")
+    check("provenance learn-start + pass counts set",
+          m["provenance"]["learn_start_epoch"] == fix_now
+          and m["provenance"]["passes_learned"] == 1)
+    check("modeled+locked sat classified tracked", bool(g3)
+          and g3[0]["cls"] == "tracked", f"{g3}")
+
+    # healthy tracker, modeled sat unobserved: "expected but not acquired" IS
+    # taught (exp without lock) — the distinction from the gated cases above
+    d = sandbox_site()
+    open(sp.BRDC, "w").write(nav_txt)
+    tracker_file(d, [sat_row(p, 300.0)
+                     for p in (5, 7, 9, 11, 13, 15, 17, 19, 21, 23)], fix_now)
+    st = sp.pass_once(fix_now)
+    g3 = [s for s in st["sky"]["sats"] if s["sys"] == "gps" and s["prn"] == 3]
+    m = json.load(open(sp.MASK_PATH))
+    check("not-acquired sat taught as absent (exp without lock)",
+          bool(g3) and g3[0]["cls"] == "absent"
+          and sum(b["exp"] for b in m["bins"].values()) == 1
+          and sum(b["lock"] for b in m["bins"].values()) == 0)
+
+    # --- versioned load: old schema / mismatched provenance are retired ------
+    d = sandbox_site()
+    old = {"bin_deg": 5, "site": [39.0, -77.6, 20.0], "epoch": 1,
+           "bins": {"A000E+00": {"exp": 100, "lock": 0}}}
+    json.dump(old, open(sp.MASK_PATH, "w"))
+    m = sp.load_mask(site_ll, "test-rig")
+    q = [f for f in os.listdir(d) if f.startswith("sky_mask.json.quarantine-")]
+    check("schema-less mask retired to fresh schema 2",
+          m["schema"] == sp.MASK_SCHEMA and m["bins"] == {})
+    check("retired mask quarantined, not deleted",
+          len(q) == 1
+          and json.load(open(os.path.join(d, q[0])))["bins"] == old["bins"],
+          f"quarantine={q}")
+    check("fresh mask carries provenance (site/rig/epochs/counts)",
+          m["provenance"]["site"]["lat"] == site_ll[0]
+          and m["provenance"]["rig"] == "test-rig"
+          and m["provenance"]["created_epoch"] > 0
+          and m["provenance"]["passes_learned"] == 0)
+
+    moved = {"schema": sp.MASK_SCHEMA, "bin_deg": 5, "epoch": 1,
+             "provenance": {"site": {"lat": 10.0, "lon": 10.0, "h_m": 0.0},
+                            "rig": "test-rig", "created_epoch": 1,
+                            "learn_start_epoch": 1, "passes_learned": 5,
+                            "passes_gated": 0},
+             "bins": {"A000E+00": {"exp": 50, "lock": 1}}}
+    json.dump(moved, open(sp.MASK_PATH, "w"))
+    m = sp.load_mask(site_ll, "test-rig")
+    check("site-mismatched mask retired", m["bins"] == {})
+
+    json.dump(moved, open(sp.MASK_PATH, "w"))
+    m = sp.load_mask(site_ll, "other-rig")
+    check("rig-mismatched mask retired", m["bins"] == {})
+
+    ok_mask = dict(moved)
+    ok_mask["provenance"] = dict(moved["provenance"],
+                                 site={"lat": site_ll[0], "lon": site_ll[1],
+                                       "h_m": site_ll[2]})
+    json.dump(ok_mask, open(sp.MASK_PATH, "w"))
+    m = sp.load_mask(site_ll, "test-rig")
+    check("matching provenance mask kept (bins intact)",
+          m["bins"].get("A000E+00") == {"exp": 50, "lock": 1})
+
+    # --- live cross-check in a sandbox: copies the live INPUTS (site anchor,
+    # BRDC, tracker eph + state — mtimes preserved so ttl semantics hold) and
+    # runs pass_once against the copies. Writes land in the sandbox only. -----
+    live_inputs = [os.path.join(REAL_OBS, f) for f in
+                   ("site.json", "brdc_latest.rnx", "tracker_eph.json",
+                    "state.tracker.json")]
+    if all(os.path.exists(p) for p in live_inputs):
+        d = tempfile.mkdtemp(prefix="sky_live_")
+        for p in live_inputs:
+            shutil.copy2(p, os.path.join(d, os.path.basename(p)))
+        sp.bind_obs(d)
+        st = sp.pass_once(time.time())
         if st is None:
             check("live pass has an anchor", False, "pass_once returned None")
             st = {"sky": {"sats": [], "counts": {}, "eph": "?"}}
         sky = st["sky"]
-        print(f"  live: eph={sky['eph']} counts={sky['counts']}")
+        print(f"  live: eph={sky['eph']} counts={sky['counts']} "
+              f"learning={sky['mask']['learning']}")
         locked_low = [s for s in sky["sats"]
                       if s["cls"] == "unexpected" and s["el_deg"] < -2.0]
         check("no locked sat deep below horizon (sign check)", not locked_low,
@@ -265,6 +437,10 @@ def main():
                    if s["cls"] == "unexpected" and s["el_deg"] < -2.0]
         check("no locked galileo deep below horizon", not gal_low,
               f"{[(s['prn'], s['el_deg']) for s in gal_low]}")
+        check("live pass wrote only into the sandbox",
+              all(os.path.exists(os.path.join(d, f)) for f in
+                  ("state.sky.json", "sky_mask.json", "sky_history.jsonl"))
+              and sp.MASK_PATH.startswith(d))
     else:
         print("skip  live cross-check (no observations dir)")
 

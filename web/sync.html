@@ -333,10 +333,10 @@
   <div class="card s5 acc-blue">
     <h2>Sky visibility &mdash; expected vs observed</h2>
     <div id="sky"><span class="dim">waiting for sky producer&hellip;</span></div>
-    <span class="cap">Broadcast-ephemeris az/el for every GPS + BeiDou satellite, diffed against the live tracker
+    <span class="cap">Broadcast-ephemeris az/el for every GPS + BeiDou + Galileo satellite (GLONASS too — hollow, predicted-only: the L1 tracker can't hear 1602 MHz), diffed against the live tracker
     every 30 s. <span class="ok">teal</span> = tracked as expected, <span class="neg">red</span> = above the mask but
     not tracked (blockage/fade), <span class="warn">amber</span> = tracked below the mask &mdash; reflection or spoof
-    candidate. A persistent 5&deg;&times;5&deg; lock histogram (<span class="tip" tabindex="0" data-tip-title="Learned sky mask" data-tip="observations/sky_mask.json — every cycle adds each modeled sat's bin to exp, each locked sat to lock; bins with ≥30 samples and <5% lock rate count as masked.">learned mask</span>)
+    candidate. A persistent 5&deg;&times;5&deg; lock histogram (<span class="tip" tabindex="0" data-tip-title="Learned sky mask" data-tip="observations/sky_mask.json — schema 2: learns ONLY from healthy tracker eras (fresh state, ≥8 locked, locks older than the window); receiver-unavailable periods teach nothing. Bins with ≥30 samples and <5% lock rate count as masked. Versioned by site+rig — a mismatch retires the old mask to a quarantine file.">learned mask</span>)
     paints this antenna's true window-shaped sky over days.</span>
   </div>
 
