@@ -236,13 +236,18 @@ fn main() {
     let mut last_cache_write = 0.0f64;
 
     // discipline state
-    // the register survives process restarts (only a reflash zeroes it),
-    // so the model must too — otherwise the loop re-learns the offset over
-    // several cycles
+    // The cache is HISTORICAL INTENT, not applied truth (review round 6):
+    // it survives process restarts but NOT the board reset in the restart
+    // procedure — after a reset the register is unity while this file still
+    // says otherwise. Only a write that succeeded THIS run makes the
+    // correction "applied" (corr_applied, published); everything else is
+    // belief, and downstream voters must not add it back.
     let mut corr: f64 = std::fs::read_to_string(CORR_CACHE)
         .ok()
         .and_then(|t| t.trim().parse().ok())
         .unwrap_or(0.0);
+    // set true only by a successful hardware write below
+    let mut corr_written_this_run = false;
     // Sign: resid := doppler_meas/f, and downconversion negates the clock
     // error (f_bb = f_rf - f_lo), so resid = -(clock err) and the register
     // drives resid_new = resid - corr_step. Zero-seeking is corr += resid.
@@ -438,10 +443,12 @@ fn main() {
                         // radio (review round 6). Log loudly; the failed
                         // retune only means the LO may not have re-synced.
                         corr = new_corr;
+                        corr_written_this_run = true;
                         note = format!("retune FAILED ({e}) after successful write — adopted {corr:+.4} ppm to match hardware");
                         eprintln!("live_radio: {note}");
                     } else {
                         corr = new_corr;
+                        corr_written_this_run = true;
                         // Firmware truth (radio.c): mid-stream, the correction
                         // only re-programs the AFE/sample clock. The LO synth
                         // is NOT re-programmed unless a frequency update runs
@@ -489,6 +496,11 @@ fn main() {
                 // shadow is a published runtime state (review round 4), and
                 // "loop closed" must never appear while shadowing
                 "actuate": actuate,
+                // the correction is "applied" only when THIS process wrote
+                // it successfully (review round 6: the cache is historical
+                // intent; the board reset in the restart procedure returns
+                // the hardware to unity)
+                "corr_applied": corr_written_this_run,
                 "note": if !actuate && !note.starts_with("SHADOW") {
                     format!("SHADOW (not actuating): {note}")
                 } else {

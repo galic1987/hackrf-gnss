@@ -197,8 +197,14 @@ def publish(sats, now, disc=None):
         # voter (ATSC ch35 via CLKOUT, PC clock) measures the RAW TCXO, so
         # add the correction back — otherwise the row votes ~0 into a
         # consensus of -0.47 and pulls it to a meaningless midpoint.
-        corr = (disc or {}).get("correction_ppm") or 0.0
-        ppm += corr
+        # BUT (review round 6): the cache is historical intent, not applied
+        # truth — after the restart procedure's board reset the register is
+        # unity while the cache still believes. Add back only a correction
+        # this live_radio process verifiably wrote (actuate + corr_applied).
+        disc_d = disc or {}
+        corr = disc_d.get("correction_ppm") or 0.0
+        if disc_d.get("actuate") and disc_d.get("corr_applied"):
+            ppm += corr
         srcs.append({
             "band": MY_BAND,
             "name": "WAAS GEO live Doppler + corr register · Pro+AA.250, 1 Hz tracker",

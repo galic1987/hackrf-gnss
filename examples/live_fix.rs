@@ -27,6 +27,25 @@ fn alt_sane(alt_km: f64) -> bool {
     alt_km.is_finite() && alt_km >= ALT_SANE_KM.0 && alt_km <= ALT_SANE_KM.1
 }
 
+/// Trust split (review round 6): equation REDUNDANCY is not VALIDITY.
+/// `gate` (existing) speaks to geometry only. `integrity_valid` adds
+/// plausibility bounds a solve can fail while being technically redundant
+/// (observed live: a 6-sat fix with 105 m rms; a mixed fix with a 10,369 km
+/// intersystem "bias" — one BDS row absorbed entirely by its clock term).
+/// `trusted_for_history` = redundant AND integrity_valid. Exact solves are
+/// diagnostic, never trusted.
+const RMS_INTEGRITY_M: f64 = 50.0; // beyond this the solve measures outliers
+const ISX_SANE_KM: f64 = 50.0; // GPS-BDS clock offset is ~10 km class
+
+fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64) -> (bool, bool, bool) {
+    let geometry_redundant = n_sat >= redundant_at;
+    let integrity_valid = rms_m.is_finite()
+        && rms_m < RMS_INTEGRITY_M
+        && isx_km.map_or(true, |x| x.is_finite() && x.abs() < ISX_SANE_KM)
+        && alt_sane(alt_km);
+    (geometry_redundant, integrity_valid, geometry_redundant && integrity_valid)
+}
+
 /// Multi-GEO merge of one fast-correction row into the map: several locked
 /// SBAS channels (different GEOs) can publish a row for the same GPS PRN.
 /// Keep the row with the freshest insert age; a material disagreement
@@ -531,6 +550,8 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (geo_red, integ, trusted) =
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km);
             println!(
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, gate
@@ -544,6 +565,8 @@ fn main() {
                     "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
                     "gate": gate,
+                    "geometry_redundant": geo_red, "integrity_valid": integ,
+                    "trusted_for_history": trusted,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
@@ -633,6 +656,11 @@ fn main() {
                                 "gdop": fi.gdop, "n_sat": fi.n_sat,
                                 "mode": "2D(alt-hold)",
                                 "gate": gate,
+                                // a LOO-excluded subset solve is diagnostic,
+                                // never trusted for history (round 6)
+                                "geometry_redundant": false,
+                                "integrity_valid": fi.residual_rms_m < RMS_INTEGRITY_M && alt_sane(fi.alt_km),
+                                "trusted_for_history": false,
                                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                                 "loo": loo_note,
@@ -701,6 +729,8 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (geo_red, integ, trusted) =
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km);
             println!(
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, gate
@@ -713,6 +743,8 @@ fn main() {
                     "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
                     "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
                     "gate": gate,
+                    "geometry_redundant": geo_red, "integrity_valid": integ,
+                    "trusted_for_history": trusted,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
@@ -751,6 +783,8 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (geo_red, integ, trusted) =
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km);
             let doc = serde_json::json!({
                 "epoch": now,
                 "ttl_s": 900,
@@ -763,6 +797,8 @@ fn main() {
                     "gdop": f.gdop,
                     "n_sat": f.n_sat,
                     "gate": gate,
+                    "geometry_redundant": geo_red, "integrity_valid": integ,
+                    "trusted_for_history": trusted,
                     "corr_note": "code-phase snapshot path — WAAS corrections not applicable to this measurement model",
                     "source": "live tracker code phases + BRDC ephemeris",
                 }
@@ -786,6 +822,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Trust split (review round 6): redundancy is not validity — a
+    /// redundant solve with 105 m rms or a 10,369 km isx is NOT
+    /// integrity-valid; an exact solve is never trusted for history.
+    #[test]
+    fn trust_fields_separates_geometry_from_validity() {
+        // clean redundant solve: trusted
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02), (true, true, true));
+        // redundant geometry but 105 m rms (observed live): not valid
+        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02), (true, false, false));
+        // absurd intersystem bias (10,369 km observed): not valid
+        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02), (true, false, false));
+        // exact solve: never trusted, even when clean
+        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02), (false, true, false));
+        // impossible altitude: not valid
+        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0), (true, false, false));
+    }
 
     /// Multi-GEO merge (review round 4): the freshest row wins; material
     /// disagreement (|Δprc| > 2 m) is noted once per PRN with the largest
