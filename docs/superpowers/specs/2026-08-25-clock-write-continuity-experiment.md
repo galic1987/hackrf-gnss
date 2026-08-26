@@ -111,6 +111,36 @@ that establishes what a write physically does to the tick rate. The tick
 half remains runnable any time. Re-actuation stays off the table until the
 leg has run.
 
+## Window results (2026-08-26 ~21:00-21:30 UTC, user present, Bodnar LBE-1421 online)
+
+Register-semantics chain MEASURED end to end (hackrf_debug --radio -n 23 -r,
+bank 0 = APPLIED):
+- fresh power-on: 0xFFFFFFFFFFFFFFFF (RADIO_UNSET; the getter maps it to 0 ppm)
+- after boot init: 0x8000000000000000 (FRAC_ONE = unity)
+- after `--clock-corr 0.1`: requested == applied == FRAC_ONE + 0.1 ppm exactly
+- after `hackrf_spiflash -R`: back to 0xFFFF... (UNSET)
+The six-round 0.34 ppm puzzle is CLOSED on the register side: the applied
+bank sat at unity while the software spoke of -0.3378 ppm — a phantom
+cached-intent baseline (the 07:58 +0.3398 ppm step was the add-back removal,
+as the double-count evidence said). hackrf_pro's own printout says
+"(applied: 0.00 ppm)" regardless — cosmetic tool text; the register readback
+is the truth. CAVEAT on the write leg: pkill self-matched the wrapper
+(`pkill -f tracker_producer.py` matches the invoking shell's own cmdline) so
+live_radio kept streaming — the +0.1 ppm write landed on a LIVE tracker.
+The register semantics are unaffected (firmware bookkeeping), but the
+tracker-quiescent purity the full matrix wants was not achieved; the
+lock-collapse/phase-step cells remain for the dedicated bench session.
+Future windows: break the pattern up (`'tracker''_producer'`) so pkill
+cannot self-match.
+
+Clock chain activated: Bodnar 10 MHz -> Pro#1 CLKIN (P1) -> CLKOUT ->
+Pro#2 CLKIN (switched via a forced 1-s RX; dormant radios never switch) ->
+CLKOUT -> One CLKIN. Post-restart: WAAS-measured residual collapsed from
+the -0.34 ppm TCXO era to -0.0011 ppm; the One's ATSC pilot offset went
++1.72 ppm -> -0.052 ppm with SNR 16 -> 55 dB; 15/15 tracker locks in 4 min.
+The site anchor is now Bodnar-surveyed (site.json: 39.0029556, -77.6051478,
+77.1 m ellipsoidal, ~2 m class, survey-in).
+
 ## Safety
 
 Shadow mode stays on except the scripted single writes; each write is
