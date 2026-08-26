@@ -477,9 +477,9 @@ fn main() {
                     .unwrap_or(false);
                 // IOD gate (DO-229D Table A-10 Note 3): the LT correction is
                 // valid only against the ephemeris issue it names. Self-
-                // decoded ephemerides carry IODE and can be checked; BRDC
-                // ones can't (RINEX has no IODE) and apply unverified —
-                // counted separately so the panel can tell.
+                // decoded LNAV and BRDC GPS records both carry IODE (RINEX-3
+                // line 2 field 1) and are checked; anything else applies
+                // unverified — counted separately so the panel can tell.
                 let lt_ok = lt_nonzero
                     && match lt {
                         Some((c, _)) => match eph.iode {

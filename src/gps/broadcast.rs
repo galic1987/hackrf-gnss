@@ -47,10 +47,11 @@ pub struct BrdcEph {
     pub af1: f64,
     pub af2: f64,
     pub tgd: f64,
-    /// Issue of data, ephemeris — Some only for self-decoded LNAV (RINEX
-    /// has no IODE field; BRDC-derived ephemerides stay None =
-    /// unverifiable). WAAS LT corrections are valid only when their IOD
-    /// matches this (DO-229D Table A-10 Note 3).
+    /// Issue of data, ephemeris. Some for self-decoded LNAV AND for BRDC
+    /// GPS records (RINEX-3 line 2 field 1 = IODE, the 8 LSB of IODC);
+    /// None only where truly unverifiable (BDS BRDC records carry AODE,
+    /// a different quantity, and stay None). WAAS LT corrections are valid
+    /// only when their IOD matches this (DO-229D Table A-10 Note 3).
     #[serde(default)]
     pub iode: Option<u8>,
 }
@@ -148,7 +149,11 @@ pub fn parse_rinex_gps(text: &str) -> HashMap<u8, BrdcEph> {
         let e = BrdcEph {
             sys: 0,
             prn,
-            iode: None, // RINEX nav records carry no IODE — unverifiable
+            // RINEX-3 GPS nav line 2 field 1 IS the IODE (8 LSB of IODC,
+            // DO-229D's link between SBAS long-term corrections and the GPS
+            // broadcast ephemeris). The old comment claiming RINEX carries
+            // no IODE was wrong (round-10 review).
+            iode: Some(f(0, 0) as u8),
             af0: df(fld(ln, 23, 42)),
             af1: df(fld(ln, 42, 61)),
             af2: df(fld(ln, 61, 80)),
@@ -301,6 +306,8 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         // top (toe-toc == -18 s on every one of 126 live BRDC records).
         assert!((e.toc - 345600.0).abs() < 1e-6, "toc {} must equal toe (GPST epochs)", e.toc);
         assert!((e.af0 - (-1.0e-4)).abs() < 1e-12);
+        // line 2 field 1 is the IODE (100 in this fixture)
+        assert_eq!(e.iode, Some(100));
         // angular field converted semicircles -> radians (M0 = 0.3 * pi)
         assert!((e.m0 - 0.3 * PI).abs() < 1e-9);
         // and the orbit it describes is a sane GPS radius
