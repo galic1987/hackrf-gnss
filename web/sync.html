@@ -226,14 +226,14 @@
 
   <!-- signal journey: live value + precision badge per pipeline stage -->
   <div class="card s12">
-    <h2 class="tip" tabindex="0" data-tip-title="Signal journey" data-tip="The path every measurement takes, from the satellite's transmit antenna to the disciplined clock this station exports — each stage shows its live value and the precision that stage can honestly claim.">Signal journey &mdash; live precision at every stage</h2>
+    <h2 class="tip" tabindex="0" data-tip-title="Signal journey" data-tip="The path every measurement takes, from the satellite's transmit antenna to the clock this station measures (discipline is shadow-only — computed, never written). Each stage shows its live value and the precision that stage can honestly claim.">Signal journey &mdash; live precision at every stage</h2>
     <div class="jchain" id="journey"><span class="dim">waiting for data&hellip;</span></div>
     <div class="sumgrid" id="jsummary"></div>
   </div>
 
   <!-- 60 Hz carrier phase -->
   <div class="card s7 acc-cyan">
-    <h2>60 Hz carrier phase &mdash; sub-mm displacement</h2>
+    <h2>60 Hz carrier phase &mdash; relative displacement (diagnostic)</h2>
     <div id="phase"><span class="dim">waiting for phase producer&hellip;</span></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Carrier-phase displacement" data-tip="Unwrapped carrier phase of the ATSC ch35 pilot × λ (≈497.7 mm), in mm of relative path change, last 60 s. Sub-mm sensitivity; the absolute zero wanders with multipath and atmosphere, so read the wiggles, not the offset."><canvas id="phasechart" class="cv"></canvas></div>
     <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the CLKIN-locked One;
@@ -278,11 +278,11 @@
   <!-- ENU in time -->
   <div class="card s12 acc-green">
     <h2>Position &mdash; ENU in time</h2>
-    <div class="cvw tip" tabindex="0" data-tip-title="ENU in time" data-tip="Every 5-min fix as East/North/Up metres relative to the surveyed antenna, last 3 h. Filled markers are gated (redundant) fixes; the robust median ± 8×MAD axis keeps one bad fix from flattening the rest — outliers are marked at the edge instead."><canvas id="posenu" class="cv"></canvas></div>
+    <div class="cvw tip" tabindex="0" data-tip-title="ENU in time" data-tip="Every fix as East/North/Up metres relative to the site anchor (site.json, self-bootstrapped — never surveyed), last 3 h. Filled markers are gated (redundant) fixes; the robust median ± 8×MAD axis keeps one bad fix from flattening the rest — outliers are marked at the edge instead."><canvas id="posenu" class="cv"></canvas></div>
     <div id="posenulegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Inter-system clock strip" data-tip="GPS minus BeiDou receiver clock from the mixed solves, in km of light-travel. A stable line means both constellations agree; a spoofer faking one side breaks it — this is the anti-spoof observable."><canvas id="posisx" class="cv"></canvas></div>
     <div id="posisxlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
-    <span class="cap">Every 5-min snapshot fix, converted to <b>ENU</b> metres relative to the surveyed site, last 3 h.
+    <span class="cap">Every 5-min snapshot fix, converted to <b>ENU</b> metres relative to the site anchor, last 3 h.
     <span class="ok">teal</span> = East, <span class="warn">amber</span> = North, <span style="color:#90caf9">blue</span> = Up.
     <b>Filled</b> markers = gated (redundant) fixes; <b>open</b> = ungated exact solves (unverifiable &mdash; honesty stays visible);
     <span style="color:#ce93d8">purple edge</span> = mixed GPS+BDS solve. The y axis is robust: median &plusmn; 8&times;<span class="tip" tabindex="0" data-tip-title="MAD" data-tip="Median Absolute Deviation — the median of |value − median|. Robust to outliers the way the plain standard deviation is not: one 500 km blip cannot stretch this axis.">MAD</span>
@@ -311,7 +311,7 @@
 
   <!-- merged rotatable 3D scatter with animated replay -->
   <div class="card s12 acc-green">
-    <h2 class="tip" tabindex="0" data-tip-title="3D position scatter" data-tip="The last 60 position fixes as East/North/Up metres around the surveyed antenna, in one rotatable 3D view (hand-rolled projection — no WebGL). Drag to rotate, scroll to zoom. Replay walks the fixes in time order: a healthy static station draws a tight standing cloud, not a wandering one.">Position scatter &mdash; merged 3D, last 60 fixes
+    <h2 class="tip" tabindex="0" data-tip-title="3D position scatter" data-tip="The last 60 position fixes as East/North/Up metres around the site anchor, in one rotatable 3D view (hand-rolled projection — no WebGL). Drag to rotate, scroll to zoom. Replay walks the fixes in time order: a healthy static station draws a tight standing cloud, not a wandering one.">Position scatter &mdash; merged 3D, last 60 fixes
       <span style="float:right;font-weight:400">
         <button class="segbtn" id="scat3dplay">&#9654; replay</button>
         <button class="segbtn" id="scat3dreset">reset view</button>
@@ -875,7 +875,7 @@ function renderJourney(st) {
       ? "±" + d.step_limit_ppm + " ppm steps · ±" + d.clamp_ppm + " ppm clamp"
       : "±0.1 ppm steps · ±2 ppm clamp"),
     "Discipline loop",
-    "A slow software loop compares the WAAS GEO carriers — near-zero Doppler, so perfect always-on frequency references — against the local clock and nudges the FPGA clock-correction register in ±0.1 ppm steps, clamped to ±2 ppm. Inside the deadband it holds; STALLED means the references went away and the correction is frozen, not wrong."));
+    "A slow software loop compares the WAAS GEO carriers — near-zero Doppler, so convenient always-on frequency references (GEO motion floors them at ~±0.03 ppm) — against the local clock. Discipline currently runs SHADOW: the correction is computed and logged but never written, because every write was proven to collapse all tracker locks for ~1 min (122/122 in the archive)."));
 
   // 7. Disciplined clock out
   var res = c.residual_ppm;
@@ -906,7 +906,7 @@ function renderSummary(st) {
     "Timekeeping — the bottom line",
     "One clock, measured by every reference on this page, steered to zero by the discipline loop. 1 ppb = 1 ns of error per second; under ±0.05 ppm (±50 ns/s) is healthy for this station."));
 
-  // Position: latest fix vs the surveyed site (uses POS_SITE updated in render)
+  // Position: latest fix vs the site anchor (uses POS_SITE updated in render)
   var fixes = st.position_history || [];
   var src = null, i;
   for (i = fixes.length - 1; i >= 0; i--) {
@@ -920,16 +920,16 @@ function renderSummary(st) {
     if (hd > 1e5) {
       headline = "fix untrusted";
       sentence = "last solve landed " + fmtInt(hd / 1000) +
-        " km from the surveyed site — shown for honesty, ignored for precision (see Position fix card).";
+        " km from the site anchor — shown for honesty, ignored for precision (see Position fix card).";
     } else {
       headline = hd.toFixed(1) + " m";
-      sentence = "latest fix sits this far horizontally from the surveyed antenna point (Up " +
+      sentence = "latest fix sits this far horizontally from the site anchor (Up " +
         sgn(enu[2]) + Math.abs(enu[2]).toFixed(1) + " m) — a static station should hold metre-class.";
     }
   }
   cards.push(sumCard("green", "Position", headline, sentence,
     "Position — the bottom line",
-    "The latest 5-min snapshot fix converted to East/North/Up metres against the surveyed antenna point. A static station should sit within a few metres; residual rms and the gate flag say how much to believe any single fix, and a fix far from the survey is marked untrusted rather than hidden."));
+    "The latest fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). A static station should sit within a few metres; residual rms and the gate flag say how much to believe any single fix, and a fix far from the survey is marked untrusted rather than hidden."));
 
   // Displacement
   var ph = st.phase;
@@ -1034,7 +1034,7 @@ function drawPosEnu(fixes) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     ctx.fillText((v >= 0 ? "+" : "") + v.toFixed(1) + " m", 4, Math.min(Math.max(y - 2, 10), H - 2));
   });
-  if (lo < 0 && hi > 0) {           // zero line: the surveyed site itself
+  if (lo < 0 && hi > 0) {           // zero line: the site anchor itself
     ctx.strokeStyle = "#37474f"; ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(W, Y(0)); ctx.stroke();
   }
   var outFix = pts.map(function (p) {   // fix-level outlier: any component clipped
@@ -1419,7 +1419,7 @@ var GLOSSARY = {
   "LO": "Local Oscillator — the radio's tuning reference; its error IS the clock error we measure.",
   "I/Q": "In-phase/Quadrature — the two components of a complex radio sample. Everything here is computed on I/Q streams.",
   "ECEF": "Earth-Centered Earth-Fixed coordinates — XYZ in km from Earth's center; how solvers express position.",
-  "ENU": "East-North-Up — local meters-level frame. Position errors are shown in ENU relative to the surveyed station.",
+  "ENU": "East-North-Up — local meters-level frame. Position errors are shown in ENU relative to the site anchor.",
   "TOW": "Time of Week — the GPS nav message's seconds-into-week field; how a receiver learns absolute time.",
   "TLE": "Two-Line Element set — a satellite's public orbit prediction. ~1 km-class error, the dominant position error source for Doppler fixes.",
   "UTC(SU)": "Soviet/Russian UTC realization — GLONASS broadcasts it natively, no leap-second bookkeeping needed.",
@@ -1744,10 +1744,12 @@ function render(st) {
   var pos = st.position;
   var posEl = document.getElementById("position");
   if (pos && pos.lat !== undefined) {
-    // Plausibility gate: the station is static and surveyed. An exactly-
-    // determined 4-sat solve has ZERO residual by construction, so rms
-    // cannot flag a bad-anchor fix — distance from the surveyed site can.
-    var SURVEY = [39.0042, -77.6095];   // surveyed site (Virginia; was NYC before the 2026-08 move)
+    // Plausibility gate: the station is static with a known anchor. An
+    // exactly-determined 4-sat solve has ZERO residual by construction, so
+    // rms cannot flag a bad-anchor fix — distance from the site anchor can.
+    // Uses the LIVE anchor (POS_SITE, from state site / site.json),
+    // updated in render — never a hardcoded coordinate.
+    var SURVEY = [POS_SITE.lat, POS_SITE.lon];
     var dLat = (pos.lat - SURVEY[0]) * 111.0;                       // km
     var dLon = (pos.lon - SURVEY[1]) * 111.0 * Math.cos(pos.lat * Math.PI / 180);
     var distKm = Math.sqrt(dLat * dLat + dLon * dLon);
@@ -1763,7 +1765,7 @@ function render(st) {
     var honest = !implausible && rmsKnown && pos.residual_rms_m < 1000 && !exactSolve;
     var qual = implausible
       ? ' <span class="pill warn">IMPLAUSIBLE — ' + distKm.toFixed(0) +
-        " km from the surveyed site; 4-sat solve has no redundancy to catch a bad anchor</span>"
+        " km from the site anchor; 4-sat solve has no redundancy to catch a bad anchor</span>"
       : !rmsKnown
         ? ' <span class="pill dim">rms — (partial write)</span>'
         : exactSolve
@@ -2036,7 +2038,7 @@ function drawScat3d(st) {
     ctx.fillText(ax.name + " " + (lims[ax.c][1] >= 0 ? "+" : "") + lims[ax.c][1].toFixed(1) + " m", pb[0] + 4, pb[1]);
     ctx.fillText(lims[ax.c][0].toFixed(1) + " m", pa[0] + 4, pa[1]);
   });
-  // the surveyed site itself: white cross at ENU (0,0,0)
+  // the site anchor itself: white cross at ENU (0,0,0)
   var ps = P([0, 0, 0]);
   ctx.strokeStyle = "#eceff1"; ctx.lineWidth = 1.4;
   ctx.beginPath(); ctx.moveTo(ps[0] - 5, ps[1]); ctx.lineTo(ps[0] + 5, ps[1]);
@@ -3029,7 +3031,7 @@ var TOUR = [
   { sel: "#skydome", title: "Where the satellites are",
     text: "A rotatable dome of our sky. Colour = constellation; a blue/orange ring = the satellite approaching/receding (live Doppler); dashed ring = the horizon mask. Drag it. Hover any dot." },
   { sel: "#scat3d", title: "Where the fixes land",
-    text: "The last 60 position fixes in 3D around the surveyed antenna. Press ▶ replay to watch them accumulate — a static station should draw a tight standing cloud." },
+    text: "The last 60 position fixes in 3D around the site anchor. Press ▶ replay to watch them accumulate — a static station should draw a tight standing cloud." },
   { sel: "#rfcard", title: "Inside the radio",
     text: "The hardware chain every sample travels — antenna, transceiver, ADC, FPGA timestamps, ARM cores, USB — with live values bolted on: tick rate, correction ppm, consensus." },
   { sel: "#leadcard", title: "The leaderboard",
