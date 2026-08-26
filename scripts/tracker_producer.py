@@ -133,10 +133,13 @@ def open_stream():
 
 def read_consensus():
     """Cross-producer consensus clock drift (ppm), if the series producer
-    has published one recently."""
+    has published one recently. Suspect consensus (unarbitrated 2-voter
+    midpoint / single voter) publishes consensus_ppm:null plus a
+    candidate_midpoint_ppm — the candidate is diagnostics, never a voter
+    input (round-8 null-consensus law)."""
     try:
         d = json.load(open("/Volumes/Radiator 8TB/gnss/observations/state.series.json"))
-        if time.time() - d.get("epoch", 0) < 600:
+        if time.time() - d.get("epoch", 0) < 600 and not d.get("consensus_suspect"):
             return d.get("consensus_ppm")
     except Exception:
         pass

@@ -228,8 +228,16 @@ def main():
             "alerts": xalerts,
         }
         if cons is not None:
-            out["consensus_ppm"] = round(cons, 4)
-            out["consensus_voters"] = len(voters)
+            if suspect:
+                # Null-consensus law (round-8 review): an unarbitrated
+                # midpoint is NOT a consensus — never publish it as a
+                # number downstream math can consume. The midpoint stays
+                # visible as a diagnostic candidate.
+                out["consensus_ppm"] = None
+                out["candidate_midpoint_ppm"] = round(cons, 4)
+            else:
+                out["consensus_ppm"] = round(cons, 4)
+                out["consensus_voters"] = len(voters)
         if suspect:
             # the panel must show the midpoint is unarbitrated, not a number
             out["consensus_suspect"] = True
