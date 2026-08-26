@@ -395,7 +395,9 @@ pub struct Channel {
     /// CRC-proven pairing break (sbas_reset) — but NOT on fades/gaps/
     /// reseeds: an unexpired record stays honest on the stream clock and
     /// dies on the 60 s window it shares with the fast corrections.
-    sbas_dnu: std::collections::BTreeMap<u8, f64>,
+    /// PRN -> (eviction stream-time, the UDREI that caused it: 14 =
+    /// not-monitored, 15 = don't-use — different severities, both exclude).
+    sbas_dnu: std::collections::BTreeMap<u8, (f64, u8)>,
     /// Latest MT1 PRN mask: (absolute slot numbers of the set bits in
     /// mask order, IODP). MT2-5 and MT24/25 corrections only decode
     /// against this mask — DO-229 addresses their entries by ORDINAL of
@@ -1002,14 +1004,16 @@ impl Channel {
             .map(|(&prn, &(prc_m, udrei, t))| (prn, prc_m, udrei, now - t))
             .collect();
         // do-not-use records ride the fast-correction freshness window:
-        // the eviction decision stems from the same MT2-5/MT6 stream, and
-        // a provider that stops asserting don't-use for 60 s of stream
-        // time is no longer asserting it
-        let dont_use: Vec<(u8, f64)> = self
+        // the eviction decision stems from the same MT2-5/MT6/MT24 stream,
+        // and a provider that stops asserting don't-use for 60 s of stream
+        // time is no longer asserting it. Rows carry the UDREI that caused
+        // the eviction (14 = not-monitored, 15 = don't-use — DO-229
+        // distinguishes the severities; both exclude).
+        let dont_use: Vec<(u8, f64, u8)> = self
             .sbas_dnu
             .iter()
-            .filter(|&(_, &t)| now - t < 60.0)
-            .map(|(&prn, &t)| (prn, now - t))
+            .filter(|&(_, &(t, _))| now - t < 60.0)
+            .map(|(&prn, &(t, u))| (prn, now - t, u))
             .collect();
         // long-term corrections have their own, longer validity: DO-229D
         // Table 2-1 gives a 360 s timeout for MT24/25 (en-route/terminal;
@@ -1096,7 +1100,7 @@ impl Channel {
                             self.sbas_dnu.remove(&prn);
                         } else {
                             self.sbas_prc.remove(&prn);
-                            self.sbas_dnu.insert(prn, t_s);
+                            self.sbas_dnu.insert(prn, (t_s, u));
                         }
                     }
                 }
@@ -1118,20 +1122,20 @@ impl Channel {
             // only a fresh usable MT2-5 row (which also re-establishes a
             // correction) re-enables the satellite.
             crate::sbas::Message::Integrity { udrei, .. } => {
-                let evict: Vec<u8> = match &self.sbas_mask {
+                let evict: Vec<(u8, u8)> = match &self.sbas_mask {
                     Some((slots, _)) => udrei
                         .iter()
                         .enumerate()
                         .filter(|&(_, &u)| u >= 14)
-                        .filter_map(|(i, _)| slots.get(i).copied())
-                        .filter(|s| (1..=37).contains(s))
+                        .filter_map(|(i, &u)| slots.get(i).copied().map(|s| (s, u)))
+                        .filter(|(s, _)| (1..=37).contains(s))
                         .collect(),
                     None => Vec::new(),
                 };
-                for slot in evict {
+                for (slot, u) in evict {
                     self.sbas_prc.remove(&slot);
                     self.sbas_lt.remove(&slot);
-                    self.sbas_dnu.insert(slot, t_s);
+                    self.sbas_dnu.insert(slot, (t_s, u));
                 }
             }
             // harvest long-term corrections (MT25 halves; MT24 long-term
@@ -1166,7 +1170,7 @@ impl Channel {
                             self.sbas_dnu.remove(&prn);
                         } else {
                             self.sbas_prc.remove(&prn);
-                            self.sbas_dnu.insert(prn, t_s);
+                            self.sbas_dnu.insert(prn, (t_s, u));
                         }
                     }
                     for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt) {
@@ -1425,7 +1429,9 @@ pub struct SbasSummary {
     /// a mask-generation change, or a CRC-proven pairing break (the full
     /// sbas_reset) — it SURVIVES fades and input gaps, expiring on its
     /// own: 60 s stream-time freshness, the same window as fast_corr.
-    pub dont_use: Vec<(u8, f64)>,
+    /// (GPS PRN, record age s, the UDREI that caused it — 14 not-monitored,
+    /// 15 don't-use; DO-229 distinguishes the severities, both exclude).
+    pub dont_use: Vec<(u8, f64, u8)>,
     /// Latest long-term corrections (MT24/25) held by this channel, one
     /// JSON object per row: the flattened sbas::LtCorr (GPS PRN; dx, dy,
     /// dz metres and daf0 seconds at t_lt; vc=1 rates ddx/ddy/ddz in m/s
@@ -3946,7 +3952,7 @@ mod tests {
         let sums = feed_sbas_blocks(&mut ch, 4.0, &blocks2);
         let s = sums.last().unwrap();
         assert!(!ch.sbas_prc.contains_key(&7), "the usable row is evicted");
-        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "insert stamp at the eviction tick");
+        assert_eq!(ch.sbas_dnu.get(&7).map(|&(t, _)| t), Some(5.0), "insert stamp at the eviction tick");
         let rec = s
             .dont_use
             .iter()
@@ -4044,8 +4050,8 @@ mod tests {
         let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
         ch.locked = true;
         ch.sbas_mask = Some((vec![3u8, 7, 12], 0));
-        ch.sbas_dnu.insert(7, 100.0);
-        ch.sbas_dnu.insert(9, 175.0);
+        ch.sbas_dnu.insert(7, (100.0, 14));
+        ch.sbas_dnu.insert(9, (175.0, 14));
         let s = ch.sbas_tick(181.0).expect("summary");
         assert!(
             s.dont_use.iter().all(|r| r.0 != 7),
@@ -4222,7 +4228,7 @@ mod tests {
         ];
         feed_sbas_blocks(&mut ch, 0.0, &blocks);
         assert!(ch.sbas_mask.is_some() && !ch.sbas_prc.is_empty() && !ch.sbas_lt.is_empty());
-        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the eviction stamps at its tick");
+        assert_eq!(ch.sbas_dnu.get(&7).map(|&(t, _)| t), Some(5.0), "the eviction stamps at its tick");
         assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0));
         assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0));
         assert_eq!(ch.sbas_par_prev, Some(0), "locked on the probed pairing");
@@ -4269,7 +4275,7 @@ mod tests {
         assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(0), "the mask survives the fade");
         assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0), "fast corrections survive the fade");
         assert!(!ch.sbas_prc.contains_key(&7), "the evicted row stays evicted");
-        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the do-not-use record survives the fade");
+        assert_eq!(ch.sbas_dnu.get(&7).map(|&(t, _)| t), Some(5.0), "the do-not-use record survives the fade");
         assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0), "LT corrections survive the fade");
         // relock on the SAME pairing: the fade's noise probe may have left
         // a straddling prompt — drain it honestly and step the absolute
@@ -4357,7 +4363,7 @@ mod tests {
         assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(0), "the mask survives the gap");
         assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0), "fast corrections survive the gap");
         assert!(!ch.sbas_prc.contains_key(&7), "the evicted row stays evicted");
-        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the do-not-use record survives");
+        assert_eq!(ch.sbas_dnu.get(&7).map(|&(t, _)| t), Some(5.0), "the do-not-use record survives");
         assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0), "LT corrections survive the gap");
     }
 

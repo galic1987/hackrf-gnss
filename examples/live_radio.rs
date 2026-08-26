@@ -412,23 +412,35 @@ fn main() {
                     note = format!("GATE RECOVERY — slew reference re-anchored after latch-up (residual {r:+.4} ppm)");
                     eprintln!("live_radio: {note}");
                 } else if r.abs() < DEADBAND_PPM {
-                    note = format!("in deadband ({r:+.4} ppm) — loop closed");
+                    note = if actuate {
+                        format!("in deadband ({r:+.4} ppm) — loop closed")
+                    } else {
+                        format!("in deadband ({r:+.4} ppm) — nothing to correct (SHADOW: no loop is closed)")
+                    };
                 } else {
                     // two modes: coarse steps converge fast, fine steps stop
                     // the dither-oscillation around zero (0.1 steps vs 0.01
                     // deadband oscillated and tripped the stall detector)
                     let fine = r.abs() < 0.15;
                     let step_limit = if fine { 0.03 } else { STEP_MAX_PPM };
-                    let target = (corr + sign * r).clamp(-CLAMP_PPM, CLAMP_PPM);
-                    let step = (target - corr).clamp(-step_limit, step_limit);
-                    let new_corr = ((corr + step) * 1e4).round() / 1e4;
+                    // The slew baseline must be the register's true content,
+                    // not the cache: the sacred restart always resets the
+                    // board (register -> unity), and only a successful write
+                    // THIS run makes corr hardware-true (round-11 review: the
+                    // shadow proposal and the first actuating write both
+                    // stepped from the cached -0.3378 ppm belief, defeating
+                    // the 0.1 ppm slew limit after a reset).
+                    let base = if corr_written_this_run { corr } else { 0.0 };
+                    let target = (base + sign * r).clamp(-CLAMP_PPM, CLAMP_PPM);
+                    let step = (target - base).clamp(-step_limit, step_limit);
+                    let new_corr = ((base + step) * 1e4).round() / 1e4;
                     if !actuate {
                         // shadow: compute and log the would-be correction,
                         // never touch the hardware (see the actuation gate at
-                        // startup); corr stays at the value the radio
-                        // actually holds
+                        // startup); the cache is shown as intent, never as
+                        // the register's believed content
                         note = format!(
-                            "SHADOW: would apply {new_corr:+.4} ppm (residual {r:+.4}) — actuation disabled"
+                            "SHADOW: would apply {new_corr:+.4} ppm from unity (residual {r:+.4}; cached intent {corr:+.4}) — actuation disabled"
                         );
                     // Only advance the software bookkeeping if the hardware
                     // actually accepted the write + retune — otherwise the
