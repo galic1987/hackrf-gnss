@@ -616,19 +616,21 @@ fn main() {
                 eprintln!("live_fix: dropped outlier channels {:?} (>1 km residual)", names);
             }
             if f.residual_rms_m > 2000.0 {
+                // A diverging mixed solve must not darken the position
+                // feed: quarantine the BDS contribution this cycle and
+                // fall through to the GPS-only path (round-9 review: the
+                // old exit(5) published NOTHING while GPS alone was sane;
+                // the 10,369 km isx-bias class predates the trust gates).
                 eprintln!(
-                    "live_fix: mixed fix rms {:.0} m — too coarse to publish ({} gps + {} bds)",
+                    "live_fix: mixed fix rms {:.0} m — too coarse; BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
                     f.residual_rms_m, f.n_gps, f.n_bds
                 );
-                std::process::exit(5);
-            }
-            if !alt_sane(f.alt_km) {
+            } else if !alt_sane(f.alt_km) {
                 eprintln!(
-                    "live_fix: impossible altitude {:.1} km — not publishing (mixed solve)",
-                    f.alt_km
+                    "live_fix: impossible altitude {:.1} km — BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
+                    f.alt_km, f.n_gps, f.n_bds
                 );
-                std::process::exit(5);
-            }
+            } else {
             // honesty gate: the mixed solve has 5 unknowns, so n_sat <= 5
             // is an EXACT solve — rms is zero by construction and the fix
             // can be arbitrarily wrong. Publish, but say so.
@@ -664,6 +666,7 @@ fn main() {
             std::fs::write(&tmp, doc.to_string()).unwrap();
             std::fs::rename(&tmp, OUT).unwrap();
             return;
+            }
         }
     }
 
