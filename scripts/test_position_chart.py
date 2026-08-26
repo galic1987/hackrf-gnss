@@ -14,7 +14,8 @@ Two halves, no live observations touched (HACKRF_GNSS_OBS sandbox):
      panel marks it at the edge instead of stretching).
 
 2. Watcher check: position_watch.cycle() against a fake
-   state.position.json — appends exactly one JSONL line per new epoch,
+   state.position.json — appends exactly one JSONL line per new trusted
+   epoch (untrusted/missing-trust fixes route to the diagnostic log),
    rewrites state.position_history.json every cycle (heartbeat), and a
    corrupt state file raises (main()'s guard keeps the loop alive).
 """
@@ -189,7 +190,10 @@ def test_watcher():
         position_watch.OBS = d
         position_watch.STATE_IN = f"{d}/state.position.json"
         position_watch.HISTORY = f"{d}/position_history.jsonl"
+        position_watch.HISTORY_DIAG = f"{d}/position_history_diagnostic.jsonl"
         position_watch.STATE_OUT = f"{d}/state.position_history.json"
+        # the anchor the watcher re-reads on every state write
+        json.dump(SITE, open(f"{d}/site.json", "w"))
 
         import time
         ep0 = time.time() - 600          # inside the 3 h window
@@ -197,7 +201,11 @@ def test_watcher():
                "position": {"lat": SITE["lat"], "lon": SITE["lon"],
                             "alt_km": 0.02, "mode": "3D(mixed GPS+BDS)",
                             "gate": "redundant", "gdop": 2.1, "n_sat": 6,
-                            "isx_km": 12.34}}
+                            "isx_km": 12.34, "residual_rms_m": 3.2,
+                            "geometry_redundant": True,
+                            "integrity_valid": True,
+                            "trusted_for_history": True,
+                            "source": "test-fixture"}}
         json.dump(fix, open(position_watch.STATE_IN, "w"))
 
         seen = position_watch.cycle(None)
@@ -206,6 +214,9 @@ def test_watcher():
         assert len(lines) == 1
         rec = json.loads(lines[0])
         assert rec["n_sats"] == 6 and rec["isx_km"] == 12.34
+        # trust fields + quality/provider metadata carried through ingest
+        assert rec["trusted_for_history"] is True
+        assert rec["residual_rms_m"] == 3.2 and rec["source"] == "test-fixture"
         st = json.load(open(position_watch.STATE_OUT))
         assert len(st["position_history"]) == 1 and st["site"]["lat"] == SITE["lat"]
 
@@ -218,14 +229,34 @@ def test_watcher():
         json.dump(fix, open(position_watch.STATE_IN, "w"))
         position_watch.cycle(seen)
         assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
+
+        # untrusted fix (integrity failed): diagnostic log only — the
+        # trusted history must not grow; a MISSING trust field counts false
+        fix["epoch"] = ep0 + 600.0
+        fix["position"]["integrity_valid"] = False
+        fix["position"]["trusted_for_history"] = False
+        fix["position"]["residual_rms_m"] = 179.4
+        json.dump(fix, open(position_watch.STATE_IN, "w"))
+        seen = position_watch.cycle(ep0 + 300.0)
+        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
+        dlines = open(position_watch.HISTORY_DIAG).read().strip().splitlines()
+        assert len(dlines) == 1
+        assert json.loads(dlines[0])["trusted_for_history"] is False
+        del fix["position"]["trusted_for_history"]     # missing == false
+        fix["epoch"] = ep0 + 900.0
+        json.dump(fix, open(position_watch.STATE_IN, "w"))
+        position_watch.cycle(seen)
+        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
+        assert len(open(position_watch.HISTORY_DIAG).read().strip().splitlines()) == 2
+
         open(position_watch.STATE_IN, "w").write("{corrupt")
         try:
             position_watch.cycle(ep0 + 300.0)
             raise AssertionError("corrupt state did not raise")
         except json.JSONDecodeError:
             pass
-        print("watcher: one JSONL line per new epoch, heartbeat state write, "
-              "corrupt-state survivable")
+        print("watcher: one JSONL line per new trusted epoch, untrusted -> "
+              "diagnostic log, heartbeat state write, corrupt-state survivable")
 
 
 if __name__ == "__main__":

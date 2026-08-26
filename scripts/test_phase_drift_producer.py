@@ -182,7 +182,9 @@ def main():
 
     # --- process_state end-to-end -------------------------------------------
     # true raw clock = -0.471 ppm; corr register = -0.451 -> measured
-    # residual slope = (raw - corr) * L1 = -0.020 ppm of L1
+    # residual slope = (raw - corr) * L1 = -0.020 ppm of L1. The discipline
+    # state declares the correction APPLIED (actuate + corr_applied) — the
+    # only case where the add-back may happen (review 2026-08-26).
     raw_ppm, corr = -0.471, -0.451
     resid_hz = (raw_ppm - corr) * 1e-6 * pd.L1_HZ
     windows = {}
@@ -190,7 +192,8 @@ def main():
     for i in range(45):
         state = {
             "epoch": 2000.0 + i,
-            "discipline": {"correction_ppm": corr},
+            "discipline": {"correction_ppm": corr,
+                           "actuate": True, "corr_applied": True},
             "tracker": {"sats": [
                 {"sys": "sbas", "prn": 133, "epoch": 2000.0 + i,
                  "carrier_cycles": resid_hz * i, "doppler_hz": resid_hz,
@@ -226,6 +229,33 @@ def main():
           and cons["ref_hz"] == pd.L1_HZ and cons["n_sats"] == 2)
     check("e2e: ALL phase rows are non-voting components",
           all(r["kind"] == "ClockDriftPpmComponent" for r in rows))
+    check("e2e: rows flagged corr_applied True",
+          all(r.get("corr_applied") is True for r in rows))
+
+    # SHADOW mode (actuate/corr_applied false): nothing was written to
+    # hardware, so the cached correction intent must NOT be added back —
+    # the published value is the measured residual, flagged False
+    # (the 2026-08-26 bug: -0.3378 ppm intent was added unconditionally)
+    windows = {}
+    rows = []
+    for i in range(45):
+        state = {
+            "epoch": 4000.0 + i,
+            "discipline": {"correction_ppm": corr,
+                           "actuate": False, "corr_applied": False},
+            "tracker": {"sats": [
+                {"sys": "sbas", "prn": 133, "epoch": 4000.0 + i,
+                 "carrier_cycles": resid_hz * i, "doppler_hz": resid_hz,
+                 "cn0_proxy": 42.0, "lock_s": 400.0 + i, "slip": False},
+            ]},
+        }
+        rows, diag = pd.process_state(state, windows, 40.0, 40.0, 30.0, 28)
+    per = {r["band"]: r for r in rows if r["band"] != pd.MY_BAND}
+    check("e2e shadow: cached correction NOT added back",
+          abs(per["L1 / WAAS 133 (phase)"]["value"] - (raw_ppm - corr)) < 1e-9,
+          f"value={per['L1 / WAAS 133 (phase)']['value']}")
+    check("e2e shadow: rows flagged corr_applied False",
+          all(r.get("corr_applied") is False for r in rows))
 
     # missing carrier-phase fields (pre-dcfcfaa state): skipped, no crash
     rows2, diag2 = pd.process_state(

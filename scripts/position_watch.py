@@ -8,7 +8,15 @@ watcher polls that file every 30 s (cheap stat + parse; never opens a radio,
 never signals a process) and, when the fix epoch changes:
 
   1. appends one line to observations/position_history.jsonl (append-only,
-     durable; one JSON object per fix), and
+     durable; one JSON object per fix) — ONLY when the solver marked the
+     fix trusted_for_history (redundant geometry AND integrity-valid;
+     a missing field defaults to false). Sane-but-untrusted fixes go to
+     observations/position_history_diagnostic.jsonl instead: visible,
+     but never feeding consumers of the trusted history. Physically
+     impossible fixes (plausibility gate below) are not ingested at all.
+     Each history row also carries the solve's trust/quality metadata
+     (geometry_redundant, integrity_valid, trusted_for_history,
+     residual_rms_m, loo, gdop, source), and
   2. rewrites observations/state.position_history.json (tmp + os.replace,
      per the merge architecture) carrying the last WINDOW_S of fixes under
      the "position_history" key, so the panel server merges it into
@@ -25,6 +33,9 @@ import time
 OBS = os.environ.get("HACKRF_GNSS_OBS", "/Volumes/Radiator 8TB/gnss/observations")
 STATE_IN = f"{OBS}/state.position.json"
 HISTORY = f"{OBS}/position_history.jsonl"
+# sane-but-untrusted solves (trusted_for_history != true): visible here,
+# never in the trusted history above that consumers draw from
+HISTORY_DIAG = f"{OBS}/position_history_diagnostic.jsonl"
 STATE_OUT = f"{OBS}/state.position_history.json"
 
 POLL_S = 30
@@ -83,6 +94,14 @@ def read_fix():
         "gdop": pos.get("gdop"),
         "n_sats": pos.get("n_sat"),
         "isx_km": pos.get("isx_km"),      # mixed GPS+BDS solves only
+        # PVT trust fields + quality/provider metadata from live_fix —
+        # carried through so history rows keep the solve's provenance
+        "residual_rms_m": pos.get("residual_rms_m"),
+        "geometry_redundant": pos.get("geometry_redundant"),
+        "integrity_valid": pos.get("integrity_valid"),
+        "trusted_for_history": pos.get("trusted_for_history"),
+        "loo": pos.get("loo"),            # LOO-exclusion note, when present
+        "source": pos.get("source"),
     }
 
 
@@ -142,12 +161,22 @@ def cycle(seen_epoch):
             # physically impossible for this station: logged, NOT ingested
             log(f"fix REJECTED as impossible (alt={fix.get('alt_km')} km, "
                 f"gate={fix.get('gate')}) — kept out of history")
-        else:
+        elif fix.get("trusted_for_history") is True:
+            # the trusted history takes ONLY solver-trusted fixes
+            # (redundant geometry + integrity-valid; missing field = false)
             with open(HISTORY, "a") as f:
                 f.write(json.dumps(fix) + "\n")
             log(f"fix {fix['mode']} gate={fix['gate']} "
                 f"lat={fix['lat']:.6f} lon={fix['lon']:.6f} "
                 f"alt={fix['alt_km'] * 1000:.0f} m -> history")
+        else:
+            # sane but untrusted: stays visible in the diagnostic log,
+            # never feeds consumers of the trusted history
+            with open(HISTORY_DIAG, "a") as f:
+                f.write(json.dumps(fix) + "\n")
+            log(f"fix {fix['mode']} gate={fix['gate']} UNTRUSTED "
+                f"(rms={fix.get('residual_rms_m')} m, "
+                f"isx={fix.get('isx_km')} km) -> diagnostic history")
         seen_epoch = fix["epoch"]
     write_state(load_window(time.time()))
     return seen_epoch

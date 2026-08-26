@@ -26,7 +26,11 @@ Convention (mirrors tracker_producer's WAAS ClockDriftPpm row exactly):
 the measured slope is taken AFTER the hardware clock-correction register
 (resid = raw - corr), so the published value adds the register back:
     ppm = slope_hz / L1_HZ * 1e6 + discipline.correction_ppm
-making the row a RAW-TCXO measurement comparable to every other voter
+ONLY when the discipline state says this live_radio process verifiably
+wrote that correction (actuate AND corr_applied). The cache is intent,
+not applied truth: in SHADOW mode the register is unity, the add-back
+is 0, and rows carry corr_applied: false so consumers can tell.
+Making the row a RAW-TCXO measurement comparable to every other voter
 (ATSC ch35 via CLKOUT, PC clock). Like the code row, GEO line-of-sight
 motion Doppler is NOT subtracted (the tracker publishes no sat velocity;
 the code row absorbs it in its sigma floor). The honest fit sigma is
@@ -57,11 +61,13 @@ Continuity guards (a window is only as good as its phase chain):
     the Doppler report is not. Break threshold: 25 cycles in one step
     (nothing physical moves a GEO Doppler 25 Hz in 1 s; loop events
     that could come with slip / lock_s = 0 anyway).
-  - a discipline STEP mid-window (correction_ppm changed between two
-    reports) retunes the LO and shifts every channel's measured rate by
-    up to step·L1 (0.03 ppm = 47 Hz); the register add-back convention
+  - a discipline STEP mid-window (the APPLIED correction changed between
+    two reports) retunes the LO and shifts every channel's measured rate
+    by up to step·L1 (0.03 ppm = 47 Hz); the register add-back convention
     is only exact for a constant register, so the window flushes on any
-    correction change. Once the loop is in its deadband this is rare.
+    applied correction change (shadow-mode intent edits never touch
+    hardware and don't flush). Once the loop is in its deadband this is
+    rare.
   - report gaps > 5 s or non-monotonic epochs (producer restart, file
     rotation) flush the window.
   - gates: newest lock_s >= window length (locked for the whole window)
@@ -254,7 +260,17 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
     """Ingest one tracker state file. Returns (rows, diag): sources rows
     (per-GEO + consensus) and per-sat diagnostics for the phase_drift
     key. `windows` persists across calls (keyed by (sys, prn))."""
-    corr = ((state.get("discipline") or {}).get("correction_ppm")) or 0.0
+    # The discipline cache is historical intent, not applied truth (same
+    # fix as tracker_producer review round 6): in SHADOW mode nothing was
+    # written to hardware, so the measured slope carries NO register
+    # offset and the cached correction must NOT be added back. Use it
+    # only when this live_radio process verifiably wrote it (actuate +
+    # corr_applied); otherwise the applied correction is 0.
+    disc_d = state.get("discipline") or {}
+    corr = disc_d.get("correction_ppm") or 0.0
+    corr_applied = bool(disc_d.get("actuate") and disc_d.get("corr_applied"))
+    if not corr_applied:
+        corr = 0.0
     sats = (state.get("tracker") or {}).get("sats") or []
     file_epoch = state.get("epoch") or time.time()
     votes = []
@@ -298,6 +314,9 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
                         f"WAAS PRN {prn} carrier-phase slope {window_s:.0f} s "
                         f"+ corr register · Pro+AA.250",
                         ppm, sig_ppm, t, [f"PRN {prn}"],
+                        # explicit: was a hardware correction added back?
+                        # (shadow mode -> False, value is the raw residual)
+                        extra={"corr_applied": corr_applied},
                         kind="ClockDriftPpmComponent"))
     if votes:
         med, sig = weighted_median([(v, s) for v, s, _, _ in votes])
@@ -312,7 +331,8 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
                         f"· observe-only",
                         med, sig, t,
                         [f"PRN {prn}" for _, _, prn, _ in votes],
-                        extra={"n_sats": len(votes)},
+                        extra={"n_sats": len(votes),
+                               "corr_applied": corr_applied},
                         kind="ClockDriftPpmComponent"))
     return rows, diag
 
