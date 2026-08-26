@@ -21,10 +21,19 @@ const LEAP_S: f64 = 18.0;
 /// Plausibility band on altitude (km): outside this a fix is physically
 /// impossible for this station (roof/road) and must not publish — such
 /// solves historically reached position_history ungated (review round 4).
+/// Altitude sanity, bound to the SITE ANCHOR (round-10b: the absolute
+/// (-1, 30) km window let a ~1 km vertical blunder publish as TRUSTED
+/// against a 20 m anchor). +-500 m around the anchor covers car-grade
+/// terrain while killing km-class blunders; the absolute band stays as a
+/// backstop for nonsense that would pass even a wide anchor window.
+const ALT_ANCHOR_BAND_KM: f64 = 0.5;
 const ALT_SANE_KM: (f64, f64) = (-1.0, 30.0);
 
-fn alt_sane(alt_km: f64) -> bool {
-    alt_km.is_finite() && alt_km >= ALT_SANE_KM.0 && alt_km <= ALT_SANE_KM.1
+fn alt_sane(alt_km: f64, anchor_alt_km: f64) -> bool {
+    alt_km.is_finite()
+        && alt_km >= ALT_SANE_KM.0
+        && alt_km <= ALT_SANE_KM.1
+        && (alt_km - anchor_alt_km).abs() <= ALT_ANCHOR_BAND_KM
 }
 
 /// Trust split (review round 6): equation REDUNDANCY is not VALIDITY.
@@ -37,12 +46,12 @@ fn alt_sane(alt_km: f64) -> bool {
 const RMS_INTEGRITY_M: f64 = 50.0; // beyond this the solve measures outliers
 const ISX_SANE_KM: f64 = 50.0; // GPS-BDS clock offset is ~10 km class
 
-fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64) -> (bool, bool, bool) {
+fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64) -> (bool, bool, bool) {
     let geometry_redundant = n_sat >= redundant_at;
     let integrity_valid = rms_m.is_finite()
         && rms_m < RMS_INTEGRITY_M
         && isx_km.map_or(true, |x| x.is_finite() && x.abs() < ISX_SANE_KM)
-        && alt_sane(alt_km);
+        && alt_sane(alt_km, anchor_alt_km);
     (geometry_redundant, integrity_valid, geometry_redundant && integrity_valid)
 }
 
@@ -629,7 +638,7 @@ fn main() {
             // recorded (the 10,369 km isx-bias class predates the trust
             // gates; isx runaway = BDS inputs inconsistent with GPS).
             let (_, integ, _) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0);
             if !integ {
                 bds_quarantined = Some(format!(
                     "mixed solve fails the integrity law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds)",
@@ -646,7 +655,7 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0);
             println!(
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -718,7 +727,7 @@ fn main() {
                     sub.remove(i);
                     sub.push(alt_hold());
                     if let Some(fi) = hackrf_gnss::gps::pvt::solve(&sub, g) {
-                        if !alt_sane(fi.alt_km) {
+                        if !alt_sane(fi.alt_km, dyn_lla[2] / 1000.0) {
                             continue; // impossible LOO subset solves don't count
                         }
                         let d = ((fi.ecef[0] - full.ecef[0]).powi(2)
@@ -756,7 +765,7 @@ fn main() {
                                 // a LOO-excluded subset solve is diagnostic,
                                 // never trusted for history (round 6)
                                 "geometry_redundant": false,
-                                "integrity_valid": fi.residual_rms_m < RMS_INTEGRITY_M && alt_sane(fi.alt_km),
+                                "integrity_valid": fi.residual_rms_m < RMS_INTEGRITY_M && alt_sane(fi.alt_km, dyn_lla[2] / 1000.0),
                                 "trusted_for_history": false,
                                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                                 "n_sbas_excluded": n_sbas_excluded,
@@ -813,7 +822,7 @@ fn main() {
                 );
                 std::process::exit(5);
             }
-            if !alt_sane(f.alt_km) {
+            if !alt_sane(f.alt_km, dyn_lla[2] / 1000.0) {
                 eprintln!(
                     "live_fix: impossible altitude {:.1} km — not publishing ({} sats, {mode})",
                     f.alt_km, f.n_sat
@@ -828,7 +837,7 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0);
             println!(
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -891,7 +900,7 @@ fn main() {
                 );
                 std::process::exit(5);
             }
-            if !alt_sane(f.alt_km) {
+            if !alt_sane(f.alt_km, dyn_lla[2] / 1000.0) {
                 eprintln!(
                     "live_fix: impossible altitude {:.1} km — not publishing (snapshot)",
                     f.alt_km
@@ -904,7 +913,7 @@ fn main() {
                 "ungated — exact solve, unverifiable"
             };
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0);
             let doc = serde_json::json!({
                 "epoch": now,
                 "ttl_s": 900,
@@ -949,15 +958,20 @@ mod tests {
     #[test]
     fn trust_fields_separates_geometry_from_validity() {
         // clean redundant solve: trusted
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02), (true, true, true));
         // redundant geometry but 105 m rms (observed live): not valid
-        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02, 0.02), (true, false, false));
         // absurd intersystem bias (10,369 km observed): not valid
-        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02, 0.02), (true, false, false));
         // exact solve: never trusted, even when clean
-        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02), (false, true, false));
+        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02, 0.02), (false, true, false));
         // impossible altitude: not valid
-        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02), (true, false, false));
+        // round-10b: a 1.5 km vertical blunder against a 20 m anchor must
+        // fail integrity even with clean rms — the gate is anchor-bound
+        assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02), (true, false, false));
+        // and an in-band altitude (car on a hill, +300 m) passes
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02), (true, true, true));
     }
 
     /// Multi-GEO merge (review round 4): the freshest row wins; material
