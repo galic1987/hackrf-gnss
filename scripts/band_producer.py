@@ -142,6 +142,8 @@ def measure_waas():
         out = run_acq([SBAS, "/tmp/band_waas.f32", "8000000", "4000"], timeout=240)
     except Exception:
         return None, health
+    if out is None:
+        return None, health
     hits = []
     for line in out.splitlines():
         m = re.search(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)", line)
@@ -174,11 +176,19 @@ def _nice19():
     os.nice(19)
 
 
+# The acq binaries are rayon-parallel and default to all 12 cores — under
+# host load they oversubscribe the machine and the tracker stalls anyway
+# (nice(19) alone did not prevent the 08:56 realign). Cap their thread
+# pool so live_radio always has headroom on this 12-core host.
+_ACQ_ENV = {**os.environ, "RAYON_NUM_THREADS": "4"}
+
+
 def run_acq(cmd, timeout=600):
     """Run an acquisition binary; return stdout or None on any failure."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout, preexec_fn=_nice19).stdout
+                              timeout=timeout, preexec_fn=_nice19,
+                              env=_ACQ_ENV).stdout
     except Exception:
         return None
 
@@ -245,6 +255,8 @@ def measure_gps():
     try:
         out = run_acq([ACQ, "/tmp/band_waas.f32", "8000000",
                        "-3000", "3000", "250", "4000"], timeout=300)
+        if out is None:
+            return None
         res = json.loads(out)
         return [r for r in res if r.get("acquired") and r["prn"] <= 32]
     except Exception:
@@ -261,6 +273,8 @@ def measure_glonass():
         return None
     try:
         out = run_acq([GLO, GLO_SNAP, "8000000", "1600000000", "5"], timeout=300)
+        if out is None:
+            return None
     except Exception:
         return None
     hits = re.findall(r"chan\s+([+-]?\d+)\s+\(([\d.]+) MHz\):\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== SATELLITE", out)
@@ -277,6 +291,8 @@ def measure_beidou():
         return None
     try:
         out = run_acq([BDS, BDS_SNAP, "8000000", "1561098000", "6"], timeout=300)
+        if out is None:
+            return None
     except Exception:
         return None
     hits = re.findall(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== ACQUIRED", out)
@@ -344,6 +360,8 @@ def main():
                 try:
                     out = run_acq([ACQ, "/tmp/band_waas.f32", "8000000",
                                    "-3000", "3000", "500", "2000"], timeout=300)
+                    if out is None:
+                        continue
                     res = json.loads(out)
                     gps = [r for r in res if r.get("acquired") and r["prn"] <= 32] or None
                 except Exception:
