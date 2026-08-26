@@ -71,6 +71,21 @@ read the correction register back AND measure the actual tick rate
 physically does. Until this is resolved, re-actuation is off the table
 regardless of the continuity outcome.
 
+### Round-9 update (2026-08-26, free measurements from the 0x469 flashes)
+
+Two control observations landed for free during the flash windows:
+
+1. A full board reset + reflash stepped the measured TCXO residual by
+   **−0.0345 ppm with a slow thermal-recovery tail**; a plain tracker
+   restart does NOT produce such a step. Treat "the board was reset" as a
+   ~0.03 ppm-class disturbance event when comparing residuals across one.
+2. Across that full reset the residual did NOT jump by the cached ±0.34 ppm
+   — arguing the correction register was already at unity (nothing applied
+   to lose). This REMOVES the leading "double-counted applied correction"
+   explanation for the 0.34 ppm step and makes the read-back leg above the
+   decisive remaining test: it costs one minute of any window that is
+   already running the experiment.
+
 ## Safety
 
 Shadow mode stays on except the scripted single writes; each write is
