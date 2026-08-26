@@ -93,6 +93,18 @@ add-back existed. The read-back leg remains the decisive test for what the
 hardware physically holds — the bookkeeping artifact is now believed dead,
 not the question of what a write physically does.
 
+### Round-11 erratum (2026-08-26): the read-back leg is not runnable as written
+
+The vendor crate has NO radio-register read path (no RadioReadReg request),
+and the libhackrf getter is software bookkeeping — nothing on the host can
+report what the correction register physically contains. The register-read
+half of the measurement leg therefore requires firmware first (a read-back
+control-IN request for the clock-correction register, returning the applied
+word + sequence). The tick-rate half (`state.tick.json` before/after a
+single shadow write) remains runnable as specified. Until the firmware leg
+exists, "what a write physically does" stays unanswered and re-actuation
+stays off the table.
+
 ## Safety
 
 Shadow mode stays on except the scripted single writes; each write is
