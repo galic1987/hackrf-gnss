@@ -621,14 +621,17 @@ fn main() {
                 // fall through to the GPS-only path (round-9 review: the
                 // old exit(5) published NOTHING while GPS alone was sane;
                 // the 10,369 km isx-bias class predates the trust gates).
+                // isx_km is logged because it IS the diagnosis: when the
+                // intersystem-bias estimate runs away, the BDS inputs are
+                // inconsistent with GPS, not the geometry.
                 eprintln!(
-                    "live_fix: mixed fix rms {:.0} m — too coarse; BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
-                    f.residual_rms_m, f.n_gps, f.n_bds
+                    "live_fix: mixed fix rms {:.0} m, isx {:.2} km — too coarse; BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
+                    f.residual_rms_m, f.isx_km, f.n_gps, f.n_bds
                 );
             } else if !alt_sane(f.alt_km) {
                 eprintln!(
-                    "live_fix: impossible altitude {:.1} km — BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
-                    f.alt_km, f.n_gps, f.n_bds
+                    "live_fix: impossible altitude {:.1} km, isx {:.2} km — BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
+                    f.alt_km, f.isx_km, f.n_gps, f.n_bds
                 );
             } else {
             // honesty gate: the mixed solve has 5 unknowns, so n_sat <= 5

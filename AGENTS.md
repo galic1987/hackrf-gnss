@@ -31,6 +31,15 @@ HackRFs. Read this before touching anything that talks to the radios.
   gap` → full channel realign. NEVER run cargo builds/tests while
   tracker_producer runs. Build first, then restart the tracker; keep the
   host quiet while it tracks.
+  - Refinement (2026-08-26, measured both ways): `nice -n 19` ALONE is not
+    sufficient — the 09:45:38 realign happened under a nice-19 capped
+    child. What actually worked: niced AND thread-capped
+    (RAYON_NUM_THREADS=4) short jobs, and no hot loops (a `continue` that
+    skipped the producer's sleep once spun acq children back-to-back —
+    fixed d1c8490). Full `cargo build`/`cargo test` still belong to
+    tracker-down windows. `nice -n 19 cargo check`/targeted small test
+    runs are tolerated; watch the tracker log for realigns after each.
+    The real fix is negative-nice for live_radio (needs user sudo).
 
 ## Producers and state files (merge architecture)
 
