@@ -336,6 +336,21 @@ pub struct Channel {
     /// (review round 5: re-picking by energy every second lets a noisy
     /// flip insert/delete a coded symbol mid-stream). None = probing.
     sbas_par: Option<usize>,
+    /// The pairing the RETAINED decoder window was built with, pinned when
+    /// the latch engages and kept across lock losses. A re-probed pairing
+    /// that differs from it means a coded symbol was inserted/deleted at
+    /// the seam — the symbol stream is broken and the decode generation
+    /// terminates (sbas_reset). None = no established window pairing.
+    sbas_par_prev: Option<usize>,
+    /// Apply-once watermark: the absolute stream position
+    /// (sbas::DecodedMessage::sym_pos) of the newest block applied to the
+    /// correction caches. The decoder re-runs over its RETAINED window
+    /// every tick and returns every message again; only blocks beyond this
+    /// watermark may touch the caches — a replayed block must never refresh
+    /// an insert timestamp (review round 6: the replay re-inserted every
+    /// cached message each second with age 0.0, freshness fabricated by
+    /// replay). Reset with the SBAS generation (sbas_reset).
+    sbas_applied: Option<usize>,
     /// Latest per-PRN fast corrections (PRC m, UDREI, insert stream-time
     /// s), from MT2-5 messages decoded by this channel. Cleared on reseed
     /// and on an MT1 mask-generation change (IODP).
@@ -448,6 +463,8 @@ impl Channel {
             eph: None,
             sbas_dec: crate::sbas::Decoder::new(),
             sbas_par: None,
+            sbas_par_prev: None,
+            sbas_applied: None,
             sbas_prc: std::collections::BTreeMap::new(),
             sbas_mask: None,
             sbas_lt: std::collections::BTreeMap::new(),
@@ -821,6 +838,15 @@ impl Channel {
     /// channel's prompt stream is noise and the frame-sync search over it
     /// is wasted CPU. Returns None for non-SBAS channels.
     ///
+    /// APPLY-ONCE (review round 6): the decode re-runs over the RETAINED
+    /// symbol window every tick, so every decoded block returns every
+    /// second. Each block carries an immutable identity (its absolute
+    /// stream position, DecodedMessage::sym_pos); only blocks newer than
+    /// the `sbas_applied` watermark are applied to the caches — a replayed
+    /// message never refreshes an insert timestamp. The summary's
+    /// n_msgs/types deliberately still count the whole window (they are a
+    /// decode-health diagnostic, not an insert).
+    ///
     /// `t_proc` is the stream time of the most recently processed sample
     /// (the same clock Band::end_second uses for anchor freshness) and
     /// stamps every cache insert / freshness check: it advances
@@ -838,6 +864,17 @@ impl Channel {
         // second or one symbol per second would be lost
         let used = par + 2 * soft.len();
         self.nav_ms.drain(..used);
+        // Generation termination on a symbol-pairing CHANGE (review round
+        // 6): while the decode is locked the pairing is latched (round 5);
+        // a lock loss releases the latch and the energy probe re-picks. If
+        // the re-pick DIFFERS from the pairing the retained window was
+        // built with, one coded symbol was inserted/deleted at the seam —
+        // the stream is broken, so the whole generation (window + caches +
+        // watermark) dies BEFORE the new-pairing symbols land in a fresh
+        // decoder. A re-pick of the SAME pairing is seamless: no reset.
+        if self.sbas_par_prev.is_some() && self.sbas_par_prev != Some(par) {
+            self.sbas_reset();
+        }
         self.sbas_dec.push_symbols(&soft);
         if !self.locked {
             return Some(SbasSummary {
@@ -851,17 +888,27 @@ impl Channel {
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
-        // Latch the pairing that produced a locked decode; release the
-        // latch when lock drops so the next lock re-probes (review round 5).
+        // Latch the pairing that produced a locked decode (and remember it
+        // as the window's pairing for the change detector above); release
+        // the latch when lock drops so the next lock re-probes (round 5) —
+        // the release alone does NOT break the stream, only a changed
+        // re-pick does.
         if rep.sync.locked {
             self.sbas_par = Some(par);
+            self.sbas_par_prev = Some(par);
         } else {
             self.sbas_par = None;
         }
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
             *types.entry(dm.message.mt()).or_insert(0usize) += 1;
-            self.sbas_apply(&dm.message, t_proc);
+            // apply-once (review round 6): only blocks newer than the
+            // watermark may touch the caches. Messages ascend in sym_pos
+            // within a report, so the watermark lands on the newest.
+            if self.sbas_applied.map(|a| dm.sym_pos > a).unwrap_or(true) {
+                self.sbas_apply(&dm.message, t_proc);
+                self.sbas_applied = Some(dm.sym_pos);
+            }
         }
         // publish only fresh entries (<= 60 s of stream time)
         let now = t_proc;
@@ -1066,6 +1113,10 @@ impl Channel {
                     // a slip for this report second
                     self.slip = true;
                     self.slip_count += 1;
+                    // RF unlock breaks the SBAS symbol stream: the decode
+                    // generation (window + correction caches + apply
+                    // watermark) dies with it (review round 6)
+                    self.sbas_reset();
                 }
             } else {
                 self.below = 0;
@@ -1117,9 +1168,23 @@ impl Channel {
         self.below = 0;
         // the reseed also breaks the SBAS symbol stream: a fresh decoder
         // and a released parity latch (review round 5 — stale state would
-        // otherwise decode across the break)
+        // otherwise decode across the break); review round 6: the whole
+        // decode generation dies together, correction caches included
+        self.sbas_reset();
+    }
+
+    /// Terminate the SBAS decode generation (review round 6): the decoder
+    /// window, the parity latch, the apply-once watermark, and every
+    /// harvested correction cache (fast, long-term, mask, iono) die
+    /// together. Any break in the 500 sym/s symbol stream — RF unlock, a
+    /// symbol-pairing change, reseed, input gap — invalidates both the
+    /// retained window AND the corrections harvested from it; the next
+    /// lock starts clean instead of replaying or trusting the old one.
+    fn sbas_reset(&mut self) {
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
+        self.sbas_par_prev = None;
+        self.sbas_applied = None;
         self.sbas_prc.clear();
         self.sbas_mask = None;
         self.sbas_lt.clear();
@@ -1413,6 +1478,13 @@ impl Band {
     /// samples). See Engine::note_gap_bytes.
     pub fn note_gap(&mut self, band_samples: u64) {
         self.in_t += band_samples as f64 / self.fs;
+        // The gap drops samples: no channel's SBAS symbol stream crosses
+        // it, so every decode generation (retained window + correction
+        // caches + apply watermark) dies here (review round 6). Channel
+        // phases are invalidated separately (force_reseed on big gaps).
+        for ch in self.channels.iter_mut() {
+            ch.sbas_reset();
+        }
         // A partial seed/align accumulation that spans the gap is corrupt
         // (acquisition needs a coherent snapshot) — restart it on fresh
         // data. Observed live: gappy align snapshots failed 3x and forced
@@ -3673,5 +3745,144 @@ mod tests {
         // true elapsed time, not on lock state
         let row9 = s.fast_corr.iter().find(|r| r.0 == 9).expect("fresh row");
         assert!((row9.3 - 6.0).abs() < 1e-9, "published age: {:?}", row9);
+    }
+
+    // -----------------------------------------------------------------
+    // SBAS apply-once + generation termination (review round 6)
+    // -----------------------------------------------------------------
+
+    /// REGRESSION (the live replay bug): sbas_tick re-decodes the RETAINED
+    /// symbol window every call, so the same blocks come back every second.
+    /// The harvest must apply each block exactly once — a replayed message
+    /// must NOT refresh the insert timestamp (observed live: cached WAAS
+    /// rows showed age 0.0 forever, freshness fabricated by replay).
+    #[test]
+    fn sbas_replayed_window_never_refreshes_insert_age() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        // the MT2 block was applied on its own tick: insert stamp 4.0
+        assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0));
+        // re-tick with NO new symbols: the same window decodes again...
+        let s = ch.sbas_tick(5.0).expect("summary");
+        assert!(s.locked, "the retained window still decodes locked");
+        assert_eq!(s.n_msgs, 4, "the replay still REPORTS all window messages");
+        // ...but the corrections must not be re-inserted: the age grows
+        let row = s.fast_corr.iter().find(|r| r.0 == 3).expect("row");
+        assert_eq!(row.3, 1.0, "a replayed block must not refresh the age");
+        assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0));
+        // and again on the next idle tick
+        let s = ch.sbas_tick(6.0).expect("summary");
+        assert_eq!(s.fast_corr.iter().find(|r| r.0 == 3).unwrap().3, 2.0);
+    }
+
+    /// Generation termination on RF unlock: the lock watchdog dropping the
+    /// channel must kill the decoder window AND every correction cache.
+    /// After relock, nothing from the dead generation comes back without
+    /// NEW messages — and genuinely new blocks do re-populate the caches
+    /// (the generation is dead, not wedged).
+    #[test]
+    fn sbas_unlock_terminates_generation() {
+        let fs = 4.0e6;
+        let ns = (fs / 1000.0) as usize;
+        let mut ch = Channel::new(Sys::Sbas, 131, fs, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+            sbas_block(4, 25, &mt25_payload([1, 2], 0)),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(ch.sbas_mask.is_some() && !ch.sbas_prc.is_empty() && !ch.sbas_lt.is_empty());
+        // drive the REAL unlock path: sub-threshold C/N0 until the
+        // end_second watchdog fires (same noise shape as the slip test),
+        // ticking sbas_tick every second exactly like Band::end_second does
+        let mut st = 0x1b87_3593u64;
+        let mut t = 5.0;
+        for _ in 0..12 {
+            for _ in 0..1000 {
+                let noise: Vec<Complex<f32>> = (0..ns)
+                    .map(|_| {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        let v = ((st >> 40) as f32 / 8_388_608.0) - 1.0;
+                        Complex::new(0.05 * v, 0.05 * v)
+                    })
+                    .collect();
+                ch.process_epoch(&noise);
+            }
+            ch.end_second();
+            t += 1.0;
+            ch.sbas_tick(t);
+            if !ch.locked {
+                break;
+            }
+        }
+        assert!(!ch.locked, "the watchdog must drop the channel");
+        assert!(ch.sbas_mask.is_none(), "the mask dies with the generation");
+        assert!(ch.sbas_prc.is_empty(), "fast corrections die with it");
+        assert!(ch.sbas_lt.is_empty(), "LT corrections die with it");
+        assert!(ch.sbas_applied.is_none(), "the apply watermark resets");
+        // relock: ticking with no NEW blocks must not resurrect any row
+        ch.locked = true;
+        for k in 0..3 {
+            let s = ch.sbas_tick(30.0 + k as f64).expect("summary");
+            assert!(s.fast_corr.is_empty() && s.lt_corr.is_empty());
+        }
+        assert!(ch.sbas_prc.is_empty() && ch.sbas_lt.is_empty() && ch.sbas_mask.is_none());
+        // genuinely NEW blocks start the next generation cleanly
+        let gen1 = vec![
+            sbas_block(5, 1, &mt1_payload(&slots, 0)),
+            sbas_block(6, 1, &mt1_payload(&slots, 0)),
+            sbas_block(7, 1, &mt1_payload(&slots, 0)),
+            sbas_block(8, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 33.0, &gen1);
+        assert!(!ch.sbas_prc.is_empty(), "new messages must re-populate");
+        let row = sums
+            .last()
+            .unwrap()
+            .fast_corr
+            .iter()
+            .find(|r| r.0 == 3)
+            .unwrap();
+        assert_eq!(row.3, 0.0, "a NEW insert is honestly age 0");
+    }
+
+    /// Generation termination on an input gap: Band::note_gap advances the
+    /// stream clock past dropped samples — the SBAS symbol stream cannot
+    /// cross the gap, so every channel's decode generation (window +
+    /// caches) dies with it.
+    #[test]
+    fn sbas_gap_terminates_generation() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(!ch.sbas_prc.is_empty());
+        let mut band = Band::new_l1(4.0e6, 0.0);
+        band.channels.push(ch);
+        band.note_gap(4_000_000); // 1 s of dropped band samples
+        assert!((band.in_t - 1.0).abs() < 1e-9, "the clock still advances");
+        let ch = &band.channels[0];
+        assert!(ch.sbas_mask.is_none(), "the mask dies on the gap");
+        assert!(ch.sbas_prc.is_empty(), "fast corrections die on the gap");
+        assert!(ch.sbas_lt.is_empty());
+        assert!(ch.sbas_igpmask.is_empty() && ch.sbas_iono.is_empty());
+        assert!(ch.sbas_applied.is_none(), "the apply watermark resets");
     }
 }

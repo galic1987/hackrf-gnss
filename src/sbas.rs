@@ -967,10 +967,19 @@ pub fn parse_block(bits: &[u8]) -> Option<Message> {
 // full back end: soft symbols -> messages
 // ---------------------------------------------------------------------------
 
-/// One decoded message and its block index within the framed region.
+/// One decoded message and its position.
 #[derive(Debug, Clone)]
 pub struct DecodedMessage {
+    /// Block index within the framed region of the decode window.
     pub block_index: usize,
+    /// Symbol position of this block's first symbol. `decode_symbols`
+    /// reports it relative to the input buffer; `Decoder::decode` rebases
+    /// it to the ABSOLUTE stream position (symbols pushed since decoder
+    /// creation) — an immutable block identity for apply-once bookkeeping:
+    /// the same physical block keeps the same sym_pos across re-decodes
+    /// of the sliding retained window, and a newer block always sorts
+    /// higher (review round 6).
+    pub sym_pos: usize,
     pub message: Message,
 }
 
@@ -1036,7 +1045,7 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
     let mut sync = sync;
     let mut preamble = (0, 0, 0);
     let mut messages = Vec::new();
-    if let Some(_o) = sync.offset {
+    if let Some(o) = sync.offset {
         preamble = preamble_phase(&corr, &sync.valid);
         // Lock means a CURRENT streak of consecutive, correctly-rotating,
         // nondegenerate CRC-valid blocks — not scattered passes anywhere in
@@ -1050,6 +1059,9 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
             if let Some(m) = parse_block(blk) {
                 messages.push(DecodedMessage {
                     block_index: i,
+                    // bit o + i*250 of the viterbi stream = symbol
+                    // off + 2*(o + i*250) of the input buffer
+                    sym_pos: off + 2 * (o + i * BLOCK_BITS),
                     message: m,
                 });
             }
@@ -1070,10 +1082,17 @@ pub fn decode_symbols(soft: &[f32], min_blocks: usize) -> DecodeReport {
 /// Streaming decoder: accumulate 500 sym/s soft symbols and decode the buffer
 /// on demand. Cheap to call once per second on a locked SBAS channel; keeps
 /// only the most recent `keep` symbols so the frame-sync search stays
-/// bounded.
+/// bounded. The retained window is re-decoded whole on every call, so
+/// `decode` reports each message's ABSOLUTE stream position
+/// (DecodedMessage::sym_pos) — the caller uses it as an immutable block
+/// identity to apply each block exactly once (review round 6).
 pub struct Decoder {
     soft: Vec<f32>,
     keep: usize,
+    /// Absolute stream position of `soft[0]`: the total symbols retired by
+    /// the retention window since creation. Zero with the decoder — a new
+    /// decode generation starts a new identity space.
+    base: usize,
 }
 
 impl Default for Decoder {
@@ -1089,6 +1108,7 @@ impl Decoder {
         Decoder {
             soft: Vec::new(),
             keep: 500 * 32,
+            base: 0,
         }
     }
 
@@ -1099,12 +1119,19 @@ impl Decoder {
         if self.soft.len() > self.keep {
             let drop = self.soft.len() - self.keep;
             self.soft.drain(..drop);
+            self.base += drop;
         }
     }
 
-    /// Decode everything buffered so far.
+    /// Decode everything buffered so far; message positions
+    /// (DecodedMessage::sym_pos) are rebased to absolute stream positions,
+    /// so they stay valid as the retention window slides.
     pub fn decode(&self, min_blocks: usize) -> DecodeReport {
-        decode_symbols(&self.soft, min_blocks)
+        let mut rep = decode_symbols(&self.soft, min_blocks);
+        for dm in rep.messages.iter_mut() {
+            dm.sym_pos += self.base;
+        }
+        rep
     }
 }
 
@@ -1810,6 +1837,46 @@ mod tests {
         assert!(rep.sync.locked);
         assert_eq!(rep.messages.len(), 12);
         assert_eq!(rep.preamble.1, 12);
+    }
+
+    /// Review round 6: block identities are ABSOLUTE stream positions —
+    /// stable across re-decodes of the retained window and across the
+    /// retention drain, so the consumer can apply each block exactly once.
+    #[test]
+    fn decoder_block_identity_survives_window_churn() {
+        let mut rng = Rng::new(86);
+        let blocks = build_blocks(&mut rng, 40);
+        // 20 dB: the identity mechanics don't need noise realism, and an
+        // essentially clean stream keeps the block accounting exact
+        let soft = stream_of(&blocks, &mut rng, 20.0, false);
+        let mut dec = Decoder::new();
+        // feed the first 12 blocks in 1 s chunks, as live does
+        for chunk in soft[..12 * 500].chunks(500) {
+            dec.push_symbols(chunk);
+        }
+        let rep = dec.decode(3);
+        assert!(rep.sync.locked);
+        let ids: Vec<usize> = rep.messages.iter().map(|m| m.sym_pos).collect();
+        assert_eq!(ids.len(), 12);
+        // the stream starts on a block boundary: block i starts at symbol
+        // 500*i, and the identity is that absolute position
+        for (i, &id) in ids.iter().enumerate() {
+            assert_eq!(id, 500 * i, "block {i}");
+        }
+        // re-decoding the same window must not shift the identities
+        let again: Vec<usize> = dec.decode(3).messages.iter().map(|m| m.sym_pos).collect();
+        assert_eq!(again, ids, "re-decode must not shift identities");
+        // push the remaining 28 blocks: 20000 symbols total > 16000 keep,
+        // so the window drains 4000 — identities must survive the slide
+        for chunk in soft[12 * 500..].chunks(500) {
+            dec.push_symbols(chunk);
+        }
+        let rep = dec.decode(3);
+        let ids: Vec<usize> = rep.messages.iter().map(|m| m.sym_pos).collect();
+        assert_eq!(ids.first(), Some(&4000), "oldest retained block is #8");
+        assert_eq!(ids.last(), Some(&19500), "newest block is #39");
+        // a pre-drain block still in the window keeps its identity
+        assert!(ids.contains(&5500), "block 11 survived the drain");
     }
 
     #[test]
