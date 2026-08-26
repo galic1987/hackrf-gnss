@@ -169,7 +169,7 @@ def parse_telemetry(d):
              "cn0": s.get("cn0_proxy", s.get("cn0")), "doppler_hz": s.get("doppler_hz"),
              "lock_s": s.get("lock_s"), "rho_m": s.get("rho_m"),
              "t_tx": s.get("t_tx"), "ppm": s.get("ppm"),
-             "az_deg": None, "el_deg": None, "residual_m": None}
+             "az_deg": None, "el_deg": None, "residual_m": None, "cls": None}
             for s in sats]
     disc = d.get("discipline")
     if disc:
