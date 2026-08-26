@@ -637,12 +637,18 @@ fn main() {
             // falls through to the GPS-only path with the reason logged and
             // recorded (the 10,369 km isx-bias class predates the trust
             // gates; isx runaway = BDS inputs inconsistent with GPS).
-            let (_, integ, _) =
+            // Round-10b addition: a free intersystem bias requires n_bds >= 2
+            // — with one BDS measurement the free bias absorbs ANY error
+            // (the live divergence era's isx data pointed at a 1 ms
+            // code-phase tooth slip being absorbed exactly this way).
+            let (_, integ0, _) =
                 trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0);
+            let integ = integ0 && f.n_bds >= 2;
             if !integ {
                 bds_quarantined = Some(format!(
-                    "mixed solve fails the integrity law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds)",
-                    f.residual_rms_m, f.isx_km, f.alt_km, f.n_gps, f.n_bds
+                    "mixed solve fails the integrity law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds){}",
+                    f.residual_rms_m, f.isx_km, f.alt_km, f.n_gps, f.n_bds,
+                    if f.n_bds < 2 { "; free ISB with n_bds<2 absorbs anything" } else { "" }
                 ));
                 eprintln!("live_fix: {}", bds_quarantined.as_deref().unwrap());
             } else {
