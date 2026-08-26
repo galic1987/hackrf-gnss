@@ -291,9 +291,14 @@ pub struct Channel {
     /// parity latch would then flip the pairing every other second (the
     /// par=1 phase slip). Re-anchored to zero only when the grid origin
     /// becomes meaningless: decoder resets across lost samples
-    /// (sbas_reset_decoder with keep_grid false — input gap, reseed) and
-    /// the full sbas_reset. A fade KEEPS it: the prompt queue never
-    /// stopped, so the re-probe must land on the same physical grid.
+    /// (sbas_reset_decoder with keep_grid false — input gaps hit SBAS
+    /// channels only) and the full sbas_reset. A fade KEEPS it: the
+    /// prompt queue never stopped, so the re-probe must land on the same
+    /// physical grid. On GPS/BDS channels an input gap instead ADVANCES
+    /// the origin by the gap (Band::note_gap) while the queue itself is
+    /// dropped and bit_off reset: the gap shifts the 20 ms bit-group
+    /// phase in queue-index space, so the transition scan must relock on
+    /// post-gap data rather than slice on a stale grid.
     nav_abs_ms: u64,
     bit_off: Option<usize>,
     /// decoded nav bits (0/1), polarity unresolved (Costas) — lnav handles it
@@ -1691,7 +1696,7 @@ impl Band {
     pub fn note_gap(&mut self, band_samples: u64) {
         self.in_t += band_samples as f64 / self.fs;
         // The gap drops samples: no channel's SBAS decoder window crosses
-        // it, so the decoder half of every channel dies here (fresh
+        // it, so on SBAS channels the decoder half dies here (fresh
         // decoder, released latch, reset watermark — nothing decodes or
         // re-applies across the seam). The correction caches SURVIVE with
         // honestly-advanced ages: in_t above jumps the gap, so every
@@ -1701,10 +1706,37 @@ impl Band {
         // meaningless across lost samples); if a post-gap re-probe then
         // CRC-locks on a DIFFERENT pairing than sbas_par_prev, THAT is
         // the proven break and sbas_tick's flip settlement takes the
-        // caches too. Channel phases are invalidated separately
-        // (force_reseed on big gaps).
+        // caches too.
+        // GPS/BDS channels keep their decode continuity but NOT their
+        // stale bit grid. The gap shifts the 20 ms bit-group phase by
+        // (gap mod 20) in queue-index space, and bit_off — set once and
+        // never re-derived while Some — is the queue-index phase: leaving
+        // it set leaves bit slicing permanently misaligned after ANY gap
+        // (the pre-858cd34 wipe had the same defect: it cleared the queue
+        // but kept bit_off). Reset bit_off so nav_tick's transition-scan
+        // relocks on post-gap data, and drop the retained queue tail: it
+        // is <1 s of prompts whose phase no longer matches, cheap to
+        // refill, and keeping it would let a mixed-phase window win the
+        // sync histogram. nav_abs_ms advances by the gap — prompts come
+        // only from received samples, so the stream-true index jumps the
+        // dropped milliseconds (its only functional reader is the SBAS
+        // pairing grid; GPS TOW anchoring rides t_proc/in_t, which the
+        // in_t jump above advances identically).
+        // Channel phases are invalidated separately (force_reseed on
+        // big gaps).
+        let gap_ms = band_samples * 1000 / self.fs as u64;
         for ch in self.channels.iter_mut() {
-            ch.sbas_reset_decoder(false);
+            if ch.sys == Sys::Sbas {
+                ch.sbas_reset_decoder(false);
+            } else {
+                ch.nav_ms.clear();
+                ch.nav_abs_ms += gap_ms;
+                ch.bit_off = None;
+                ch.prev_group_tail = None;
+                ch.dip_first = 0.0;
+                ch.dip_last = 0.0;
+                ch.dip_n = 0;
+            }
         }
         // A partial seed/align accumulation that spans the gap is corrupt
         // (acquisition needs a coherent snapshot) — restart it on fresh
@@ -4547,5 +4579,38 @@ mod tests {
             "a row 60 s old must not publish: {:?}",
             s.fast_corr
         );
+    }
+
+    /// note_gap is channel-scoped: the SBAS decoder window must not cross
+    /// lost samples (queue cleared, pairing grid re-anchored). A GPS
+    /// channel's 20 ms bit-group phase is a queue-INDEX phase — the gap
+    /// shifts it by (gap mod 20) — so the stale queue tail is dropped and
+    /// bit_off is reset (the transition scan relocks on post-gap data),
+    /// while the absolute origin advances by exactly the gap (prompts come
+    /// only from received samples, so the stream-true index jumps the
+    /// dropped milliseconds).
+    #[test]
+    fn note_gap_scopes_nav_queue_wipe_to_sbas() {
+        let mut band = Band::new_l1(4.0e6, 0.0);
+        let mut gps = Channel::new(Sys::Gps, 5, 4.0e6, 800.0, 0.0);
+        gps.nav_ms = vec![0.7; 37]; // 37 queued 1 ms prompts mid-bit-group
+        gps.nav_abs_ms = 5000; // absolute origin of nav_ms[0]
+        gps.bit_off = Some(11); // bit sync held before the gap
+        gps.prev_group_tail = Some(0.7);
+        let mut sbas = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        sbas.nav_ms = vec![0.9; 41];
+        sbas.nav_abs_ms = 7000;
+        band.channels.push(gps);
+        band.channels.push(sbas);
+        band.note_gap(64_000); // 16 ms of dropped band samples
+        let gps = &band.channels[0];
+        assert!(gps.nav_ms.is_empty(), "the phase-mixed GPS queue tail is dropped");
+        assert_eq!(gps.nav_abs_ms, 5016, "the origin advances by the gap, not re-anchors");
+        assert_eq!(gps.bit_off, None, "bit-group phase must relock post-gap");
+        assert!(gps.prev_group_tail.is_none(), "the group-boundary tail is stale");
+        let sbas = &band.channels[1];
+        assert!(sbas.nav_ms.is_empty(), "the SBAS decode window must not cross lost samples");
+        assert_eq!(sbas.nav_abs_ms, 0, "the SBAS pairing grid re-anchors");
+        assert!(sbas.sbas_par.is_none() && sbas.sbas_applied.is_none());
     }
 }
