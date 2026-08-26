@@ -84,8 +84,33 @@ ROTATING = {"GPS L1 C/A", "Galileo E1", "GLONASS G1", "BeiDou B1I",
 # ATSC pilots are owned by phase_producer.py now — see module docstring.
 
 
+def pro_owned():
+    """True while live_radio owns the Pro (the 24/7 tracker — AGENTS.md law).
+    A second hackrf_transfer lands its set_freq/set_sample_rate/gain EP0
+    control writes BEFORE start_rx's interface claim fails, retuning the
+    radio under the tracker: each band cycle ended in a full mass-unlock
+    (2026-08-26 14:04:40 / 14:23:11 collapses, one per cycle). Never even
+    attempt the open. Unknown -> owned (fail closed)."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "examples/live_radio"],
+                             capture_output=True, text=True).stdout.split()
+        return bool(out)
+    except Exception:
+        return True
+
+
 def transfer(serial, f_hz, seconds, path, lna="32", vga="44", bias=False):
+    if serial == PRO and pro_owned():
+        return False
     n = int(FS * seconds)
+    # Never let a leftover capture pass for a fresh one (round-11 review: a
+    # days-old file of the right size used to count as a successful capture
+    # and published stale IQ under a fresh epoch).
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    t0 = time.time()
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", serial, "-f", str(int(f_hz)),
            "-s", "8000000", "-l", lna, "-g", vga, "-a", "0",
            "-n", str(n), "-r", path]
@@ -96,7 +121,11 @@ def transfer(serial, f_hz, seconds, path, lna="32", vga="44", bias=False):
                        timeout=seconds + 30, env=ENV)
     except Exception:
         return False
-    return os.path.exists(path) and os.path.getsize(path) >= n * 2
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return st.st_size >= n * 2 and st.st_mtime >= t0 - 1.0
 
 
 def sync_producer_ctl(sig):
@@ -374,7 +403,11 @@ def main():
                              "sats": [f"PRN {r['prn']}" for r in gps],
                              "anchor": f"top metric {max(r['metric'] for r in gps):.1f}"})
                 hist["gps_sats"] = len(gps)
-            gal = measure_galileo()
+            # measure_galileo reuses the WAAS snapshot — only while it is
+            # FRESH (this cycle's). health is None when the snapshot failed
+            # (e.g. Pro owned by the tracker), and a stale file would yield
+            # days-old presence rows under a fresh epoch (round-11 review).
+            gal = measure_galileo() if health else None
             if gal:
                 rows.append({"band": "Galileo E1", "name": "E1B BOC(1,1) acquisition · same L1 snapshot",
                              "kind": "Presence", "value": None, "sigma": None, "epoch": epoch,
