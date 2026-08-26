@@ -273,13 +273,13 @@ pub fn fast_rows(
     mask_iodp: u8,
     msg_iodp: u8,
     first_slot: u8,
-    prc: &[i16; 13],
-    udrei: &[u8; 13],
+    prc: &[i16],
+    udrei: &[u8],
 ) -> Vec<(u8, f64, u8)> {
     if mask_iodp != msg_iodp {
         return Vec::new();
     }
-    (0..13usize)
+    (0..prc.len().min(udrei.len()))
         .filter_map(|k| {
             let ordinal = first_slot as usize + k;
             let slot = *mask_slots.get(ordinal - 1)?;

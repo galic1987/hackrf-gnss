@@ -1149,8 +1149,26 @@ impl Channel {
                     }
                 }
             }
-            crate::sbas::Message::MixedFastLongTerm { lt, .. } => {
+            crate::sbas::Message::MixedFastLongTerm { prc, udrei, iodp, block_id, lt, .. } => {
+                // MT24's fast half is REAL fast-correction data (DO-229D
+                // A.4.4.8, Navipedia Table 4): the block id selects the
+                // MT2-5-aligned 13-slot block and the six entries address
+                // its first six ordinals — first_slot = block_id*13 + 1.
+                // Discarding it (the pre-round-9b behavior) silently
+                // converted an MT24-delivered UDREI>=14 into "use" — the
+                // last do-not-use inversion in the pipeline.
                 if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
+                    for (prn, prc_m, u) in crate::sbas::fast_rows(
+                        mask_slots, *mask_iodp, *iodp, block_id * 13 + 1, prc, udrei,
+                    ) {
+                        if u < 14 {
+                            self.sbas_prc.insert(prn, (prc_m, u, t_s));
+                            self.sbas_dnu.remove(&prn);
+                        } else {
+                            self.sbas_prc.remove(&prn);
+                            self.sbas_dnu.insert(prn, t_s);
+                        }
+                    }
                     for corr in crate::sbas::lt_corrections(mask_slots, *mask_iodp, lt) {
                         self.sbas_lt.insert(corr.prn, (corr, t_s));
                     }
@@ -3664,6 +3682,26 @@ mod tests {
         p
     }
 
+    /// MT24 payload (DO-229D A.4.4.8): six fast slots (PRC s12, UDREI u4),
+    /// IODP, block id, IODF, 4 spare bits, then the 106-bit long-term half
+    /// (zeros = an empty velocity-code-0 half, mask_no 0 -> no sats).
+    fn mt24_payload(iodp: u8, block_id: u8, iodf: u8, prc: &[i16; 6], udrei: &[u8; 6]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(212);
+        for &v in prc {
+            push_sbits(&mut p, v as i64, 12);
+        }
+        for &u in udrei {
+            push_bits(&mut p, u as u64, 4);
+        }
+        push_bits(&mut p, iodp as u64, 2);
+        push_bits(&mut p, block_id as u64, 2);
+        push_bits(&mut p, iodf as u64, 2);
+        push_bits(&mut p, 0, 4);
+        p.extend(std::iter::repeat(0u8).take(106));
+        assert_eq!(p.len(), 212);
+        p
+    }
+
     /// MT25 payload: two velocity-code-0 long-term halves (106 bits each);
     /// each half carries two satellites addressed by mask ordinal, with
     /// dx = +1 m, dy = dz = 0, daf0 = 16 counts, IOD 42.
@@ -3806,6 +3844,41 @@ mod tests {
         );
         assert!(ch.sbas_prc.contains_key(&3), "unaffected rows stay");
         assert!(sums.last().unwrap().fast_corr.iter().all(|r| r.0 != 7));
+    }
+
+    /// MT24's fast half is real fast-correction data, block-id-aligned to
+    /// the MT2-5 slot blocks (ordinal base = block*13 + 1): a UDREI >= 14
+    /// delivered there must evict + record do-not-use exactly like MT2-5 —
+    /// the pre-fix code kept only the LT half, silently converting an
+    /// MT24-delivered don't-use into "use" (round-9b review).
+    #[test]
+    fn sbas_mt24_fast_half_evicts_and_records_dont_use() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        // 15 mask entries: ordinal 14 -> PRN 17 (the don't-use target),
+        // ordinal 15 -> PRN 19 (a usable insert), ordinals 1-13 dummies.
+        let slots: Vec<u8> = (3u8..=15).chain([17, 19]).collect();
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        // block_id 1 -> ordinals 14..=19: entry 0 hits PRN 17 with UDREI 14,
+        // entry 1 hits PRN 19 with PRC 8 counts = 1.0 m, usable.
+        let mut udrei = [0u8; 6];
+        udrei[0] = 14;
+        let mut prc = [0i16; 6];
+        prc[1] = 8;
+        let blocks2 = vec![sbas_block(3, 24, &mt24_payload(0, 1, 0, &prc, &udrei))];
+        let sums = feed_sbas_blocks(&mut ch, 3.0, &blocks2);
+        assert!(ch.sbas_dnu.contains_key(&17), "MT24 don't-use records DNU");
+        assert!(!ch.sbas_prc.contains_key(&17), "don't-use never caches");
+        assert_eq!(
+            ch.sbas_prc.get(&19).map(|&(p, u, _)| (p, u)),
+            Some((1.0, 0)),
+            "the usable MT24 slot caches at block-aligned ordinal 15"
+        );
+        assert!(sums.last().unwrap().dont_use.iter().any(|r| r.0 == 17));
     }
 
     /// MT6 integrity UDREIs address mask ORDINALS 1..=51 (same through-mask
