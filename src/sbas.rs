@@ -241,6 +241,27 @@ pub fn symbols_from_prompt_par(prompts: &[f64], forced: Option<usize>) -> (Vec<f
     (soft, par)
 }
 
+/// As `symbols_from_prompt_par`, but the forced parity is ABSOLUTE: pairs
+/// hold absolute 1 ms indices (k, k+1) with k ≡ forced (mod 2), where
+/// `head_abs` is the absolute index of `prompts[0]`. A queue-relative latch
+/// cannot hold that grid: a straddling leftover ms shifts the queue head by
+/// one, and re-forcing the same queue offset pairs the OTHER grid for a
+/// whole call (the par=1 phase slip). Returns (soft symbols, queue-relative
+/// start consumed, absolute pairing parity) — the last is what the caller
+/// latches and compares across calls. With forced=None the energy probe
+/// picks the queue-relative start (as `symbols_from_prompt_par`) and the
+/// absolute parity follows from `head_abs`.
+pub fn symbols_from_prompt_abs(
+    prompts: &[f64],
+    forced: Option<usize>,
+    head_abs: u64,
+) -> (Vec<f32>, usize, usize) {
+    let hq = (head_abs % 2) as usize;
+    let forced_q = forced.map(|pa| (pa.min(1) + 2 - hq) % 2);
+    let (soft, s) = symbols_from_prompt_par(prompts, forced_q);
+    (soft, s, (hq + s) % 2)
+}
+
 /// MT2-5 rows by ORDINAL through the MT1 mask, UDREI-UNFILTERED (unlike
 /// `fast_corrections`): every ordinal-mapped GPS row is returned with its
 /// UDREI so the caller can act on UDREI >= 14 (not monitored / don't use)
@@ -2340,5 +2361,60 @@ mod tests {
         assert_eq!(got, 1);
         let dec = viterbi(&soft, false);
         assert_eq!(dec[40..], bits[40..]);
+    }
+
+    /// REGRESSION (par=1 symbol-grid phase slip): with the parity latched at
+    /// 1, three consecutive seconds of exactly 1000 fresh 1 ms prompts per
+    /// call must pair on the constant ABSOLUTE grid — every emitted symbol
+    /// holds absolute indices (k, k+1) with k ≡ 1 (mod 2) in EVERY call, no
+    /// symbol is emitted twice, and at most the boundary straddle is
+    /// deferred across a call (never dropped silently). The old
+    /// queue-relative latch flipped the grid for a whole second whenever a
+    /// straddling leftover ms sat at the queue head, and drained that
+    /// leftover unpaired.
+    #[test]
+    fn symbols_from_prompt_abs_holds_grid_across_straddles() {
+        // one second of the live sbas_tick drain protocol: pair `queue`
+        // (whose [0] sits at absolute 1 ms index `head`) at forced absolute
+        // parity 1; returns (soft, queue-relative start, absolute parity)
+        let tick = |q: &[f64], head: u64| -> (Vec<f32>, usize, usize) {
+            symbols_from_prompt_abs(q, Some(1), head)
+        };
+        // distinct marker per absolute 1 ms index: prompt k has value k, so
+        // a correctly paired symbol sums to 2k+1 and k is recovered exactly
+        let mut queue: Vec<f64> = Vec::new();
+        let mut head = 0u64; // absolute index of queue[0]
+        let mut next = 0u64; // next absolute index to generate
+        let mut firsts = std::collections::BTreeSet::new(); // first index of every emitted pair
+        let mut paired = std::collections::BTreeSet::new(); // every paired absolute index
+        let mut origin_skipped = 0u64; // heads consumed unpaired at a call start
+        for _sec in 0..3 {
+            for _ in 0..1000 {
+                queue.push(next as f64);
+                next += 1;
+            }
+            let (soft, s, pa) = tick(&queue, head);
+            assert_eq!(pa, 1, "the absolute pairing parity must stay latched");
+            origin_skipped += s as u64;
+            let used = s + 2 * soft.len();
+            for &v in &soft {
+                assert_eq!(v.fract(), 0.0, "marker sum must stay integral");
+                let k = (v as u64 - 1) / 2; // pair (k, k+1) sums to 2k+1
+                assert_eq!(v as u64, 2 * k + 1, "symbol is not an adjacent pair");
+                assert_eq!(k % 2, 1, "pair ({k},{}) off the absolute par=1 grid", k + 1);
+                assert!(firsts.insert(k), "symbol at abs {k} emitted twice");
+                assert!(paired.insert(k) && paired.insert(k + 1));
+            }
+            queue.drain(..used);
+            head += used as u64;
+        }
+        // conservation: every generated prompt is paired, skipped once at
+        // the grid origin, or still queued as the one boundary straddle
+        assert_eq!(
+            paired.len() as u64 + origin_skipped + queue.len() as u64,
+            next,
+            "prompts dropped silently across calls"
+        );
+        assert!(queue.len() <= 1, "at most the boundary straddle is deferred");
     }
 }

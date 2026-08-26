@@ -284,6 +284,13 @@ pub struct Channel {
     // nav demod state (GPS LNAV 50 bps): prompt-I per 1 ms epoch, the
     // discovered 20 ms bit boundary, and the emitted bit stream
     nav_ms: Vec<f64>,
+    /// Absolute 1 ms-prompt index of nav_ms[0], advanced by EVERY drain of
+    /// nav_ms below (bit sync, bit slicing, the 200k cap, sbas_tick). The
+    /// SBAS 2 ms pairing holds a constant ABSOLUTE grid through it: a
+    /// straddling leftover ms shifts the queue head, and a queue-relative
+    /// parity latch would then flip the pairing every other second (the
+    /// par=1 phase slip). Reset with the SBAS generation (sbas_reset).
+    nav_abs_ms: u64,
     bit_off: Option<usize>,
     /// decoded nav bits (0/1), polarity unresolved (Costas) — lnav handles it
     pub nav_bits: Vec<u8>,
@@ -334,7 +341,10 @@ pub struct Channel {
     sbas_dec: crate::sbas::Decoder,
     /// Latched 1 ms->2 ms symbol pairing while the decoder is locked
     /// (review round 5: re-picking by energy every second lets a noisy
-    /// flip insert/delete a coded symbol mid-stream). None = probing.
+    /// flip insert/delete a coded symbol mid-stream). The ABSOLUTE grid
+    /// parity: pairs hold absolute 1 ms indices (k, k+1) with k ≡ par —
+    /// the queue-relative start is derived per tick from nav_abs_ms. None
+    /// = probing.
     sbas_par: Option<usize>,
     /// The pairing the RETAINED decoder window was built with, pinned when
     /// the latch engages and kept across lock losses. A re-probed pairing
@@ -443,6 +453,7 @@ impl Channel {
             slip: false,
             slip_count: 0,
             nav_ms: Vec::new(),
+            nav_abs_ms: 0,
             bit_off: None,
             nav_bits: Vec::new(),
             nav_scanned: 0,
@@ -698,6 +709,7 @@ impl Channel {
             if self.nav_ms.len() > 200_000 {
                 let drop = self.nav_ms.len() - 200_000;
                 self.nav_ms.drain(..drop);
+                self.nav_abs_ms += drop as u64;
             }
         }
         (ip * ip + qp * qp, qp * qp, inz * inz + qnz * qnz)
@@ -762,6 +774,7 @@ impl Channel {
             if ntrans >= 20 && cnt as f64 / ntrans as f64 > 0.5 {
                 self.bit_off = Some(best);
                 self.nav_ms.drain(..best);
+                self.nav_abs_ms += best as u64;
                 // new grid: the flip-dip audit starts over
                 self.dip_first = 0.0;
                 self.dip_last = 0.0;
@@ -802,6 +815,7 @@ impl Channel {
             let s: f64 = self.nav_ms[..20].iter().sum();
             self.nav_bits.push(if s > 0.0 { 1 } else { 0 });
             self.nav_ms.drain(..20);
+            self.nav_abs_ms += 20;
         }
     }
 
@@ -819,6 +833,7 @@ impl Channel {
                 Some(off) => {
                     self.bit_off = Some(off);
                     self.nav_ms.drain(..off);
+                    self.nav_abs_ms += off as u64;
                 }
                 None => return,
             }
@@ -827,6 +842,7 @@ impl Channel {
             let b = crate::beidou_d1::nh_bit(&self.nav_ms[..20]);
             self.nav_bits.push(b);
             self.nav_ms.drain(..20);
+            self.nav_abs_ms += 20;
         }
     }
 
@@ -858,12 +874,22 @@ impl Channel {
         if self.sys != Sys::Sbas {
             return None;
         }
-        let (soft, par) = crate::sbas::symbols_from_prompt_par(&self.nav_ms, self.sbas_par);
+        // Pair on the constant ABSOLUTE 2 ms grid: `par` is the absolute
+        // parity (pairs hold absolute 1 ms indices (k, k+1), k ≡ par), the
+        // queue-relative start `s` follows from where the queue head sits
+        // (nav_abs_ms). A straddling leftover ms then pairs with the first
+        // fresh prompt instead of flipping the grid for a whole second (the
+        // par=1 phase slip) — and the latch/change detector below compare
+        // absolute parities, so the queue-head shift no longer reads as a
+        // pairing change.
+        let (soft, s, par) =
+            crate::sbas::symbols_from_prompt_abs(&self.nav_ms, self.sbas_par, self.nav_abs_ms);
         // drain only the consumed prompts: when the 2 ms symbol grid sits
         // at the odd parity, one straddling ms must survive into the next
         // second or one symbol per second would be lost
-        let used = par + 2 * soft.len();
+        let used = s + 2 * soft.len();
         self.nav_ms.drain(..used);
+        self.nav_abs_ms += used as u64;
         // Generation termination on a symbol-pairing CHANGE (review round
         // 6): while the decode is locked the pairing is latched (round 5);
         // a lock loss releases the latch and the energy probe re-picks. If
@@ -1185,6 +1211,10 @@ impl Channel {
         self.sbas_par = None;
         self.sbas_par_prev = None;
         self.sbas_applied = None;
+        // the absolute pairing grid dies with the generation: the next lock
+        // re-probes from a fresh origin (nav_ms content across the break is
+        // discontinuous or redefined, so the old grid origin is meaningless)
+        self.nav_abs_ms = 0;
         self.sbas_prc.clear();
         self.sbas_mask = None;
         self.sbas_lt.clear();
