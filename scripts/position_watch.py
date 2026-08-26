@@ -14,6 +14,11 @@ never signals a process) and, when the fix epoch changes:
      observations/position_history_diagnostic.jsonl instead: visible,
      but never feeding consumers of the trusted history. Physically
      impossible fixes (plausibility gate below) are not ingested at all.
+     The publication gate (round-11) keeps integrity-INVALID solves out of
+     "position" entirely — they appear only under "position_diagnostic" —
+     so this watcher reads that channel too and appends fresh ones to the
+     diagnostic history under the same sanity gate; without it those
+     solves would go dark.
      Each history row also carries the solve's trust/quality metadata
      (geometry_redundant, integrity_valid, trusted_for_history,
      residual_rms_m, loo, gdop, source), and
@@ -77,11 +82,17 @@ def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
-def read_fix():
-    """Latest fix from state.position.json, flattened, or None."""
+def read_fix(key="position"):
+    """Latest fix from state.position.json, flattened, or None.
+
+    `key` selects the channel: "position" (the position of record) or
+    "position_diagnostic" (solves the publication gate kept out of
+    `position` — integrity-invalid ones, plus a mirror of any
+    valid-but-untrusted solve).
+    """
     with open(STATE_IN) as f:
         st = json.load(f)
-    pos = st.get("position")
+    pos = st.get(key)
     if not isinstance(pos, dict) or pos.get("lat") is None:
         return None
     # The publication gate (round-11) preserves the last VALID fix across
@@ -109,10 +120,10 @@ def read_fix():
     }
 
 
-def last_history_epoch():
+def last_history_epoch(path=HISTORY):
     """Epoch of the last appended line, so a restart doesn't duplicate it."""
     try:
-        with open(HISTORY, "rb") as f:
+        with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             if f.tell() == 0:
                 return None
@@ -157,8 +168,8 @@ def write_state(fixes):
     os.replace(tmp, STATE_OUT)
 
 
-def cycle(seen_epoch):
-    """One poll. Returns the epoch now considered seen (unchanged if none)."""
+def cycle(seen_epoch, seen_diag_epoch):
+    """One poll. Returns the epochs now considered seen (unchanged if none)."""
     fix = read_fix()
     if fix and fix["epoch"] and fix["epoch"] != seen_epoch:
         if not fix_sane(fix):
@@ -182,16 +193,37 @@ def cycle(seen_epoch):
                 f"(rms={fix.get('residual_rms_m')} m, "
                 f"isx={fix.get('isx_km')} km) -> diagnostic history")
         seen_epoch = fix["epoch"]
+    # Diagnostic channel: integrity-INVALID solves live ONLY in
+    # "position_diagnostic" (the round-11 publication gate keeps them out of
+    # "position") and would go dark without a reader. Same ingest law as the
+    # main channel — sane ones land in the diagnostic history, impossible
+    # ones are logged and dropped. A diagnostic row that merely MIRRORS the
+    # current main fix (a valid-but-untrusted solve publishes both) was
+    # already routed above, so epoch equality skips it here.
+    diag = read_fix("position_diagnostic")
+    if (diag and diag["epoch"] and diag["epoch"] != seen_diag_epoch
+            and diag["epoch"] != (fix or {}).get("epoch")):
+        if not fix_sane(diag):
+            log(f"diagnostic fix REJECTED as impossible (alt={diag.get('alt_km')} km, "
+                f"gate={diag.get('gate')}) — kept out of history")
+        else:
+            with open(HISTORY_DIAG, "a") as f:
+                f.write(json.dumps(diag) + "\n")
+            log(f"diagnostic fix {diag['mode']} gate={diag['gate']} "
+                f"(rms={diag.get('residual_rms_m')} m, "
+                f"isx={diag.get('isx_km')} km) -> diagnostic history")
+        seen_diag_epoch = diag["epoch"]
     write_state(load_window(time.time()))
-    return seen_epoch
+    return seen_epoch, seen_diag_epoch
 
 
 def main():
     log(f"position watch starting (obs={OBS})")
     seen = last_history_epoch()
+    seen_diag = last_history_epoch(HISTORY_DIAG)
     while True:
         try:
-            seen = cycle(seen)
+            seen, seen_diag = cycle(seen, seen_diag)
         except Exception as e:
             # a missing/corrupt state file must never kill the watcher
             log(f"cycle failed: {e}")
