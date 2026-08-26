@@ -86,11 +86,16 @@ ROTATING = {"GPS L1 C/A", "Galileo E1", "GLONASS G1", "BeiDou B1I",
 
 def pro_owned():
     """True while live_radio owns the Pro (the 24/7 tracker — AGENTS.md law).
-    A second hackrf_transfer lands its set_freq/set_sample_rate/gain EP0
-    control writes BEFORE start_rx's interface claim fails, retuning the
-    radio under the tracker: each band cycle ended in a full mass-unlock
-    (2026-08-26 14:04:40 / 14:23:11 collapses, one per cycle). Never even
-    attempt the open. Unknown -> owned (fail closed)."""
+    The gate is the law itself, not a micro-mechanism: a second
+    hackrf_transfer against the busy Pro fails inside hackrf_open
+    (libusb set_configuration + claim_interface — the claim is at OPEN,
+    not start_rx), so no register writes ever land; the earlier commit's
+    EP0-retune story was WRONG (round-14 review). What contending cycles
+    actually did: process churn + 80 MB /tmp snapshot writes + acquisition
+    spawns coincided with stream gaps and tracker-wide reseeds (the
+    14:04:40 collapse followed a 131 ms stream gap; the gap's source is
+    correlation, not proof). What is verified: zero realigns and zero big
+    gaps since this gate went in. Unknown -> owned (fail closed)."""
     try:
         out = subprocess.run(["pgrep", "-f", "examples/live_radio"],
                              capture_output=True, text=True).stdout.split()

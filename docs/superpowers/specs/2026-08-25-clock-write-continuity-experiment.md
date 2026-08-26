@@ -93,17 +93,23 @@ add-back existed. The read-back leg remains the decisive test for what the
 hardware physically holds — the bookkeeping artifact is now believed dead,
 not the question of what a write physically does.
 
-### Round-11 erratum (2026-08-26): the read-back leg is not runnable as written
+### Round-11 erratum (2026-08-26), CORRECTED same day (round-14)
 
-The vendor crate has NO radio-register read path (no RadioReadReg request),
-and the libhackrf getter is software bookkeeping — nothing on the host can
-report what the correction register physically contains. The register-read
-half of the measurement leg therefore requires firmware first (a read-back
-control-IN request for the clock-correction register, returning the applied
-word + sequence). The tick-rate half (`state.tick.json` before/after a
-single shadow write) remains runnable as specified. Until the firmware leg
-exists, "what a write physically does" stays unanswered and re-actuation
-stays off the table.
+~~The vendor crate has NO radio-register read path~~ — too narrow a lens:
+the RUST vendor crate the tracker drives has no read path, but the C host
+stack does: `hackrf_radio_read_register(BANK_APPLIED, …)` is a real vendor
+request (b4041dd5-era, present on the flashed 0x469-v2 firmware), exposed
+as `hackrf_debug -d <serial> --radio -n 23 -r` (bank 0 = APPLIED by
+default). The getter is DEVICE-side bookkeeping — the firmware's applied
+bank, i.e. what it believes it wrote, not a physical Si5351 readback — and
+on a fresh boot the register reads RADIO_UNSET (reported as 0 ppm), so a
+read RIGHT NOW settles the six-round-old unity question: 0/UNSET proves
+the applied bank never received a correction this boot. The full leg runs
+in a tracker-down window with the user present: read, one scripted write
+(HACKRF_GNSS_ACTUATE=1), read back, and state.tick.json before/after —
+that establishes what a write physically does to the tick rate. The tick
+half remains runnable any time. Re-actuation stays off the table until the
+leg has run.
 
 ## Safety
 
