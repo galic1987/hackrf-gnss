@@ -1726,6 +1726,12 @@ impl Band {
         // big gaps).
         let gap_ms = band_samples * 1000 / self.fs as u64;
         for ch in self.channels.iter_mut() {
+            // Lost samples break every channel's carrier-phase chain —
+            // publish the slip so no consumer mistakes post-gap phase for
+            // continuous (round-12; phase stays a diagnostic observable
+            // until the full P0b contract lands).
+            ch.slip = true;
+            ch.slip_count += 1;
             if ch.sys == Sys::Sbas {
                 ch.sbas_reset_decoder(false);
             } else {
@@ -2046,13 +2052,25 @@ impl Band {
                             ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
                             // self-decoded ephemeris once subframes 1-3 exist
-                            // (scan the FULL buffer — 1/2/3 may predate this window)
-                            if ch.eph.is_none() {
+                            // (scan the FULL buffer — 1/2/3 may predate this window).
+                            // Refresh on a genuinely NEWER issue (round-12:
+                            // first-issue-only let a stale decode outlive its
+                            // replacement broadcast for hours); a same-or-older
+                            // re-parse keeps the incumbent.
+                            {
                                 let all = crate::gps::lnav::find_subframes(&ch.nav_bits);
                                 if let Some(mut e) = crate::gps::lnav::parse_ephemeris(&all) {
-                                    e.prn = ch.prn as u8;
-                                    eprintln!("live[{}]: self-decoded ephemeris for PRN {}", self.name, ch.prn);
-                                    ch.eph = Some(e);
+                                    let newer = ch.eph.as_ref().map_or(true, |cur| {
+                                        (e.week, e.toe) > (cur.week, cur.toe)
+                                    });
+                                    if newer {
+                                        e.prn = ch.prn as u8;
+                                        eprintln!("live[{}]: {}ephemeris for PRN {} (week {} toe {:.0})",
+                                                  self.name,
+                                                  if ch.eph.is_some() { "refreshed " } else { "self-decoded " },
+                                                  ch.prn, e.week, e.toe);
+                                        ch.eph = Some(e);
+                                    }
                                 }
                             }
                         }
@@ -2073,12 +2091,21 @@ impl Band {
                             ch.anchor = Some((t_bit, t_tx));
                             ch.anchor_t = t_proc;
                             ch.nav_scanned = abs_bit + 300;
-                            if ch.eph.is_none() {
+                            // Same refresh-on-newer-issue law as GPS above.
+                            {
                                 let all = crate::beidou_d1::find_subframes(&ch.nav_bits);
                                 if let Some(mut e) = crate::beidou_d1::parse_ephemeris(&all) {
-                                    e.prn = ch.prn as u8;
-                                    eprintln!("live[{}]: self-decoded D1 ephemeris for BDS PRN {}", self.name, ch.prn);
-                                    ch.eph = Some(e);
+                                    let newer = ch.eph.as_ref().map_or(true, |cur| {
+                                        (e.week, e.toe) > (cur.week, cur.toe)
+                                    });
+                                    if newer {
+                                        e.prn = ch.prn as u8;
+                                        eprintln!("live[{}]: {}D1 ephemeris for BDS PRN {} (week {} toe {:.0})",
+                                                  self.name,
+                                                  if ch.eph.is_some() { "refreshed " } else { "self-decoded " },
+                                                  ch.prn, e.week, e.toe);
+                                        ch.eph = Some(e);
+                                    }
                                 }
                             }
                         }
@@ -4608,9 +4635,11 @@ mod tests {
         assert_eq!(gps.nav_abs_ms, 5016, "the origin advances by the gap, not re-anchors");
         assert_eq!(gps.bit_off, None, "bit-group phase must relock post-gap");
         assert!(gps.prev_group_tail.is_none(), "the group-boundary tail is stale");
+        assert!(gps.slip && gps.slip_count == 1, "lost samples break the carrier-phase chain");
         let sbas = &band.channels[1];
         assert!(sbas.nav_ms.is_empty(), "the SBAS decode window must not cross lost samples");
         assert_eq!(sbas.nav_abs_ms, 0, "the SBAS pairing grid re-anchors");
         assert!(sbas.sbas_par.is_none() && sbas.sbas_applied.is_none());
+        assert!(sbas.slip && sbas.slip_count == 1, "SBAS carrier phase is equally broken");
     }
 }
