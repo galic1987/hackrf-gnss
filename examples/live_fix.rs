@@ -833,23 +833,43 @@ fn main() {
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
-            let doc = serde_json::json!({
+            // Publication gate (round-11): an integrity-INVALID solve never
+            // becomes the position of record — it goes to the diagnostic
+            // channel with machine-readable reasons, and the last VALID fix
+            // survives in `position` with its own epoch (honestly aging).
+            // Runtime published 159-325 m residual candidates as state.
+            // position before this gate.
+            let fix_json = serde_json::json!({
+                "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
+                "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
+                "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
+                "gate": gate,
+                "geometry_redundant": geo_red, "integrity_valid": integ,
+                "trusted_for_history": trusted,
+                "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                "n_sbas_excluded": n_sbas_excluded,
+                "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
+                "bds_quarantined": bds_quarantined,
+                "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 "epoch": now,
-                "ttl_s": 900,
-                "position": {
-                    "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
-                    "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
-                    "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
-                    "gate": gate,
-                    "geometry_redundant": geo_red, "integrity_valid": integ,
-                    "trusted_for_history": trusted,
-                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
-                    "n_sbas_excluded": n_sbas_excluded,
-                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
-                    "bds_quarantined": bds_quarantined,
-                    "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
-                }
             });
+            let mut doc = serde_json::json!({ "epoch": now, "ttl_s": 900 });
+            if integ {
+                doc["position"] = fix_json.clone();
+                if !trusted {
+                    doc["position_diagnostic"] = fix_json.clone();
+                }
+            } else {
+                // preserve the last valid position across invalid eras
+                if let Ok(prev) = std::fs::read_to_string(OUT) {
+                    if let Ok(pj) = serde_json::from_str::<serde_json::Value>(&prev) {
+                        if let Some(p) = pj.get("position") {
+                            doc["position"] = p.clone();
+                        }
+                    }
+                }
+                doc["position_diagnostic"] = fix_json;
+            }
             let tmp = format!("{OUT}.tmp");
             std::fs::write(&tmp, doc.to_string()).unwrap();
             std::fs::rename(&tmp, OUT).unwrap();

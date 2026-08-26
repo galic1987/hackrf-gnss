@@ -84,8 +84,11 @@ def read_fix():
     pos = st.get("position")
     if not isinstance(pos, dict) or pos.get("lat") is None:
         return None
+    # The publication gate (round-11) preserves the last VALID fix across
+    # invalid eras under a fresh file epoch — the fix's own nested epoch is
+    # the truth for freshness/dedupe; fall back to the file epoch when absent.
     return {
-        "epoch": st.get("epoch"),
+        "epoch": pos.get("epoch") or st.get("epoch"),
         "lat": pos["lat"],
         "lon": pos["lon"],
         "alt_km": pos.get("alt_km"),
