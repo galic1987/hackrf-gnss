@@ -95,9 +95,12 @@ OMEGA_GAL = 7.2921151467e-5
 # PZ-90.02 constants for the GLONASS ICD state-vector model
 MU_GLO = 398600.44e9          # m^3/s^2
 AE_GLO = 6378136.0            # m
-C20_GLO = -1082.63e-6         # zonal harmonic (ICD sign convention)
+C20_GLO = -1082.63e-6         # zonal harmonic (negative value; the J2 TERM
+                              # below carries a PLUS sign — see _glo_deriv)
 OMEGA_GLO = 7.292115e-5       # rad/s
-GLO_STEP_S = 30.0             # RK4 step; ~200 m over a 30-min arc
+GLO_STEP_S = 30.0             # RK4 step; ~2 m over a 30-min arc (measured by
+                              # propagating real BRDC records to the next
+                              # record's epoch: median 2.2 m, p90 3.5 m)
 GLO_FIT_S = 7200.0            # max |t - tb| (BRDC records are 30 min apart,
                               # so <= 15 min when the HOURLY file is fresh;
                               # 2 h tolerance rides out file lag at km-class
@@ -246,11 +249,18 @@ def _glo_deriv(st, acc):
     r = math.sqrt(r2)
     zz = z * z / r2
     j2 = 1.5 * C20_GLO * MU_GLO * AE_GLO * AE_GLO / (r2 * r2 * r)
-    ax = -MU_GLO * x / (r2 * r) - j2 * x * (1.0 - 5.0 * zz) \
+    # J2 term sign: C20 is NEGATIVE and the term enters with a PLUS here —
+    # at the equator (zz=0) it then points inward (-|1.5*C20|... * x), the
+    # standard J2 acceleration. Empirically decisive: propagating 202 real
+    # BRDC R-records to the next record's epoch gives median 2.2 m with this
+    # sign and 201 m with the opposite one (round-9b review ablation,
+    # reproduced 2026-08-26). The Coriolis/centrifugal terms are likewise
+    # mandatory (dropping them: ~600 km over the same arc).
+    ax = -MU_GLO * x / (r2 * r) + j2 * x * (1.0 - 5.0 * zz) \
         + OMEGA_GLO ** 2 * x + 2.0 * OMEGA_GLO * vy + acc[0]
-    ay = -MU_GLO * y / (r2 * r) - j2 * y * (1.0 - 5.0 * zz) \
+    ay = -MU_GLO * y / (r2 * r) + j2 * y * (1.0 - 5.0 * zz) \
         + OMEGA_GLO ** 2 * y - 2.0 * OMEGA_GLO * vx + acc[1]
-    az = -MU_GLO * z / (r2 * r) - j2 * z * (3.0 - 5.0 * zz) + acc[2]
+    az = -MU_GLO * z / (r2 * r) + j2 * z * (3.0 - 5.0 * zz) + acc[2]
     return (vx, vy, vz, ax, ay, az)
 
 

@@ -192,6 +192,28 @@ def main():
     except ValueError:
         check("glo fit window enforced", True)
 
+    # --- THE J2-sign regression test (round-9b) -----------------------------
+    # Real consecutive broadcast records (BRDC 2026-08-26, GLONASS PRN 1):
+    # propagate the first record exactly one 30-min record interval forward
+    # and compare against the second record's broadcast position. With the
+    # correct J2 term sign this lands within metres; with the wrong sign it
+    # lands ~200 m out — the failure the shipped code once REPORTED as its
+    # accuracy. This experiment, not an internal consistency check, is what
+    # validates the model.
+    glo_real_a = {
+        "sys": 3, "prn": 1,
+        "pos": (850913.5742188001, 13389219.72656, 21689637.20703),
+        "vel": (-2062.1538162230004, 2142.408370972, -1240.293502808),
+        "acc": (2.793967723846e-06, 0.0, -9.313225746155e-07),
+        "tb_sow": 292518.0,
+    }
+    glo_truth_b = (-2343950.683594, 17243422.36328, 18647217.77344)
+    pT, _ = sp.glo_state(glo_real_a, glo_real_a["tb_sow"] + 1800.0)
+    errT = math.dist(pT, glo_truth_b)
+    check("glo J2 sign: real record -> next record 30 min, < 10 m",
+          errT < 10.0, f"err={errT:.2f} m (wrong sign gives ~200 m)")
+
+
 
     # --- roller parser mapping -------------------------------------------------
     import archive_roller as roller
