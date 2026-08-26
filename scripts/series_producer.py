@@ -187,11 +187,16 @@ def main():
 
         # cross-producer consensus: weighted mean over ALL live drift rows,
         # regardless of which producer wrote them — with outlier arbitration
-        # (quarantine when arbitrable, suspect-midpoint when not)
+        # (quarantine when arbitrable, suspect-midpoint when not). ATSC rows
+        # ride the second radio via CLKOUT→CLKIN: with no positively verified
+        # shared clock they are NOT an independent voter (round-10 review) —
+        # keep them charted, out of the vote.
+        clkin_ok = (st.get("clock") or {}).get("clkin_signal_present") is True
         voters = [(s["band"], s["value"], max(s.get("sigma") or 0.05, 0.05))
                   for s in st.get("sources", [])
                   if s.get("kind") == "ClockDriftPpm" and s.get("value") is not None
                   and s.get("band") != "PC clock"      # client of the reference, not a voter
+                  and (clkin_ok or not s.get("band", "").startswith("ATSC"))
                   and now - s.get("epoch", 0) < 1800]  # rotation-slowed voter window
         cons, xalerts, suspect = elect(voters)
         if cons is not None:

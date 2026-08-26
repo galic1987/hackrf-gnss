@@ -123,9 +123,13 @@ pub fn parse_ephemeris(subs: &[Subframe]) -> Option<BrdcEph> {
     let w3 = got.get(&3)?;
 
     let mut e = BrdcEph::default();
-    // subframe 1: clock + week + TGD
-    e.week = bu(&w1[2], 1, 10) as f64;
+    // subframe 1: clock + week + TGD + health + IODC. Word 3 layout
+    // (IS-GPS-200 20.3.3.3.1; RTKLIB decode_subfrm1 reads the same offsets):
+    // [week 10][L2 codes 2][URA 4][SV health 6][IODC msb 2].
+    e.week = bu(&w1[2], 1, 10) as f64; // broadcast 10-bit week (mod 1024)
+    e.health = Some(bu(&w1[2], 17, 6) as u8);
     let iodc = ((bu(&w1[2], 23, 2) << 8) | bu(&w1[7], 1, 8)) as u64;
+    e.iodc = Some(iodc as u16);
     e.tgd = bi(&w1[6], 17, 8) as f64 * 2f64.powi(-31);
     e.toc = bu(&w1[7], 9, 16) as f64 * 16.0;
     e.af2 = bi(&w1[8], 1, 8) as f64 * 2f64.powi(-55);
@@ -144,6 +148,10 @@ pub fn parse_ephemeris(subs: &[Subframe]) -> Option<BrdcEph> {
     e.cus = bi(&w2[7], 1, 16) as f64 * 2f64.powi(-29);
     e.sqrt_a = ((bu(&w2[7], 17, 8) << 24) | bu(&w2[8], 1, 24)) as f64 * 2f64.powi(-19);
     e.toe = bu(&w2[9], 1, 16) as f64 * 16.0;
+    // fit interval flag, subframe 2 word 10 bit 17 (IS-GPS-200 20.3.4.4;
+    // RTKLIB decode_subfrm2 reads the same bit): 0 = 4 h fit; 1 = "> 4 h",
+    // whose actual span needs IODC + Table 20-XII — not knowable here.
+    e.fit_h = if bu(&w2[9], 17, 1) == 0 { Some(4.0) } else { None };
 
     // subframe 3: orbit part 2
     e.cic = bi(&w3[2], 1, 16) as f64 * 2f64.powi(-29);
@@ -168,9 +176,17 @@ pub fn parse_ephemeris(subs: &[Subframe]) -> Option<BrdcEph> {
     }
     // carry the IODE: WAAS long-term corrections name the ephemeris issue
     // they were generated against, and the application must match it
-    // (DO-229D Table A-10 Note 3); RINEX has no IODE, so BRDC-parsed
-    // ephemerides stay None (unverifiable) and only self-decoded ones gate
+    // (DO-229D Table A-10 Note 3). RINEX-3 GPS nav records ALSO carry the
+    // IODE (line 2 field 1, parsed in broadcast.rs since round 10), so both
+    // GPS sources gate; only BDS stays None (AODE is a different quantity).
     e.iode = Some(iode as u8);
+    // lifecycle honesty (round-11 review): when WE decoded it. The
+    // tracker_eph.json cache envelope is re-stamped with a fresh wall clock
+    // on every write and must never be read as issue/decode freshness.
+    e.rx_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .ok();
     if !(5000.0..5500.0).contains(&e.sqrt_a) || !(0.0..0.05).contains(&e.e) {
         return None;
     }
@@ -222,6 +238,13 @@ mod tests {
         // correction was generated against (DO-229D Table A-10 Note 3)
         let e = eph_for(20).expect("PRN 20 decodes");
         assert!(e.iode.is_some(), "decoded ephemeris must carry its IODE");
+        // round-11 completeness: health (SF1 W3 bits 17-22), IODC, the fit
+        // flag's 4 h/unknown mapping, and the decode-time rx_epoch
+        assert!(e.health.is_some() && e.health.unwrap() <= 63);
+        assert_eq!(e.iodc.map(|v| v & 0xFF), e.iode.map(|v| v as u16),
+            "the IODE-consistency check already proved IODC's low byte");
+        assert!(e.fit_h == Some(4.0) || e.fit_h == None);
+        assert!(e.rx_epoch.is_some(), "decode stamps its receive epoch");
     }
 
     #[test]

@@ -333,32 +333,107 @@ def glo_motion(e, t, lat_deg, lon_deg):
 # --- ephemeris sources ---------------------------------------------------------
 
 def _df(s):
+    """Strict RINEX-3 D/E-exponent float field: None on blank OR malformed
+    (round-11 review: the old 0.0 zero-fill fabricated plausible
+    ephemerides out of corrupt lines). Non-finite spellings parse in Python
+    but are not RINEX content. Mirrors df_strict in src/gps/broadcast.rs."""
     t = s.strip()
     if not t:
-        return 0.0
+        return None
     try:
-        return float(t.replace("D", "E").replace("d", "E"))
+        v = float(t.replace("D", "E").replace("d", "E"))
     except ValueError:
-        return 0.0
+        return None
+    return v if math.isfinite(v) else None
 
 
 def _fld(line, a, b):
     return line[a:min(b, len(line))] if a < len(line) else ""
 
 
-def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
+# Inclination evidence bands for the radians-vs-semicircles unit decision
+# (mirror src/gps/broadcast.rs). Live MEO GNSS inclinations span 53-59 deg
+# and drifting BDS IGSOs exceed 60 deg (live BRDC 2026-08-26: C09 at i0 =
+# 1.0523 rad = 60.3 deg): 0.93-1.06 rad or 0.294-0.336 semicircles. A
+# record's raw |i0| is rad-like in [0.85, 1.10], sc-like in [0.25, 0.36],
+# neutral below 0.25 (BDS GEOs ~0.02-0.12 carry no unit evidence), and
+# physically impossible under either unit anywhere else (no vote; the
+# per-record sanity check rejects it).
+I0_RAD_LIKE = (0.85, 1.10)
+I0_SC_LIKE = (0.25, 0.36)
+I0_GREY = (0.36, 0.85)   # impossible under either unit: reject outright
+
+
+def _detect_ang(lines, hdr, want):
+    """Radians-vs-semicircles verdict for one constellation:
+    "radians" | "semicircles" | "ambiguous". Per-record i0 votes over the
+    WHOLE constellation (no early-exit cap: BKG files sort records by PRN
+    and a capped early scan of a BDS constellation can see nothing but
+    unit-neutral GEOs). Both vote kinds present -> "ambiguous": the file is
+    internally inconsistent — fail closed, every record of the constellation
+    is rejected rather than guessed. No decided votes -> semicircles (spec
+    default; a GEO-only BDS constellation lands here). One corrupt record
+    earns no vote and cannot flip the file."""
+    rad = sc = 0
+    j = hdr
+    while j + 4 < len(lines):
+        ln = lines[j]
+        if ln.startswith(want) and len(ln) > 4:
+            v = _df(_fld(lines[j + 4], 4, 23))
+            if v is not None:
+                m = abs(v)
+                if I0_RAD_LIKE[0] <= m <= I0_RAD_LIKE[1]:
+                    rad += 1
+                elif I0_SC_LIKE[0] <= m <= I0_SC_LIKE[1]:
+                    sc += 1
+            j += 8
+            continue
+        j += 1
+    if rad and sc:
+        return "ambiguous"
+    return "radians" if rad else "semicircles"
+
+
+def _i0_sane(i0_raw, unit):
+    """Per-record i0 sanity against the chosen unit (mirror of i0_sane in
+    src/gps/broadcast.rs): [0, 1] semicircles / [0, pi] radians, never
+    inside the grey band. The sanity range deliberately does NOT gate
+    inclination — drifting BDS IGSOs legitimately exceed 60 deg (live
+    BRDC 2026-08-26 C09); garbage protection is the grey band plus the
+    vote detection."""
+    if i0_raw < 0.0 or I0_GREY[0] < i0_raw < I0_GREY[1]:
+        return False
+    return i0_raw <= (1.0 if unit == "semicircles" else math.pi)
+
+
+def parse_rinex_nav(text, now_sow=None, leap_s=18.0, stats=None):
     """GPS (G) + BeiDou (C) + Galileo (E) + GLONASS (R) records of a RINEX-3
     MIXED nav file -> {(sys,prn): eph}.
-    Port of parse_rinex_gps/parse_rinex_bds (src/gps/broadcast.rs,
+    Port of parse_rinex_gps_nav/parse_rinex_bds_nav (src/gps/broadcast.rs,
     src/beidou_d1.rs), extended: Galileo is the same 8-line Kepler record
     (GST ~= GPST, so one timescale serves all Kepler constellations);
     GLONASS is a 4-line PZ-90 state-vector record (fields mirror
-    GloEphemeris in src/glonass_nav.rs). Latest toe wins per PRN; for
-    GLONASS the record with tb nearest now_sow wins (latest tb when
-    now_sow is None). BKG files carry angles in RADIANS (detected from
-    first record's i0); BDS times shifted BDT->GPST (+14 s); R epochs are
-    UTC(SU), shifted +leap to GPST and tb rounded to its 15-min grid (the
-    +3 h Moscow labeling of tb in the ICD is a multiple of 15 min, so the
+    GloEphemeris in src/glonass_nav.rs).
+
+    STRICT (round-11 review): any blank/malformed CONSUMED field rejects
+    the record (never a silent 0.0); the angle unit is decided per
+    constellation by per-record i0 votes (_detect_ang) — contradictory
+    content fails closed ("ambiguous", every record of the constellation
+    rejected); each record's raw i0 must then pass the chosen unit's
+    sanity band (_i0_sane). When `stats` is a dict it receives the ledger:
+    stats["rejected"] (count) and stats["units"] (per-constellation
+    verdict).
+
+    Newest VALID issue per PRN wins: (week, toe) tuple compare — RINEX
+    weeks are continuous (3.05 §4.1.1/§4.1.4), rollover-exact across the
+    week boundary (the old bare `toe > toe` kept last week's record over a
+    fresh one). For GLONASS the record with tb nearest now_sow wins
+    (latest tb when now_sow is None). BDS epochs/toe/toc are BDT, shifted
+    BDT->GPST (+14 s, wrapped); G-record epochs are ALREADY GPST (RINEX-3
+    time-system code G — no leap term; the pre-round-11 port added +18 s,
+    putting toc 18 s past toe on every record); R epochs are UTC(SU),
+    shifted +leap to GPST and tb rounded to its 15-min grid (the +3 h
+    Moscow labeling of tb in the ICD is a multiple of 15 min, so the
     UTC(SU) rounding lands on the same instant). BDS GEOs and unhealthy
     (Bn != 0) GLONASS records skipped."""
     lines = text.splitlines()
@@ -366,26 +441,15 @@ def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
     while hdr < len(lines) and "END OF HEADER" not in lines[hdr]:
         hdr += 1
     hdr += 1
-    # unit detection per constellation: take the MAX |i0| over the early
-    # records — a GEO's small inclination (i0 ~ 0.02 rad) would slip under
-    # the radians threshold and flip the whole file to semicircles
-    # (mirrors parse_rinex_gps / parse_rinex_bds in src/).
-    ang = {}
-    for want in ("G", "C", "E"):
-        a = math.pi  # spec default: semicircles
-        max_i0 = 0.0
-        j = hdr
-        scanned = 0
-        while j + 4 < len(lines) and scanned < 64:
-            if lines[j].startswith(want) and len(lines[j]) > 4:
-                max_i0 = max(max_i0, abs(_df(_fld(lines[j + 4], 4, 23))))
-                scanned += 1
-                j += 8
-                continue
-            j += 1
-        if max_i0 > 0.6:
-            a = 1.0  # radians (BKG)
-        ang[want] = a
+    ang = {want: _detect_ang(lines, hdr, want) for want in ("G", "C", "E")}
+    if stats is not None:
+        stats["units"] = dict(ang)
+        stats["rejected"] = 0
+
+    def rejected():
+        if stats is not None:
+            stats["rejected"] += 1
+
     out = {}
     i = hdr
     while i < len(lines):
@@ -404,11 +468,21 @@ def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
                 h, mi_, s = (int(_fld(ln, 15, 17)), int(_fld(ln, 18, 20)),
                              int(_fld(ln, 21, 23)))
             except ValueError:
+                rejected()
                 i += 1
                 continue
             b = lines[i + 1:i + 4]
             f = lambda l, k: _df(_fld(b[l], 4 + k * 19, 4 + (k + 1) * 19))
-            if f(0, 3) != 0.0:            # Bn health flag: 0 = healthy
+            vals = {(l, k): f(l, k) for l in range(3) for k in range(3)}
+            vals[(0, 3)] = f(0, 3)                 # Bn health flag
+            tau_n = _df(_fld(ln, 23, 42))          # line carries -tau_n
+            gamma_n = _df(_fld(ln, 42, 61))
+            if any(v is None for v in vals.values()) \
+                    or tau_n is None or gamma_n is None:
+                rejected()
+                i += 4
+                continue
+            if vals[(0, 3)] != 0.0:                # Bn: 0 = healthy
                 i += 4
                 continue
             days = jdn(y, mo, d) - jdn(1980, 1, 6)
@@ -416,11 +490,11 @@ def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
             tb_sod = round(sod / 900.0) * 900.0   # tb on its 15-min grid
             e = {
                 "sys": 3, "prn": prn,
-                "pos": (f(0, 0) * 1e3, f(1, 0) * 1e3, f(2, 0) * 1e3),
-                "vel": (f(0, 1) * 1e3, f(1, 1) * 1e3, f(2, 1) * 1e3),
-                "acc": (f(0, 2) * 1e3, f(1, 2) * 1e3, f(2, 2) * 1e3),
-                "tau_n_s": -_df(_fld(ln, 23, 42)),   # line carries -tau_n
-                "gamma_n": _df(_fld(ln, 42, 61)),
+                "pos": tuple(vals[(l, 0)] * 1e3 for l in range(3)),
+                "vel": tuple(vals[(l, 1)] * 1e3 for l in range(3)),
+                "acc": tuple(vals[(l, 2)] * 1e3 for l in range(3)),
+                "tau_n_s": -tau_n,
+                "gamma_n": gamma_n,
                 "tb_sow": (days * 86400 + tb_sod + leap_s) % WEEK_S,
             }
             key = (3, prn)
@@ -438,9 +512,16 @@ def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
         if i + 7 >= len(lines):
             break
         is_bds = ln[0] == "C"
+        unit = ang[ln[0]]
+        if unit == "ambiguous":
+            # fail closed: contradictory unit content — never guessed
+            rejected()
+            i += 8
+            continue
         try:
             prn = int(_fld(ln, 1, 3))
         except ValueError:
+            rejected()
             i += 1
             continue
         if is_bds and prn in BDS_GEO_PRNS:
@@ -450,28 +531,46 @@ def parse_rinex_nav(text, now_sow=None, leap_s=18.0):
             y, mo, d = (int(_fld(ln, 4, 8)), int(_fld(ln, 9, 11)), int(_fld(ln, 12, 14)))
             h, mi_, s = (int(_fld(ln, 15, 17)), int(_fld(ln, 18, 20)), int(_fld(ln, 21, 23)))
         except ValueError:
+            rejected()
             i += 1
             continue
         b = lines[i + 1:i + 8]
         f = lambda l, k: _df(_fld(b[l], 4 + k * 19, 4 + (k + 1) * 19))
-        an = ang[ln[0]]
-        dt = 14.0 if is_bds else 0.0 if ln[0] == "E" else 18.0
-        # BDT+14=GPST ; GST~=GPST already ; UTC+leap(18)=GPST
-        e = {
-            "sys": 1 if is_bds else 0 if ln[0] == "G" else 2, "prn": prn,
+        raw = {
             "af0": _df(_fld(ln, 23, 42)), "af1": _df(_fld(ln, 42, 61)),
             "af2": _df(_fld(ln, 61, 80)),
-            "crs": f(0, 1), "delta_n": f(0, 2) * an, "m0": f(0, 3) * an,
+            "crs": f(0, 1), "delta_n": f(0, 2), "m0": f(0, 3),
             "cuc": f(1, 0), "e": f(1, 1), "cus": f(1, 2), "sqrt_a": f(1, 3),
-            "toe": f(2, 0) + (14.0 if is_bds else 0.0),
-            "cic": f(2, 1), "omega0": f(2, 2) * an, "cis": f(2, 3),
-            "i0": f(3, 0) * an, "crc": f(3, 1),
-            "omega": f(3, 2) * an, "omega_dot": f(3, 3) * an,
-            "idot": f(4, 0) * an, "week": f(4, 2), "tgd": f(5, 2),
+            "toe": f(2, 0), "cic": f(2, 1), "omega0": f(2, 2), "cis": f(2, 3),
+            "i0": f(3, 0), "crc": f(3, 1),
+            "omega": f(3, 2), "omega_dot": f(3, 3),
+            "idot": f(4, 0), "week": f(4, 2), "tgd": f(5, 2),
+        }
+        if any(v is None for v in raw.values()) or not _i0_sane(raw["i0"], unit):
+            rejected()
+            i += 8
+            continue
+        an = 1.0 if unit == "radians" else math.pi
+        # BDT+14=GPST (wrapped) ; GST~=GPST and G-epochs ARE GPST already
+        dt = 14.0 if is_bds else 0.0
+        toe = raw["toe"] + 14.0 if is_bds else raw["toe"]
+        e = {
+            "sys": 1 if is_bds else 0 if ln[0] == "G" else 2, "prn": prn,
+            "af0": raw["af0"], "af1": raw["af1"], "af2": raw["af2"],
+            "crs": raw["crs"], "delta_n": raw["delta_n"] * an,
+            "m0": raw["m0"] * an,
+            "cuc": raw["cuc"], "e": raw["e"], "cus": raw["cus"],
+            "sqrt_a": raw["sqrt_a"],
+            "toe": toe % WEEK_S,
+            "cic": raw["cic"], "omega0": raw["omega0"] * an,
+            "cis": raw["cis"], "i0": raw["i0"] * an, "crc": raw["crc"],
+            "omega": raw["omega"] * an, "omega_dot": raw["omega_dot"] * an,
+            "idot": raw["idot"] * an, "week": raw["week"], "tgd": raw["tgd"],
             "toc": sow_from_calendar(y, mo, d, h, mi_, s, dt),
         }
         key = (e["sys"], prn)
-        if key not in out or e["toe"] > out[key]["toe"]:
+        cur = out.get(key)
+        if cur is None or (e["week"], e["toe"]) > (cur["week"], cur["toe"]):
             out[key] = e
         i += 8
     return out
@@ -493,12 +592,20 @@ def load_ephemeris(now=None):
                     pass
                 break
         now_sow = gps_sow_unix(now, leap_s) if now else None
-        brdc = parse_rinex_nav(text, now_sow=now_sow, leap_s=leap_s)
+        st = {}
+        brdc = parse_rinex_nav(text, now_sow=now_sow, leap_s=leap_s, stats=st)
         eph.update(brdc)
         per = {}
         for sid, _ in brdc:
             per[SYS_NAME[sid][:3]] = per.get(SYS_NAME[sid][:3], 0) + 1
         notes.append("brdc:" + ",".join(f"{k}={v}" for k, v in sorted(per.items())))
+        # round-11: the parser's rejection ledger is operator-visible —
+        # a malformed-record storm must show up in the state file's notes
+        if st.get("rejected"):
+            amb = ",".join(k for k, v in (st.get("units") or {}).items()
+                           if v == "ambiguous")
+            notes.append(f"brdc-rej:{st['rejected']}"
+                         + (f"(fail-closed:{amb})" if amb else ""))
     except Exception as ex:
         notes.append(f"brdc:none({ex})")
     try:

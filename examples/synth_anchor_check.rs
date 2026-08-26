@@ -88,6 +88,9 @@ fn main() {
                 sys: 0,
                 // sim truth carries no IODE — None, as for BRDC-loaded eph
                 iode: None,
+                // round-11 BrdcEph completeness fields (health/fit_h/iodc/
+                // rx_epoch) don't exist in sim truth: defaults
+                ..Default::default()
             },
         );
     }

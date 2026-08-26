@@ -33,7 +33,10 @@
 
 use std::collections::HashMap;
 
-use crate::gps::broadcast::{BrdcEph, C_LIGHT};
+use crate::gps::broadcast::{
+    detect_ang_unit, df_opt, df_strict, fld, i0_sane, iparse_strict, AngUnit, BrdcEph, RinexParse,
+    C_LIGHT,
+};
 
 /// BDS ICD gravitational parameter (m^3/s^2).
 pub const MU_BDS: f64 = 3.986004418e14;
@@ -330,6 +333,10 @@ pub fn find_candidates(bits: &[u8]) -> Vec<D1Subframe> {
 /// Assemble D1 subframes 1/2/3 into a broadcast ephemeris (SI units, radians
 /// per BDS ICD pi; toe/toc stored as GPST-equivalent SOW — see module docs).
 /// The three must be consecutive (300-bit spacing, +6 s SOW steps).
+/// `health` carries SatH1 (subframe 1 word 2 bit 13 — RTKLIB
+/// decode_bds_d1 reads the same offset) and `rx_epoch` the wall-clock decode
+/// time (lifecycle honesty: the tracker_eph.json cache envelope is
+/// re-stamped on every write and must not be read as issue freshness).
 pub fn parse_ephemeris(subs: &[D1Subframe]) -> Option<BrdcEph> {
     for a in subs.iter().filter(|s| s.frid == 1) {
         let b = subs.iter().find(|s| {
@@ -341,7 +348,10 @@ pub fn parse_ephemeris(subs: &[D1Subframe]) -> Option<BrdcEph> {
         let (Some(b), Some(c)) = (b, c) else { continue };
         let (d1, d2, d3) = (&a.data, &b.data, &c.data);
         let mut e = BrdcEph { sys: 1, ..Default::default() };
-        // subframe 1: week (BDT), clock, TGD1
+        // subframe 1: week (BDT), clock, TGD1. Word 2 data layout per
+        // BDS-SIS-ICD-B1I: [SOW lsb 12][SatH1 1][AODC 5][URAI 4] — SatH1 at
+        // bit 42 (RTKLIB decode_bds_d1 reads svh from the same offset).
+        e.health = Some(bu(d1, 42, 1) as u8);
         e.week = bu(d1, 60, 13) as f64;
         e.toc = sow_bdt_to_gpst(u2(d1, 73, 9, 90, 8) as f64 * 8.0);
         e.tgd = bi(d1, 98, 10) as f64 * 0.1e-9; // TGD1: B1I group delay
@@ -376,6 +386,11 @@ pub fn parse_ephemeris(subs: &[D1Subframe]) -> Option<BrdcEph> {
         if !(meo || igso) || !(0.0..0.05).contains(&e.e) {
             continue;
         }
+        // lifecycle honesty: when WE decoded it (round-11 review)
+        e.rx_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .ok();
         return Some(e);
     }
     None
@@ -459,28 +474,12 @@ pub fn sat_at_txtime_bds(e: &BrdcEph, t_tx: f64, rx_m: [f64; 3]) -> ([f64; 3], f
 }
 
 // ------------------------------------------------------------------ RINEX BDS
-
-fn fld(line: &str, a: usize, b: usize) -> &str {
-    let n = line.len();
-    if a >= n {
-        ""
-    } else {
-        &line[a..b.min(n)]
-    }
-}
-
-/// Parse a RINEX-3 D-exponent float field (e.g. "-1.234567890123D-04").
-fn df(s: &str) -> f64 {
-    let t = s.trim();
-    if t.is_empty() {
-        return 0.0;
-    }
-    t.replace('D', "E").replace('d', "E").parse().unwrap_or(0.0)
-}
-
-fn iparse(s: &str) -> i64 {
-    s.trim().parse().unwrap_or(0)
-}
+//
+// The strict field helpers (fld / df_strict / df_opt / iparse_strict), the
+// angle-unit machinery (detect_ang_unit / i0_sane / AngUnit) and the parse
+// outcome (RinexParse) are shared with the GPS parser — see
+// src/gps/broadcast.rs; parser parity between the constellations is the
+// point (round-11 review).
 
 fn jdn(y: i64, m: i64, d: i64) -> i64 {
     let a = (14 - m) / 12;
@@ -499,92 +498,132 @@ fn bdt_sow(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> f64 {
 }
 
 /// Parse the BeiDou records of a RINEX-3 MIXED navigation file, keeping the
-/// latest ephemeris (highest `toe`) per PRN. Same record layout as GPS;
-/// differences handled here: epochs/toe/toc are BDT (stored +14 s as
-/// GPST-equivalent SOW, matching the D1 decode path and the t_tx anchor),
-/// line-6 TGD field is TGD1 (the B1I group delay), `sys` = 1. Same BKG
-/// radians-vs-semicircles unit detection as parse_rinex_gps.
+/// newest VALID issue per PRN. Same 8-line record layout as GPS (RINEX-3.05
+/// Appendix A14); differences handled here: epochs/toe/toc are BDT (stored
+/// +14 s as GPST-equivalent SOW, matching the D1 decode path and the t_tx
+/// anchor), line-7 TGD field is TGD1 (the B1I group delay), line-7 field 2
+/// is SatH1 -> `health`, `sys` = 1. The BDS line-2 field 1 is AODE and the
+/// line-8 field 2 is AODC — different quantities from IODE/fit interval, so
+/// `iode`/`iodc`/`fit_h` stay None. Same strict parsing and per-
+/// constellation radians-vs-semicircles unit votes as parse_rinex_gps_nav
+/// (shared helpers, broadcast.rs).
+///
+/// Selection: RINEX BDS weeks are continuous (3.05 §4.1.4), so the
+/// (week, toe) tuple compare is rollover-exact across the week boundary.
 pub fn parse_rinex_bds(text: &str) -> HashMap<u8, BrdcEph> {
+    let r = parse_rinex_bds_nav(text);
+    if r.rejected > 0 {
+        eprintln!(
+            "parse_rinex_bds: {} BDS record(s) rejected (unit {:?})",
+            r.rejected, r.unit
+        );
+    }
+    r.ephs
+}
+
+/// Full BDS-record parse with the rejection ledger (round-11 review).
+pub fn parse_rinex_bds_nav(text: &str) -> RinexParse {
     let lines: Vec<&str> = text.lines().collect();
-    // unit detection: scan the early BDS records' i0 (line 4, field 0) and
-    // take the MAX — a GEO's small inclination (i0 ~ 0.02 rad) would slip
-    // under the radians threshold and flip the whole file to semicircles;
-    // MEO/IGSO i0 is ~0.96 rad vs ~0.31 semicircles, cleanly separated.
-    let mut ang = std::f64::consts::PI; // spec default: semicircles
-    let mut j = 0usize;
-    while j < lines.len() && !lines[j].contains("END OF HEADER") {
-        j += 1;
+    let mut hdr = 0usize;
+    while hdr < lines.len() && !lines[hdr].contains("END OF HEADER") {
+        hdr += 1;
     }
-    j += 1;
-    let mut max_i0 = 0.0f64;
-    while j + 4 < lines.len() {
-        let ln = lines[j];
-        if ln.starts_with('C') && ln.len() > 4 {
-            max_i0 = max_i0.max(df(fld(lines[j + 4], 4, 23)).abs());
-            j += 8;
-            continue;
-        }
-        j += 1;
-    }
-    if max_i0 > 0.6 {
-        ang = 1.0; // radians (BKG)
-    }
-    let mut i = 0usize;
-    while i < lines.len() && !lines[i].contains("END OF HEADER") {
-        i += 1;
-    }
-    i += 1;
+    hdr += 1;
+    let unit = detect_ang_unit(&lines, hdr, 'C');
     let mut out: HashMap<u8, BrdcEph> = HashMap::new();
+    let mut rejected = 0usize;
+    let mut i = hdr;
     while i < lines.len() {
         let ln = lines[i];
         if ln.is_empty() || !ln.starts_with('C') || i + 7 >= lines.len() {
             i += 1;
             continue;
         }
-        let prn = iparse(fld(ln, 1, 3)) as u8;
-        let (y, mo, d) = (iparse(fld(ln, 4, 8)), iparse(fld(ln, 9, 11)), iparse(fld(ln, 12, 14)));
-        let (h, mi, s) = (iparse(fld(ln, 15, 17)), iparse(fld(ln, 18, 20)), iparse(fld(ln, 21, 23)));
         let b: Vec<&str> = (0..7).map(|k| lines[i + 1 + k]).collect();
-        // orbit field j on line `l`: 3-space indent, 19-char columns
-        let f = |l: usize, j: usize| df(fld(b[l], 4 + j * 19, 4 + (j + 1) * 19));
-        let e = BrdcEph {
-            sys: 1,
-            prn,
-            iode: None, // RINEX nav records carry no IODE (and the LT gate
-                        // is GPS-only regardless)
-            af0: df(fld(ln, 23, 42)),
-            af1: df(fld(ln, 42, 61)),
-            af2: df(fld(ln, 61, 80)),
-            crs: f(0, 1),
-            delta_n: f(0, 2) * ang,
-            m0: f(0, 3) * ang,
-            cuc: f(1, 0),
-            e: f(1, 1),
-            cus: f(1, 2),
-            sqrt_a: f(1, 3),
-            toe: sow_bdt_to_gpst(f(2, 0)),
-            cic: f(2, 1),
-            omega0: f(2, 2) * ang,
-            cis: f(2, 3),
-            i0: f(3, 0) * ang,
-            crc: f(3, 1),
-            omega: f(3, 2) * ang,
-            omega_dot: f(3, 3) * ang,
-            idot: f(4, 0) * ang,
-            week: f(4, 2), // BDT week (informational; the model uses toe only)
-            tgd: f(5, 2),  // TGD1: B1I group delay
-            toc: sow_bdt_to_gpst(bdt_sow(y, mo, d, h, mi, s)),
-        };
-        out.entry(prn)
-            .and_modify(|cur| {
-                if e.toe > cur.toe {
-                    *cur = e.clone();
-                }
-            })
-            .or_insert(e);
+        match parse_bds_record(ln, &b, unit) {
+            Some(e) => {
+                out.entry(e.prn)
+                    .and_modify(|cur| {
+                        if (e.week, e.toe) > (cur.week, cur.toe) {
+                            *cur = e.clone();
+                        }
+                    })
+                    .or_insert(e);
+            }
+            None => rejected += 1,
+        }
         i += 8;
     }
-    out
+    RinexParse { ephs: out, rejected, unit }
+}
+
+/// One 8-line BDS nav record -> BrdcEph, STRICT (round-11 review): every
+/// consumed field must parse — a blank/malformed core field rejects the
+/// record (None) where the old df() silently zero-filled. SatH1 (health) is
+/// blank-tolerant but malformed-rejecting. The raw i0 must pass [`i0_sane`]
+/// for the constellation's unit verdict — which is what keeps a GEO's tiny
+/// inclination (i0 ~ 0.02-0.12 rad, unit-neutral) from flipping the file,
+/// while MEO/IGSO i0 (~0.93-1.03 rad vs ~0.31 semicircles) decides it.
+fn parse_bds_record(ln: &str, b: &[&str], unit: AngUnit) -> Option<BrdcEph> {
+    let ang = unit.factor()?; // Ambiguous fails closed: no guessed unit
+    let prn = u8::try_from(iparse_strict(fld(ln, 1, 3))?).ok()?;
+    let (y, mo, d) = (
+        iparse_strict(fld(ln, 4, 8))?,
+        iparse_strict(fld(ln, 9, 11))?,
+        iparse_strict(fld(ln, 12, 14))?,
+    );
+    let (h, mi, s) = (
+        iparse_strict(fld(ln, 15, 17))?,
+        iparse_strict(fld(ln, 18, 20))?,
+        iparse_strict(fld(ln, 21, 23))?,
+    );
+    // orbit field j on line `l`: 3-space indent, 19-char columns
+    let f = |l: usize, j: usize| df_strict(fld(b[l], 4 + j * 19, 4 + (j + 1) * 19));
+    let i0_raw = f(3, 0)?;
+    if !i0_sane(i0_raw, unit) {
+        return None;
+    }
+    // SatH1 (line 7 field 2): blank -> None, malformed/out of range -> reject
+    let health = match df_opt(fld(b[5], 23, 42)).ok()? {
+        Some(v) if (0.0..=63.0).contains(&v) => Some(v as u8),
+        Some(_) => return None,
+        None => None,
+    };
+    Some(BrdcEph {
+        sys: 1,
+        prn,
+        // BDS nav records carry AODE (line 2 field 1) and AODC (line 8
+        // field 2) — different quantities from the GPS IODE/IODC/fit
+        // interval, and the SBAS LT gate is GPS-only regardless: all stay
+        // None (unverifiable).
+        iode: None,
+        iodc: None,
+        fit_h: None,
+        af0: df_strict(fld(ln, 23, 42))?,
+        af1: df_strict(fld(ln, 42, 61))?,
+        af2: df_strict(fld(ln, 61, 80))?,
+        crs: f(0, 1)?,
+        delta_n: f(0, 2)? * ang,
+        m0: f(0, 3)? * ang,
+        cuc: f(1, 0)?,
+        e: f(1, 1)?,
+        cus: f(1, 2)?,
+        sqrt_a: f(1, 3)?,
+        toe: sow_bdt_to_gpst(f(2, 0)?),
+        cic: f(2, 1)?,
+        omega0: f(2, 2)? * ang,
+        cis: f(2, 3)?,
+        i0: i0_raw * ang,
+        crc: f(3, 1)?,
+        omega: f(3, 2)? * ang,
+        omega_dot: f(3, 3)? * ang,
+        idot: f(4, 0)? * ang,
+        week: f(4, 2)?, // BDT week (continuous per RINEX-3.05 §4.1.4)
+        health,
+        tgd: f(5, 2)?, // TGD1: B1I group delay
+        toc: sow_bdt_to_gpst(bdt_sow(y, mo, d, h, mi, s)),
+        rx_epoch: None, // text-only parser: the caller attaches the file mtime
+    })
 }
 
 #[cfg(test)]
@@ -784,6 +823,10 @@ mod tests {
             sys: 1,
             prn: 22,
             iode: None,
+            iodc: None,
+            health: Some(0), // zero filler -> SatH1 = 0
+            fit_h: None,
+            rx_epoch: None,  // set by the decode; asserted separately
             sqrt_a: 5283.0,
             e: 0.004,
             m0: 1.1,
@@ -869,6 +912,8 @@ mod tests {
         assert!((e.crc - want.crc).abs() < 0.1, "crc");
         assert!((e.crs - want.crs).abs() < 0.1, "crs");
         assert_eq!(e.sys, 1);
+        assert_eq!(e.health, want.health, "SatH1 carries into the ephemeris");
+        assert!(e.rx_epoch.is_some(), "decode stamps its receive epoch");
         // and the orbit it describes is a sane BDS MEO radius
         let p = sat_pos_ecef_bds(&e, e.toe);
         let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
@@ -943,6 +988,13 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         let e = &ephs[&22];
         assert_eq!(e.prn, 22);
         assert_eq!(e.sys, 1);
+        // line 7 field 2 is SatH1 (0 in this fixture); BDS records carry
+        // AODE/AODC, never IODE/IODC/fit
+        assert_eq!(e.health, Some(0));
+        assert_eq!(e.iode, None);
+        assert_eq!(e.iodc, None);
+        assert_eq!(e.fit_h, None);
+        assert_eq!(e.rx_epoch, None);
         assert!((e.sqrt_a - 5283.0).abs() < 1e-6);
         // toe stored as GPST-equivalent SOW (BDT + 14)
         assert!((e.toe - sow_bdt_to_gpst(345600.0)).abs() < 1e-6, "toe {}", e.toe);
@@ -971,5 +1023,87 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         };
         let dt = sat_clock_bds(&e, e.toc);
         assert!((dt - (1.5e-4 - 2.0e-9)).abs() < 1e-12, "dt {dt}");
+    }
+
+    /// round-11 review: reusable BDS record builder — `i0` is line 5 field 1
+    /// (the unit-detection field). Line 6 fields 2/4 and line 8 fields 3/4
+    /// are BLANK, exactly as in the live BKG file (blank unconsumed fields
+    /// must not reject). Every written field is exactly 19 columns, first
+    /// field at col 4.
+    fn bds_rinex_record(prn: u8, week: f64, toe: f64, i0: &str) -> String {
+        format!(
+            "C{prn:02} 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00\n\
+             \x20    1.000000000000D+02-5.000000000000D+00 4.000000000000D-09 3.000000000000D-01\n\
+             \x20    1.000000000000D-06 4.000000000000D-03 5.000000000000D-06 5.283000000000D+03\n\
+             \x20   {toe:19.12E} 1.000000000000D-08-2.500000000000D+00 2.000000000000D-08\n\
+             \x20   {i0:>19} 2.000000000000D+02-5.000000000000D-01-8.000000000000D-09\n\
+             \x20   -2.600000000000D-10                  {week:19.12E}\n\
+             \x20    2.000000000000D+00 0.000000000000D+00 4.499999928242D-09 4.500000000000D-09\n\
+             \x20   {toe:19.12E} 1.000000000000D+00"
+        )
+    }
+
+    const RNX_HDR: &str = "\
+     3.05           NAVIGATION DATA     MIXED               RINEX VERSION / TYPE
+                                                            END OF HEADER
+";
+
+    #[test]
+    fn bds_malformed_core_field_rejects_the_record() {
+        let bad = bds_rinex_record(22, 1077.0, 345600.0, "3.000000000000D-01")
+            .replace("5.283000000000D+03", &" ".repeat(18));
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{bad}"));
+        assert_eq!(r.rejected, 1);
+        assert!(r.ephs.is_empty(), "malformed record must not enter the map");
+    }
+
+    #[test]
+    fn bds_contradictory_unit_content_fails_closed() {
+        let sc = bds_rinex_record(22, 1077.0, 345600.0, "3.000000000000D-01");
+        let rad = bds_rinex_record(23, 1077.0, 345600.0, "9.600000000000D-01");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{sc}\n{rad}"));
+        assert_eq!(r.unit, AngUnit::Ambiguous);
+        assert_eq!(r.rejected, 2);
+        assert!(r.ephs.is_empty());
+    }
+
+    #[test]
+    fn bds_geo_records_carry_no_unit_evidence() {
+        // a GEO-only constellation: i0 ~ 0.02 is neutral, the spec default
+        // (semicircles) applies, and the record is accepted (the GEO Kepler
+        // math is unused downstream regardless)
+        let geo = bds_rinex_record(1, 1077.0, 345600.0, "2.000000000000D-02");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{geo}"));
+        assert_eq!(r.unit, AngUnit::Semicircles);
+        assert_eq!(r.rejected, 0);
+        assert!((r.ephs[&1].i0 - 0.02 * std::f64::consts::PI).abs() < 1e-12);
+        // and a grey-band i0 (0.5: impossible under either unit) rejects
+        let grey = bds_rinex_record(2, 1077.0, 345600.0, "5.000000000000D-01");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{grey}"));
+        assert_eq!(r.rejected, 1);
+        assert!(r.ephs.is_empty());
+    }
+
+    #[test]
+    fn bds_newest_issue_selection_is_week_rollover_exact() {
+        // BDT weeks in RINEX are continuous (3.05 §4.1.4): the fresh
+        // next-week issue (small toe) must displace the old one
+        let old = bds_rinex_record(22, 1077.0, 604_000.0, "3.000000000000D-01");
+        let new = bds_rinex_record(22, 1078.0, 200.0, "3.000000000000D-01");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{old}\n{new}"));
+        assert_eq!(r.rejected, 0);
+        assert_eq!(r.ephs[&22].week, 1078.0, "the next-week issue must win");
+    }
+
+    #[test]
+    fn bds_high_inclination_igso_is_accepted() {
+        // live regression (BRDC 2026-08-26): C09 is an IGSO at i0 = 1.0523
+        // rad = 60.3 deg — inside [0, PI] sanity and rad-like evidence; an
+        // earlier 60.1-deg rad cap rejected every one of its records
+        let igso = bds_rinex_record(9, 1077.0, 345600.0, "1.052303169428D+00");
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{igso}"));
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 0);
+        assert!((r.ephs[&9].i0 - 1.052303169428).abs() < 1e-12);
     }
 }

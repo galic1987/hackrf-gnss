@@ -204,6 +204,79 @@ def main():
     except ValueError:
         check("glo fit window enforced", True)
 
+    # --- round-11: strict RINEX parsing (mirrors src/gps/broadcast.rs) ------
+    def g_rec(prn, i0=0.30, sqrt_a=5153.6):
+        return rnx_rec("G", prn, [
+            (1e-5, 0.0, 0.0),
+            (100.0, 0.0, 0.0, 0.3),
+            (0.0, 0.0, 0.0, sqrt_a),
+            (430000.0, 0.0, 1.0, 0.0),
+            (i0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 2433.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0)])
+
+    hdr2 = ("     3.05           NAVIGATION DATA     MIXED               "
+            "RINEX VERSION / TYPE\n" + " " * 60 + "END OF HEADER\n")
+
+    # malformed core field (sqrt_a blanked): reject, never zero-fill;
+    # the well-formed sibling survives
+    bad = g_rec(9).replace(f"{5153.6:19.9e}", " " * 19)
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + g_rec(7) + "\n" + bad + "\n", stats=st)
+    check("malformed record rejected, sibling kept",
+          st.get("rejected") == 1 and (0, 7) in eph2 and (0, 9) not in eph2,
+          f"stats={st} keys={sorted(eph2)}")
+    check("unit verdict surfaced in stats",
+          (st.get("units") or {}).get("G") == "semicircles")
+
+    # grey-band i0 (0.5: physically impossible under either unit) rejects the
+    # record but must NOT flip the constellation's unit
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + g_rec(7) + "\n" + g_rec(9, i0=0.5) + "\n",
+                              stats=st)
+    check("grey-band i0 rejected, unit not flipped",
+          st.get("rejected") == 1 and (0, 7) in eph2 and (0, 9) not in eph2
+          and abs(eph2[(0, 7)]["m0"] - 0.3 * math.pi) < 1e-9,
+          f"stats={st}")
+
+    # contradictory content (one sc-like + one rad-like record): fail closed
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + g_rec(7) + "\n" + g_rec(9, i0=0.96) + "\n",
+                              stats=st)
+    check("contradictory unit content fails closed",
+          (st.get("units") or {}).get("G") == "ambiguous"
+          and st.get("rejected") == 2 and not eph2,
+          f"stats={st}")
+
+    # NaN spelling parses in Python but is not RINEX content
+    nan_rec = g_rec(9).replace(f"{5153.6:19.9e}", f"{'NaN':>19}")
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + nan_rec + "\n", stats=st)
+    check("NaN field rejected", st.get("rejected") == 1 and not eph2,
+          f"stats={st}")
+
+    # high-inclination BDS IGSO (live regression: C09 at i0 = 1.0523 rad =
+    # 60.3 deg in the 2026-08-26 BRDC) — the sanity range must not gate
+    # legitimate satellites
+    c09 = rnx_rec("C", 9, [
+        (1e-5, 0.0, 0.0),
+        (100.0, 0.0, 0.0, 0.3),
+        (0.0, 0.0, 0.0, 5283.0),
+        (430000.0, 0.0, 1.0, 0.0),
+        (1.0523, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1077.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0)])
+    st = {}
+    eph2 = sp.parse_rinex_nav(hdr2 + c09 + "\n", stats=st)
+    check("60.3-deg IGSO (live C09) accepted under radians",
+          st.get("rejected") == 0 and (1, 9) in eph2
+          and abs(eph2[(1, 9)]["i0"] - 1.0523) < 1e-9
+          and (st.get("units") or {}).get("C") == "radians",
+          f"stats={st} keys={sorted(eph2)}")
+
+
     # --- THE J2-sign regression test (round-9b) -----------------------------
     # Real consecutive broadcast records (BRDC 2026-08-26, GLONASS PRN 1):
     # propagate the first record exactly one 30-min record interval forward

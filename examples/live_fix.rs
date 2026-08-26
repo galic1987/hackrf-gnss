@@ -8,7 +8,7 @@
 //! usage: live_fix [rinex_path]   — one solve per invocation.
 
 use hackrf_gnss::beidou_d1::{parse_rinex_bds, sat_at_txtime_bds};
-use hackrf_gnss::gps::broadcast::parse_rinex_gps;
+use hackrf_gnss::gps::broadcast::{parse_rinex_gps, wrap_tk};
 use hackrf_gnss::gps::snapshot::{snapshot_fix, Obs};
 
 const TRACKER_STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
@@ -160,6 +160,14 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let rinex_path = a.get(1).map(|s| s.as_str()).unwrap_or(RINEX);
 
+    // BRDC receive epoch for lifecycle honesty (round-11 review): the RINEX
+    // parsers see only text, so the file mtime is attached to every record
+    // here as rx_epoch — "when WE obtained it".
+    let brdc_rx = std::fs::metadata(rinex_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64());
     let mut ephs = match std::fs::read_to_string(rinex_path) {
         Ok(t) => parse_rinex_gps(&t),
         Err(_) => Default::default(), // self-decoded may still cover the sky
@@ -170,9 +178,31 @@ fn main() {
         Ok(t) => parse_rinex_bds(&t),
         Err(_) => Default::default(),
     };
-    // self-decoded ephemerides from the live tracker take precedence (they
-    // are fresher than any daily download and need no network). sys: 0 = GPS,
-    // 1 = BeiDou (absent in older files -> GPS).
+    if let Some(rx) = brdc_rx {
+        for e in ephs.values_mut().chain(bds_ephs.values_mut()) {
+            e.rx_epoch = Some(rx);
+        }
+    }
+    // ephemeris-source ledger for the age publication below:
+    // (sys, prn) -> "brdc" | "lnav" (GPS self-decode) | "d1" (BDS self-decode)
+    let mut eph_src: std::collections::HashMap<(u8, u8), &'static str> = ephs
+        .keys()
+        .map(|&p| ((0u8, p), "brdc"))
+        .chain(bds_ephs.keys().map(|&p| ((1u8, p), "brdc")))
+        .collect();
+    // Self-decoded ephemerides from the live tracker take precedence ONLY
+    // when they are the newer valid issue (round-11 review: the previous
+    // unconditional override let a stale self-decode outlive a fresher BRDC
+    // record — the tracker keeps its first decode per channel and the
+    // tracker_eph.json envelope is re-stamped with a fresh wall clock every
+    // write, so envelope freshness says nothing about issue freshness).
+    // Rollover-aware compare on toe: LNAV/D1 weeks are broadcast-truncated
+    // (10/13-bit) while RINEX weeks are continuous (3.05 §4.1.1/§4.1.4), so
+    // a raw (week, toe) tuple compare across sources is meaningless; the
+    // wrap-aware toe difference picks the newer issue across the week
+    // boundary for any two issues within half a week of each other (always,
+    // at hourly BRDC refresh and the ~2 h broadcast issue cadence).
+    // sys: 0 = GPS, 1 = BeiDou (absent in older files -> GPS).
     let mut n_self = 0;
     if let Ok(t) = std::fs::read_to_string(
         "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json",
@@ -183,9 +213,19 @@ fn main() {
                     hackrf_gnss::gps::broadcast::BrdcEph,
                 >(e.clone())
                 {
+                    let cur = if eph.sys == 1 {
+                        bds_ephs.get(&eph.prn)
+                    } else {
+                        ephs.get(&eph.prn)
+                    };
+                    if cur.is_some_and(|c| wrap_tk(eph.toe - c.toe) <= 0.0) {
+                        continue; // the held record is the newer (or same) issue
+                    }
                     if eph.sys == 1 {
+                        eph_src.insert((1, eph.prn), "d1");
                         bds_ephs.insert(eph.prn, eph);
                     } else {
+                        eph_src.insert((0, eph.prn), "lnav");
                         ephs.insert(eph.prn, eph);
                     }
                     n_self += 1;
@@ -287,6 +327,7 @@ fn main() {
     let mut gps_meas = Vec::new();
     let mut gps_prns: Vec<u8> = Vec::new();
     let mut bds_meas = Vec::new();
+    let mut bds_prns: Vec<u8> = Vec::new();
     // SBAS fast corrections (WAAS MT2-5), harvested from any streak-locked
     // SBAS channel's published fast_corr: GPS PRN -> (PRC metres, insert
     // age s). DO-229 convention: the PRC is ADDED to the measured
@@ -569,10 +610,44 @@ fn main() {
                     pseudorange: rho_m / 1000.0 + dt_sv * 299_792.458,
                     clock_free: false,
                 });
+                bds_prns.push(prn);
             }
             _ => {}
         }
     }
+
+    // Ephemeris lifecycle honesty (round-11 review): every published fix
+    // names the issue age and source of the ephemerides behind it.
+    // toe_age_s is the signed solve-SOW minus toe, week-wrap aware (a fresh
+    // issue can sit slightly in the future); rx_age_s is when WE obtained
+    // the record (BRDC file mtime / live decode time) — never the
+    // tracker_eph.json envelope epoch, which is re-stamped on every write
+    // and used to make a stale self-decode look fresh.
+    let eph_report = |used: &[(u8, u8)]| {
+        let mut max_age = f64::NEG_INFINITY;
+        let sats: Vec<serde_json::Value> = used
+            .iter()
+            .filter_map(|&(sys, prn)| {
+                let e = if sys == 1 {
+                    bds_ephs.get(&prn)
+                } else {
+                    ephs.get(&prn)
+                }?;
+                let toe_age = wrap_tk(tow - e.toe);
+                max_age = max_age.max(toe_age);
+                Some(serde_json::json!({
+                    "sat": format!("{}{}", if sys == 1 { "B" } else { "G" }, prn),
+                    "src": eph_src.get(&(sys, prn)).copied().unwrap_or("brdc"),
+                    "toe_age_s": toe_age,
+                    "rx_age_s": e.rx_epoch.map(|rx| now - rx),
+                }))
+            })
+            .collect();
+        serde_json::json!({
+            "max_toe_age_s": if sats.is_empty() { None } else { Some(max_age) },
+            "sats": sats,
+        })
+    };
 
     // Mixed-constellation two-clock solve: >=3 GPS + >=2 BDS anchored rows
     // solve x,y,z,dt_gps,dt_bds. The inter-system clock offset (isx_km)
@@ -666,6 +741,11 @@ fn main() {
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
+            let used: Vec<(u8, u8)> = gps_prns
+                .iter()
+                .map(|&p| (0u8, p))
+                .chain(bds_prns.iter().map(|&p| (1u8, p)))
+                .collect();
             let doc = serde_json::json!({
                 "epoch": now,
                 "ttl_s": 900,
@@ -680,6 +760,7 @@ fn main() {
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "n_sbas_excluded": n_sbas_excluded,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
+                    "eph": eph_report(&used),
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });
@@ -775,8 +856,9 @@ fn main() {
                                 "trusted_for_history": false,
                                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                                 "n_sbas_excluded": n_sbas_excluded,
-                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
+                                "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                                 "loo": loo_note,
+                                "eph": eph_report(&gps_prns.iter().map(|&p| (0u8, p)).collect::<Vec<_>>()),
                                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                             }
                         });
@@ -865,6 +947,7 @@ fn main() {
                 "n_sbas_excluded": n_sbas_excluded,
                 "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                 "bds_quarantined": bds_quarantined,
+                "eph": eph_report(&gps_prns.iter().map(|&p| (0u8, p)).collect::<Vec<_>>()),
                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 "epoch": now,
             });
@@ -920,6 +1003,7 @@ fn main() {
             };
             let (geo_red, integ, trusted) =
                 trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0);
+            let used: Vec<(u8, u8)> = obs.iter().map(|o| (0u8, o.prn)).collect();
             let doc = serde_json::json!({
                 "epoch": now,
                 "ttl_s": 900,
@@ -934,6 +1018,7 @@ fn main() {
                     "gate": gate,
                     "geometry_redundant": geo_red, "integrity_valid": integ,
                     "trusted_for_history": trusted,
+                    "eph": eph_report(&used),
                     "corr_note": "code-phase snapshot path — WAAS corrections not applicable to this measurement model",
                     "source": "live tracker code phases + BRDC ephemeris",
                 }
