@@ -94,6 +94,7 @@ def read_fix():
         "gdop": pos.get("gdop"),
         "n_sats": pos.get("n_sat"),
         "isx_km": pos.get("isx_km"),      # mixed GPS+BDS solves only
+        "bds_quarantined": pos.get("bds_quarantined"),  # reason string when the mixed solve failed the integrity law
         # PVT trust fields + quality/provider metadata from live_fix —
         # carried through so history rows keep the solve's provenance
         "residual_rms_m": pos.get("residual_rms_m"),

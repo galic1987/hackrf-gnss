@@ -571,6 +571,10 @@ fn main() {
     let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
         dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
     );
+    // Set when the mixed solve fails the integrity law this cycle: the
+    // GPS-only fallback doc carries the reason (machine-readable), so a
+    // darkened mixed era is visible in the published fix, not just stderr.
+    let mut bds_quarantined: Option<String> = None;
     if gps_meas.len() >= 3 && bds_meas.len() >= 2 {
         let mut rows: Vec<hackrf_gnss::gps::pvt::MeasSys> = gps_meas
             .iter()
@@ -615,24 +619,23 @@ fn main() {
                     .collect();
                 eprintln!("live_fix: dropped outlier channels {:?} (>1 km residual)", names);
             }
-            if f.residual_rms_m > 2000.0 {
-                // A diverging mixed solve must not darken the position
-                // feed: quarantine the BDS contribution this cycle and
-                // fall through to the GPS-only path (round-9 review: the
-                // old exit(5) published NOTHING while GPS alone was sane;
-                // the 10,369 km isx-bias class predates the trust gates).
-                // isx_km is logged because it IS the diagnosis: when the
-                // intersystem-bias estimate runs away, the BDS inputs are
-                // inconsistent with GPS, not the geometry.
-                eprintln!(
-                    "live_fix: mixed fix rms {:.0} m, isx {:.2} km — too coarse; BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
-                    f.residual_rms_m, f.isx_km, f.n_gps, f.n_bds
-                );
-            } else if !alt_sane(f.alt_km) {
-                eprintln!(
-                    "live_fix: impossible altitude {:.1} km, isx {:.2} km — BDS quarantined this cycle, falling back to GPS-only ({} gps + {} bds)",
-                    f.alt_km, f.isx_km, f.n_gps, f.n_bds
-                );
+            // One integrity law for publication and fallback (round-10):
+            // the mixed solve becomes the position of record only when the
+            // PUBLISHED integrity predicate holds (rms < 50 m, |isx| < 50 km,
+            // sane altitude) — a 50-2000 m failure used to slip between the
+            // old 2000 m publish gate and the 50 m validity law. Anything
+            // short of valid quarantines the BDS contribution this cycle and
+            // falls through to the GPS-only path with the reason logged and
+            // recorded (the 10,369 km isx-bias class predates the trust
+            // gates; isx runaway = BDS inputs inconsistent with GPS).
+            let (_, integ, _) =
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km);
+            if !integ {
+                bds_quarantined = Some(format!(
+                    "mixed solve fails the integrity law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds)",
+                    f.residual_rms_m, f.isx_km, f.alt_km, f.n_gps, f.n_bds
+                ));
+                eprintln!("live_fix: {}", bds_quarantined.as_deref().unwrap());
             } else {
             // honesty gate: the mixed solve has 5 unknowns, so n_sat <= 5
             // is an EXACT solve — rms is zero by construction and the fix
@@ -843,6 +846,7 @@ fn main() {
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                     "n_sbas_excluded": n_sbas_excluded,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
+                    "bds_quarantined": bds_quarantined,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
             });

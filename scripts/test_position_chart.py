@@ -128,11 +128,11 @@ def test_render_outlier():
     src = open(SYNC_HTML).read()
     funcs = "\n".join(
         re.search(rf"function {n}\(.*?\n\}}", src, re.S).group(0)
-        for n in JS_FUNCS + ["drawPosEnu", "drawPosIsx"])
+        for n in JS_FUNCS + ["drawPosEnu", "drawPosIsx", "posGlidePos"])
     vars_ = "\n".join(
         re.search(rf"var {n} = .*?;", src).group(0)
         for n in ["POS_SITE", "ENU_COLORS", "ENU_NAMES", "MIXED_EDGE"])
-    harness = vars_ + "\n" + funcs + r"""
+    harness = vars_ + "\nvar POS_ANIM = null; var POS_GLIDE_S = 2.0;\n" + funcs + r"""
 var window = { devicePixelRatio: 1 };
 function mkCtx() { return { calls: [], strokeStyle: "", fillStyle: "", lineWidth: 1, font: "",
   setTransform: function () {}, clearRect: function () {}, beginPath: function () {},
