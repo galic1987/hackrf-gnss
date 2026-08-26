@@ -812,7 +812,14 @@ function renderJourney(st) {
   var sats = (st.tracker && st.tracker.sats) || [];
   var sk = st.sky || {};
   var scc = sk.counts || {};
-  var pos = st.position || {};
+  // round-13: position is trusted-only; the PVT node falls back to the
+  // exact-solve candidate (labeled on its badge) when no trusted fix
+  var pos = st.position, posCand = false;
+  if (!pos || pos.lat === undefined || pos.lat === null) {
+    pos = st.position_candidate;
+    posCand = !!(pos && pos.lat !== undefined && pos.lat !== null);
+  }
+  pos = pos || {};
   var d = st.discipline || {};
 
   // 1. Satellites
@@ -856,7 +863,8 @@ function renderJourney(st) {
   var ungated = pos.gate ? pos.gate.indexOf("ungated") === 0 : false;
   var rmsBadge = (rms === undefined || rms === null) ? "residual rms —"
     : "residual rms " + (rms < 0.01 ? "≈0 m (exact solve)" : rms.toFixed(1) + " m") +
-      (ungated ? " · unverifiable" : "");
+      (ungated ? " · unverifiable" : "") +
+      (posCand ? " · CANDIDATE — not the position of record" : "");
   nodes.push(journeyNode("PVT solve",
     pos.lat !== undefined ? "<b>" + pos.lat.toFixed(4) + "°, " + pos.lon.toFixed(4) + "°</b>" : "—",
     (pos.mode ? esc(pos.mode) + " · " : "") +
@@ -909,8 +917,9 @@ function renderSummary(st) {
 
   // Position: latest TRUSTED fix vs the site anchor (uses POS_SITE updated in render).
   // Round-10: the headline reports trusted history only — position_history
-  // holds trusted_for_history==true rows by construction now. The untrusted
-  // live fix (st.position) is diagnostic and never anchors the top-line claim.
+  // holds trusted_for_history==true rows by construction now. The live fix
+  // channels never anchor the top-line claim (st.position itself is
+  // trusted-only since round 13; exact solves land in position_candidate).
   var fixes = st.position_history || [];
   var src = null, i;
   for (i = fixes.length - 1; i >= 0; i--) {
@@ -929,7 +938,7 @@ function renderSummary(st) {
   }
   cards.push(sumCard(cardColor, "Position", headline, sentence,
     "Position — the bottom line",
-    "The latest trusted fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). Only fixes that pass redundancy AND integrity gates enter this history; exact or integrity-failed solves stay visible as diagnostics on the Position card, never here."));
+    "The latest trusted fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). Only fixes that pass redundancy AND plausibility gates enter this history; exact or plausibility-failed solves stay visible as diagnostics on the Position card, never here."));
 
   // Displacement
   var ph = st.phase;
@@ -1756,7 +1765,14 @@ function render(st) {
     lt.innerHTML = '<span class="dim">waiting for tracker producer&hellip;</span>';
   }
   // position fix section (position_producer / live_fix, about once a minute)
-  var pos = st.position;
+  // Round-13: st.position is TRUSTED-only (redundant + plausible). When no
+  // trusted fix is current, show st.position_candidate — a plausible but
+  // EXACT solve — clearly labeled as unverifiable, never as the record.
+  var pos = st.position, posCand = false;
+  if (!pos || pos.lat === undefined || pos.lat === null) {
+    pos = st.position_candidate;
+    posCand = !!(pos && pos.lat !== undefined && pos.lat !== null);
+  }
   var posEl = document.getElementById("position");
   if (pos && pos.lat !== undefined) {
     // Plausibility gate: the station is static with a known anchor. An
@@ -1779,16 +1795,18 @@ function render(st) {
       isFinite(pos.residual_rms_m);
     var honest = !implausible && rmsKnown && pos.residual_rms_m < 1000 && !exactSolve;
     // trust split (review round 6): redundancy is geometry, not validity.
-    // trusted_for_history = redundant AND integrity-valid; integrity_valid
+    // trusted_for_history = redundant AND plausibility_pass; plausibility_pass
     // alone = plausible but unproven; exact solves stay unverifiable.
     var trustPill = pos.trusted_for_history === true
-      ? ' <span class="pill ok" title="Redundant geometry AND integrity-plausible (rms, inter-system bias, altitude all sane) — this fix may enter trusted history">TRUSTED</span>'
-      : pos.integrity_valid === true
+      ? ' <span class="pill ok" title="Redundant geometry AND plausible (rms, inter-system bias, altitude all sane) — this fix may enter trusted history">TRUSTED</span>'
+      : pos.plausibility_pass === true
         ? ' <span class="pill info" title="Plausible but not redundant — diagnostic only, not trusted for history">DIAGNOSTIC</span>'
-        : pos.integrity_valid === false
-          ? ' <span class="pill warn" title="Failed an integrity bound (residual rms, inter-system bias, or altitude) — do not trust">NOT VALID</span>'
+        : pos.plausibility_pass === false
+          ? ' <span class="pill warn" title="Failed a plausibility bound (residual rms, inter-system bias, or altitude) — do not trust">NOT VALID</span>'
           : ""; // old producer build without the fields: no pill
-    var qual = trustPill + (implausible
+    var qual = (posCand
+      ? ' <span class="pill warn" title="Plausible but EXACT solve — no redundant equation, zero residual by construction, it cannot verify itself. Not the position of record; the last trusted fix still anchors the charts">CANDIDATE — exact, unverifiable</span>'
+      : "") + trustPill + (implausible
       ? ' <span class="pill warn">IMPLAUSIBLE — ' + distKm.toFixed(0) +
         " km from the site anchor; 4-sat solve has no redundancy to catch a bad anchor</span>"
       : !rmsKnown
@@ -2784,7 +2802,7 @@ function renderLearnLive(st) {
   setH("l1live", s0 ? "right now <b>" + esc((s0.sys + " " + s0.prn).toUpperCase()) + "</b> is " +
     ((s0.doppler_hz || 0) >= 0 ? "approaching" : "receding") + " — its carrier arrives <b>" +
     sgn(s0.doppler_hz) + fmtInt(Math.abs(s0.doppler_hz)) + " Hz</b> off nominal." : "");
-  var p = st.position || {};
+  var p = st.position || st.position_candidate || {};  // round-13: candidate carries the same solve metadata
   setH("l1iono", p.n_iono_corr !== undefined ? "the latest fix applied <b>" + p.n_iono_corr +
     "</b> live SBAS iono grid corrections" : "");
   setH("l2live", p.gdop !== undefined ? "live: GDOP <b>" + p.gdop.toFixed(1) + "</b> · residual rms <b>" +
@@ -2967,7 +2985,8 @@ function drawL1(t, st) {
 function drawL2(t, st) {
   var g = cvCtx("l2cv"); if (!g) return;
   var ctx = g.ctx, W = g.W, H = g.H;
-  var gdopLive = (st.position && st.position.gdop !== undefined) ? st.position.gdop : null;
+  var gdopPos = st.position || st.position_candidate;  // round-13: exact-solve candidate when no trusted fix
+  var gdopLive = (gdopPos && gdopPos.gdop !== undefined) ? gdopPos.gdop : null;
   function panel(x0, w, title, azs, good) {
     var cxp = x0 + w / 2, cyp = H - 24;
     ctx.fillStyle = "#8fa3b0"; ctx.font = "10px Menlo, monospace";

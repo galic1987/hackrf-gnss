@@ -45,22 +45,60 @@ fn alt_sane(alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> bool {
 }
 
 /// Trust split (review round 6): equation REDUNDANCY is not VALIDITY.
-/// `gate` (existing) speaks to geometry only. `integrity_valid` adds
+/// `gate` (existing) speaks to geometry only. `plausibility_pass` adds
 /// plausibility bounds a solve can fail while being technically redundant
 /// (observed live: a 6-sat fix with 105 m rms; a mixed fix with a 10,369 km
 /// intersystem "bias" — one BDS row absorbed entirely by its clock term).
-/// `trusted_for_history` = redundant AND integrity_valid. Exact solves are
-/// diagnostic, never trusted.
-const RMS_INTEGRITY_M: f64 = 50.0; // beyond this the solve measures outliers
+/// Plausibility is NOT GNSS integrity — no protection levels are computed
+/// (round-12 rename). `trusted_for_history` = redundant AND
+/// plausibility_pass. Exact solves are diagnostic, never trusted.
+const RMS_PLAUSIBILITY_M: f64 = 50.0; // beyond this the solve measures outliers
 const ISX_SANE_KM: f64 = 50.0; // GPS-BDS clock offset is ~10 km class
 
 fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> (bool, bool, bool) {
     let geometry_redundant = n_sat >= redundant_at;
-    let integrity_valid = rms_m.is_finite()
-        && rms_m < RMS_INTEGRITY_M
+    let plausibility_pass = rms_m.is_finite()
+        && rms_m < RMS_PLAUSIBILITY_M
         && isx_km.map_or(true, |x| x.is_finite() && x.abs() < ISX_SANE_KM)
         && alt_sane(alt_km, anchor_alt_km, site_alt_km);
-    (geometry_redundant, integrity_valid, geometry_redundant && integrity_valid)
+    (geometry_redundant, plausibility_pass, geometry_redundant && plausibility_pass)
+}
+
+/// Single publication gate (round 12): ONE placement law for every solve
+/// path — previously four inline copies that could drift. Round 13 made
+/// `position` TRUSTED-only: a redundant AND plausible solve becomes the
+/// `position` of record; a plausible but EXACT solve (zero residual by
+/// construction — it cannot verify itself) publishes as
+/// `position_candidate`; a plausibility-FAILING solve goes to
+/// `position_diagnostic` with its reasons. In both untrusted classes the
+/// last trusted fix survives in `position` under its own epoch (honestly
+/// aging) — a prior position is never silently deleted. Writes OUT
+/// atomically (tmp + rename).
+fn publish_position(fix_json: serde_json::Value, plausible: bool, trusted: bool, now: f64) {
+    let mut doc = serde_json::json!({ "epoch": now, "ttl_s": 900 });
+    if trusted {
+        // redundant AND plausible: the position of record (untrusted
+        // classes have their own channels — no mirrors)
+        doc["position"] = fix_json;
+    } else {
+        // untrusted solve: the position of record is trusted-only, so the
+        // last trusted fix is preserved, aging under its own epoch
+        if let Ok(prev) = std::fs::read_to_string(OUT) {
+            if let Ok(pj) = serde_json::from_str::<serde_json::Value>(&prev) {
+                if let Some(p) = pj.get("position") {
+                    doc["position"] = p.clone();
+                }
+            }
+        }
+        if plausible {
+            doc["position_candidate"] = fix_json;
+        } else {
+            doc["position_diagnostic"] = fix_json;
+        }
+    }
+    let tmp = format!("{OUT}.tmp");
+    std::fs::write(&tmp, doc.to_string()).unwrap();
+    std::fs::rename(&tmp, OUT).unwrap();
 }
 
 /// Multi-GEO merge of one fast-correction row into the map: several locked
@@ -673,57 +711,65 @@ fn main() {
     let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
         dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
     );
-    // Set when the mixed solve fails the integrity law this cycle: the
+    // Set when the mixed solve fails the plausibility law this cycle: the
     // GPS-only fallback doc carries the reason (machine-readable), so a
     // darkened mixed era is visible in the published fix, not just stderr.
     let mut bds_quarantined: Option<String> = None;
     if gps_meas.len() >= 3 && bds_meas.len() >= 2 {
-        let mut rows: Vec<hackrf_gnss::gps::pvt::MeasSys> = gps_meas
+        // (measurement, PRN) pairs from the start (round-13 9a): the
+        // pre-solve retain below used to drop rows without touching
+        // gps_prns/bds_prns, after which gps_prns[i] no longer named
+        // rows[i] and a dropped-outlier log line could name the wrong
+        // satellite. One record through filtering — no drift.
+        let mut rows: Vec<(hackrf_gnss::gps::pvt::MeasSys, (u8, u8))> = gps_meas
             .iter()
-            .map(|m| hackrf_gnss::gps::pvt::MeasSys {
+            .zip(gps_prns.iter())
+            .map(|(m, &p)| (hackrf_gnss::gps::pvt::MeasSys {
                 sat: m.sat,
                 pseudorange: m.pseudorange,
                 system: 0,
-            })
-            .chain(bds_meas.iter().map(|m| hackrf_gnss::gps::pvt::MeasSys {
-                sat: m.sat,
-                pseudorange: m.pseudorange,
-                system: 1,
+            }, (0u8, p)))
+            .chain(bds_meas.iter().zip(bds_prns.iter()).map(|(m, &p)| {
+                (hackrf_gnss::gps::pvt::MeasSys {
+                    sat: m.sat,
+                    pseudorange: m.pseudorange,
+                    system: 1,
+                }, (1u8, p))
             }))
             .collect();
         // normalize: pseudoranges carry the huge stream-time-vs-GPS offset
         // (~1e10 km) which wrecks the solver's conditioning; the two clock
         // terms absorb any per-system common shift
-        let mut sorted: Vec<f64> = rows.iter().map(|m| m.pseudorange).collect();
+        let mut sorted: Vec<f64> = rows.iter().map(|(m, _)| m.pseudorange).collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = sorted[sorted.len() / 2];
-        for m in rows.iter_mut() {
+        for (m, _) in rows.iter_mut() {
             m.pseudorange -= med;
         }
         // pre-solve sanity: after median normalization, honest channels sit
         // within a few thousand km of the median; a garbage-frame anchor
         // (observed live: a 2.1e10 km residual class) poisons every residual
         // and exhausts the drop budget. Drop those rows BEFORE solving.
-        rows.retain(|m| m.pseudorange.abs() < 5000.0);
-        if let Some((f, dropped)) = hackrf_gnss::gps::pvt::solve_mixed_with_rejection(&rows, g, 3) {
+        rows.retain(|(m, _)| m.pseudorange.abs() < 5000.0);
+        let solve_rows: Vec<hackrf_gnss::gps::pvt::MeasSys> =
+            rows.iter().map(|(m, _)| *m).collect();
+        if let Some((f, dropped)) = hackrf_gnss::gps::pvt::solve_mixed_with_rejection(&solve_rows, g, 3) {
             if !dropped.is_empty() {
-                // rows = GPS first, then BDS; a dropped row is a >=1 km
-                // outlier (a full 1 ms tooth slip is ~300 km)
+                // a dropped row is a >=1 km outlier (a full 1 ms tooth slip
+                // is ~300 km); rows[i].1 names it — the pairs are in
+                // lockstep with solve_rows, so the name cannot drift
                 let names: Vec<String> = dropped
                     .iter()
                     .map(|&i| {
-                        if i < gps_prns.len() {
-                            format!("G{}", gps_prns[i])
-                        } else {
-                            format!("BDS-row{}", i - gps_prns.len())
-                        }
+                        let (sys, prn) = rows[i].1;
+                        format!("{}{}", if sys == 1 { "B" } else { "G" }, prn)
                     })
                     .collect();
                 eprintln!("live_fix: dropped outlier channels {:?} (>1 km residual)", names);
             }
-            // One integrity law for publication and fallback (round-10):
+            // One plausibility law for publication and fallback (round-10):
             // the mixed solve becomes the position of record only when the
-            // PUBLISHED integrity predicate holds (rms < 50 m, |isx| < 50 km,
+            // PUBLISHED plausibility predicate holds (rms < 50 m, |isx| < 50 km,
             // sane altitude) — a 50-2000 m failure used to slip between the
             // old 2000 m publish gate and the 50 m validity law. Anything
             // short of valid quarantines the BDS contribution this cycle and
@@ -739,7 +785,7 @@ fn main() {
             let integ = integ0 && f.n_bds >= 2;
             if !integ {
                 bds_quarantined = Some(format!(
-                    "mixed solve fails the integrity law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds){}",
+                    "mixed solve fails the plausibility law: rms {:.0} m, isx {:.2} km, alt {:.1} km ({} gps + {} bds){}",
                     f.residual_rms_m, f.isx_km, f.alt_km, f.n_gps, f.n_bds,
                     if f.n_bds < 2 { "; free ISB with n_bds<2 absorbs anything" } else { "" }
                 ));
@@ -759,33 +805,26 @@ fn main() {
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
-            let used: Vec<(u8, u8)> = gps_prns
-                .iter()
-                .map(|&p| (0u8, p))
-                .chain(bds_prns.iter().map(|&p| (1u8, p)))
-                .collect();
-            let doc = serde_json::json!({
+            // the eph ledger lists the rows that actually entered the
+            // solve (the post-retain pairs — never a garbage row the
+            // pre-solve sanity filter dropped)
+            let used: Vec<(u8, u8)> = rows.iter().map(|(_, p)| *p).collect();
+            let fix_json = serde_json::json!({
+                "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
+                "clock_km": f.clock_gps_km, "isx_km": f.isx_km,
+                "residual_rms_m": f.residual_rms_m,
+                "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
+                "gate": gate,
+                "geometry_redundant": geo_red, "plausibility_pass": integ,
+                "trusted_for_history": trusted,
+                "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                "n_sbas_excluded": n_sbas_excluded,
+                "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
+                "eph": eph_report(&used),
+                "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 "epoch": now,
-                "ttl_s": 900,
-                "position": {
-                    "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
-                    "clock_km": f.clock_gps_km, "isx_km": f.isx_km,
-                    "residual_rms_m": f.residual_rms_m,
-                    "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
-                    "gate": gate,
-                    "geometry_redundant": geo_red, "integrity_valid": integ,
-                    "trusted_for_history": trusted,
-                    "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
-                    "n_sbas_excluded": n_sbas_excluded,
-                    "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
-                    "eph": eph_report(&used),
-                    "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
-                    "epoch": now,
-                }
             });
-            let tmp = format!("{OUT}.tmp");
-            std::fs::write(&tmp, doc.to_string()).unwrap();
-            std::fs::rename(&tmp, OUT).unwrap();
+            publish_position(fix_json, integ, trusted, now);
             return;
             }
         }
@@ -799,16 +838,23 @@ fn main() {
         let mut sorted: Vec<f64> = meas.iter().map(|m| m.pseudorange).collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = sorted[sorted.len() / 2];
-        let mut meas: Vec<_> = meas
+        // (measurement, PRN) pairs through the filter (round-13 9a): the
+        // old code filtered meas alone, after which gps_prns[i] no longer
+        // named meas[i] — LOO exclusion notes, RAIM drop lines and the eph
+        // ledger could name the wrong satellite
+        let pairs: Vec<(hackrf_gnss::gps::pvt::Meas, u8)> = meas
             .into_iter()
-            .map(|mut m| {
+            .zip(gps_prns.iter().copied())
+            .map(|(mut m, p)| {
                 m.pseudorange -= med;
-                m
+                (m, p)
             })
             // pre-solve sanity, same as the mixed path: a garbage-frame
             // anchor sits ~1e10 km out and must never reach the solver
-            .filter(|m| m.pseudorange.abs() < 5000.0)
+            .filter(|(m, _)| m.pseudorange.abs() < 5000.0)
             .collect();
+        let mut meas: Vec<_> = pairs.iter().map(|(m, _)| *m).collect();
+        let gps_prns: Vec<u8> = pairs.iter().map(|(_, p)| *p).collect();
         let g = hackrf_gnss::gps::ephemeris::geodetic_to_ecef(
             dyn_lla[0], dyn_lla[1], dyn_lla[2] / 1000.0,
         );
@@ -861,7 +907,7 @@ fn main() {
                         );
                         // a LOO-excluded subset solve is diagnostic, never
                         // trusted for history (round 6)
-                        let integ = fi.residual_rms_m < RMS_INTEGRITY_M
+                        let integ = fi.residual_rms_m < RMS_PLAUSIBILITY_M
                             && alt_sane(fi.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
                         let fix_json = serde_json::json!({
                             "lat": fi.lat, "lon": fi.lon, "alt_km": fi.alt_km,
@@ -870,7 +916,7 @@ fn main() {
                             "mode": "2D(alt-hold)",
                             "gate": gate,
                             "geometry_redundant": false,
-                            "integrity_valid": integ,
+                            "plausibility_pass": integ,
                             "trusted_for_history": false,
                             "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                             "n_sbas_excluded": n_sbas_excluded,
@@ -880,32 +926,14 @@ fn main() {
                             "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                             "epoch": now,
                         });
-                        // Publication gate (round-11), the same law as the
-                        // anchored path below: an integrity-INVALID reduced
-                        // solve never becomes the position of record — the
-                        // last valid fix survives in `position` and this
-                        // solve goes to the diagnostic channel.
-                        let mut doc = serde_json::json!({ "epoch": now, "ttl_s": 900 });
-                        if integ {
-                            doc["position"] = fix_json.clone();
-                            // trusted_for_history is always false here, so a
-                            // valid reduced solve is ALSO mirrored to the
-                            // diagnostic channel
-                            doc["position_diagnostic"] = fix_json.clone();
-                        } else {
-                            // preserve the last valid position across invalid eras
-                            if let Ok(prev) = std::fs::read_to_string(OUT) {
-                                if let Ok(pj) = serde_json::from_str::<serde_json::Value>(&prev) {
-                                    if let Some(p) = pj.get("position") {
-                                        doc["position"] = p.clone();
-                                    }
-                                }
-                            }
-                            doc["position_diagnostic"] = fix_json;
-                        }
-                        let tmp = format!("{OUT}.tmp");
-                        std::fs::write(&tmp, doc.to_string()).unwrap();
-                        std::fs::rename(&tmp, OUT).unwrap();
+                        // Publication gate (round-11/13), the single shared
+                        // law: a reduced LOO solve never becomes the
+                        // position of record — trusted is always false
+                        // here, so a passing solve lands in
+                        // `position_candidate`, a failing one in
+                        // `position_diagnostic`, and the last trusted fix
+                        // survives in `position` either way.
+                        publish_position(fix_json, integ, false, now);
                         return;
                     }
                 }
@@ -971,18 +999,19 @@ fn main() {
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
-            // Publication gate (round-11): an integrity-INVALID solve never
-            // becomes the position of record — it goes to the diagnostic
-            // channel with machine-readable reasons, and the last VALID fix
+            // Publication gate (round-11, single shared law since round 12):
+            // a plausibility-FAILING solve never becomes the position of
+            // record — publish_position routes it to the diagnostic channel
+            // with machine-readable reasons while the last VALID fix
             // survives in `position` with its own epoch (honestly aging).
-            // Runtime published 159-325 m residual candidates as state.
-            // position before this gate.
+            // Runtime published 159-325 m residual candidates as
+            // state.position before this gate.
             let fix_json = serde_json::json!({
                 "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
                 "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
                 "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
                 "gate": gate,
-                "geometry_redundant": geo_red, "integrity_valid": integ,
+                "geometry_redundant": geo_red, "plausibility_pass": integ,
                 "trusted_for_history": trusted,
                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
                 "n_sbas_excluded": n_sbas_excluded,
@@ -992,26 +1021,7 @@ fn main() {
                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 "epoch": now,
             });
-            let mut doc = serde_json::json!({ "epoch": now, "ttl_s": 900 });
-            if integ {
-                doc["position"] = fix_json.clone();
-                if !trusted {
-                    doc["position_diagnostic"] = fix_json.clone();
-                }
-            } else {
-                // preserve the last valid position across invalid eras
-                if let Ok(prev) = std::fs::read_to_string(OUT) {
-                    if let Ok(pj) = serde_json::from_str::<serde_json::Value>(&prev) {
-                        if let Some(p) = pj.get("position") {
-                            doc["position"] = p.clone();
-                        }
-                    }
-                }
-                doc["position_diagnostic"] = fix_json;
-            }
-            let tmp = format!("{OUT}.tmp");
-            std::fs::write(&tmp, doc.to_string()).unwrap();
-            std::fs::rename(&tmp, OUT).unwrap();
+            publish_position(fix_json, integ, trusted, now);
             return;
         }
     }
@@ -1054,37 +1064,18 @@ fn main() {
                 "gdop": f.gdop,
                 "n_sat": f.n_sat,
                 "gate": gate,
-                "geometry_redundant": geo_red, "integrity_valid": integ,
+                "geometry_redundant": geo_red, "plausibility_pass": integ,
                 "trusted_for_history": trusted,
                 "eph": eph_report(&used),
                 "corr_note": "code-phase snapshot path — WAAS corrections not applicable to this measurement model",
                 "source": "live tracker code phases + BRDC ephemeris",
                 "epoch": now,
             });
-            // Publication gate (round-11), the same law as the anchored
-            // path: an integrity-INVALID solve never becomes the position
-            // of record — the last valid fix survives in `position` and
-            // this solve goes to the diagnostic channel with its reasons.
-            let mut doc = serde_json::json!({ "epoch": now, "ttl_s": 900 });
-            if integ {
-                doc["position"] = fix_json.clone();
-                if !trusted {
-                    doc["position_diagnostic"] = fix_json.clone();
-                }
-            } else {
-                // preserve the last valid position across invalid eras
-                if let Ok(prev) = std::fs::read_to_string(OUT) {
-                    if let Ok(pj) = serde_json::from_str::<serde_json::Value>(&prev) {
-                        if let Some(p) = pj.get("position") {
-                            doc["position"] = p.clone();
-                        }
-                    }
-                }
-                doc["position_diagnostic"] = fix_json;
-            }
-            let tmp = format!("{OUT}.tmp");
-            std::fs::write(&tmp, doc.to_string()).unwrap();
-            std::fs::rename(&tmp, OUT).unwrap();
+            // Publication gate (round-11), the single shared law: a
+            // plausibility-FAILING solve never becomes the position of
+            // record — the last valid fix survives in `position` and this
+            // solve goes to the diagnostic channel with its reasons.
+            publish_position(fix_json, integ, trusted, now);
             println!(
                 "fix: {:.5} {:.5} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop
@@ -1104,7 +1095,7 @@ mod tests {
 
     /// Trust split (review round 6): redundancy is not validity — a
     /// redundant solve with 105 m rms or a 10,369 km isx is NOT
-    /// integrity-valid; an exact solve is never trusted for history.
+    /// plausibility-passing; an exact solve is never trusted for history.
     #[test]
     fn trust_fields_separates_geometry_from_validity() {
         // clean redundant solve: trusted
@@ -1118,7 +1109,7 @@ mod tests {
         // impossible altitude: not valid
         assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02, 0.02), (true, false, false));
         // round-10b: a 1.5 km vertical blunder against a 20 m anchor must
-        // fail integrity even with clean rms — the gate is anchor-bound
+        // fail plausibility even with clean rms — the gate is anchor-bound
         assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02, 0.02), (true, false, false));
         // and an in-band altitude (car on a hill, +300 m) passes
         assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02, 0.02), (true, true, true));

@@ -197,18 +197,26 @@ def test_watcher():
 
         import time
         ep0 = time.time() - 600          # inside the 3 h window
-        fix = {"epoch": ep0,
-               "position": {"lat": SITE["lat"], "lon": SITE["lon"],
-                            "alt_km": 0.02, "mode": "3D(mixed GPS+BDS)",
-                            "gate": "redundant", "gdop": 2.1, "n_sat": 6,
-                            "isx_km": 12.34, "residual_rms_m": 3.2,
-                            "geometry_redundant": True,
-                            "integrity_valid": True,
-                            "trusted_for_history": True,
-                            "source": "test-fixture"}}
-        json.dump(fix, open(position_watch.STATE_IN, "w"))
+        trusted = {"lat": SITE["lat"], "lon": SITE["lon"],
+                   "alt_km": 0.02, "mode": "3D(mixed GPS+BDS)",
+                   "gate": "redundant", "gdop": 2.1, "n_sat": 6,
+                   "isx_km": 12.34, "residual_rms_m": 3.2,
+                   "geometry_redundant": True,
+                   "plausibility_pass": True,
+                   "trusted_for_history": True,
+                   "source": "test-fixture"}
 
-        seen, seen_diag = position_watch.cycle(None, None)
+        def write(doc):
+            json.dump(doc, open(position_watch.STATE_IN, "w"))
+
+        def nlines(path):
+            return len(open(path).read().strip().splitlines())
+
+        # trusted fix in "position" (round-13 law: position is trusted-only)
+        write({"epoch": ep0, "position": dict(trusted, epoch=ep0)})
+        seen, seen_cand, seen_diag = position_watch.seed_cursors()
+        assert (seen, seen_cand, seen_diag) == (None, None, None)
+        seen, seen_cand, seen_diag = position_watch.cycle(seen, seen_cand, seen_diag)
         assert seen == ep0
         lines = open(position_watch.HISTORY).read().strip().splitlines()
         assert len(lines) == 1
@@ -221,42 +229,73 @@ def test_watcher():
         assert len(st["position_history"]) == 1 and st["site"]["lat"] == SITE["lat"]
 
         # same epoch again: heartbeat rewrites state, no duplicate history
-        seen, seen_diag = position_watch.cycle(seen, seen_diag)
-        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 1
+        seen, seen_cand, seen_diag = position_watch.cycle(seen, seen_cand, seen_diag)
+        assert nlines(position_watch.HISTORY) == 1
 
-        # new epoch appends; corrupt file must raise (main() guards it)
-        fix["epoch"] = ep0 + 300.0
-        json.dump(fix, open(position_watch.STATE_IN, "w"))
-        position_watch.cycle(seen, seen_diag)
-        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
+        # new epoch appends
+        write({"epoch": ep0 + 300.0, "position": dict(trusted, epoch=ep0 + 300.0)})
+        seen, seen_cand, seen_diag = position_watch.cycle(seen, seen_cand, seen_diag)
+        assert nlines(position_watch.HISTORY) == 2
 
-        # untrusted fix (integrity failed): diagnostic log only — the
-        # trusted history must not grow; a MISSING trust field counts false
-        fix["epoch"] = ep0 + 600.0
-        fix["position"]["integrity_valid"] = False
-        fix["position"]["trusted_for_history"] = False
-        fix["position"]["residual_rms_m"] = 179.4
-        json.dump(fix, open(position_watch.STATE_IN, "w"))
-        seen, seen_diag = position_watch.cycle(ep0 + 300.0, seen_diag)
-        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
+        # round-13: a plausible-but-EXACT solve publishes as
+        # "position_candidate" — diagnostic history only, the trusted
+        # history must not grow, and the preserved trusted "position"
+        # (older epoch) must NOT be re-ingested
+        cand = {"lat": SITE["lat"], "lon": SITE["lon"], "alt_km": 0.03,
+                "mode": "3D", "gate": "ungated — exact solve, unverifiable",
+                "gdop": 4.2, "n_sat": 4, "residual_rms_m": 0.0,
+                "geometry_redundant": False, "plausibility_pass": True,
+                "trusted_for_history": False, "source": "test-fixture"}
+        write({"epoch": ep0 + 600.0,
+               "position": dict(trusted, epoch=ep0 + 300.0),
+               "position_candidate": dict(cand, epoch=ep0 + 600.0)})
+        seen, seen_cand, seen_diag = position_watch.cycle(seen, seen_cand, seen_diag)
+        assert nlines(position_watch.HISTORY) == 2
         dlines = open(position_watch.HISTORY_DIAG).read().strip().splitlines()
         assert len(dlines) == 1
         assert json.loads(dlines[0])["trusted_for_history"] is False
-        del fix["position"]["trusted_for_history"]     # missing == false
-        fix["epoch"] = ep0 + 900.0
-        json.dump(fix, open(position_watch.STATE_IN, "w"))
-        position_watch.cycle(seen, seen_diag)
-        assert len(open(position_watch.HISTORY).read().strip().splitlines()) == 2
-        assert len(open(position_watch.HISTORY_DIAG).read().strip().splitlines()) == 2
+
+        # a plausibility-FAILING solve publishes only as
+        # "position_diagnostic" — same diagnostic-history route
+        write({"epoch": ep0 + 900.0,
+               "position": dict(trusted, epoch=ep0 + 300.0),
+               "position_diagnostic": dict(cand, epoch=ep0 + 900.0,
+                                           residual_rms_m=179.4,
+                                           plausibility_pass=False)})
+        seen, seen_cand, seen_diag = position_watch.cycle(seen, seen_cand, seen_diag)
+        assert nlines(position_watch.HISTORY) == 2
+        assert nlines(position_watch.HISTORY_DIAG) == 2
+
+        # restart dedupe (round-13 9b): fresh cursors via the production
+        # seeding path — the still-current doc appends NOTHING again: not
+        # the failing solve (the diagnostic tail cursor covers it) and not
+        # the preserved trusted "position" (already the trusted tail; the
+        # main cursor seeds from the max of BOTH tails)
+        r_seen, r_cand, r_diag = position_watch.seed_cursors()
+        assert r_seen == ep0 + 900.0
+        position_watch.cycle(r_seen, r_cand, r_diag)
+        assert nlines(position_watch.HISTORY) == 2
+        assert nlines(position_watch.HISTORY_DIAG) == 2
+
+        # defensive: a fix in "position" with a MISSING trust field counts
+        # false and routes to the diagnostic history (round-13 producers
+        # keep untrusted solves out of "position" entirely)
+        legacy = dict(trusted, epoch=ep0 + 1200.0)
+        del legacy["trusted_for_history"]              # missing == false
+        write({"epoch": ep0 + 1200.0, "position": legacy})
+        position_watch.cycle(seen, seen_cand, seen_diag)
+        assert nlines(position_watch.HISTORY) == 2
+        assert nlines(position_watch.HISTORY_DIAG) == 3
 
         open(position_watch.STATE_IN, "w").write("{corrupt")
         try:
-            position_watch.cycle(ep0 + 300.0, seen_diag)
+            position_watch.cycle(seen, seen_cand, seen_diag)
             raise AssertionError("corrupt state did not raise")
         except json.JSONDecodeError:
             pass
-        print("watcher: one JSONL line per new trusted epoch, untrusted -> "
-              "diagnostic log, heartbeat state write, corrupt-state survivable")
+        print("watcher: one JSONL line per new trusted epoch, candidate/"
+              "failing -> diagnostic log, restart-dedupe, heartbeat state "
+              "write, corrupt-state survivable")
 
 
 if __name__ == "__main__":
