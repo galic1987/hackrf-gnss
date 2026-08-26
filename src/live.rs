@@ -1360,6 +1360,12 @@ impl Channel {
         self.sbas_applied = None;
         if !keep_grid {
             self.nav_abs_ms = 0;
+            // A re-anchored grid must not pair pre-gap prompts: the queue is
+            // discontinuous across lost samples, and anything in it belongs
+            // to the dead decoder's window (round-10 review — the reset used
+            // to re-anchor the origin while keeping the queue, letting
+            // pre-gap data decode across the seam with fresh timestamps).
+            self.nav_ms.clear();
         }
     }
 
