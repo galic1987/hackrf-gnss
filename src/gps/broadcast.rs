@@ -63,8 +63,9 @@ pub struct BrdcEph {
     /// SV health. GPS: RINEX-3.05 nav line 7 field 2 (= LNAV subframe 1
     /// word 3 bits 17-22, IS-GPS-200 20.3.3.3.1.4 — 0 = healthy). BDS:
     /// line 7 field 2 = SatH1 (D1 subframe 1 word 2 bit 13). None where
-    /// the source record doesn't carry it. Informational today: the Kepler
-    /// consumers do not gate on health.
+    /// the source record doesn't carry it. ENFORCED at RINEX selection:
+    /// a record with known health != 0 is hard-excluded (parse_gps_record),
+    /// so an unhealthy SV's ephemeris can never win — None stays eligible.
     #[serde(default)]
     pub health: Option<u8>,
     /// Fit interval in hours (RINEX-3.05 GPS nav line 8 field 2; the spec's
@@ -72,7 +73,8 @@ pub struct BrdcEph {
     /// (subframe 2 word 10 bit 17, IS-GPS-200 20.3.4.4): 0 -> Some(4.0),
     /// 1 -> None ("> 4 h"; the actual span needs IODC + Table 20-XII).
     /// BDS records carry AODC in that slot — a different quantity — and
-    /// stay None.
+    /// stay None. Selection prefers records whose fit window (toe ..
+    /// toe + fit_h) covers the constellation's newest issue epoch.
     #[serde(default)]
     pub fit_h: Option<f64>,
     /// Issue of data, clock. Present in RINEX-3.05 GPS nav (line 7 field 4,
@@ -158,7 +160,8 @@ pub enum AngUnit {
     Semicircles,
     /// BKG/IGS mixed-file convention: angles already in radians.
     Radians,
-    /// Contradictory content (rad-like AND sc-like records present): the
+    /// Contradictory content with no supermajority (rad-like AND sc-like
+    /// records present, neither holding >= 2/3 of the decided votes): the
     /// file is internally inconsistent — fail closed; every record of the
     /// constellation is rejected rather than parsed under a guessed unit.
     Ambiguous,
@@ -181,9 +184,14 @@ impl AngUnit {
 /// 64-record early scan of a BDS constellation can see nothing but
 /// unit-neutral GEOs). A record with an unparseable or physically
 /// impossible i0 earns no vote — one bad record cannot flip the file.
-/// No decided votes -> Semicircles (spec default; a GEO-only BDS
-/// constellation lands here — GEOs carry no evidence and their Kepler
-/// math is unused anyway).
+/// Decision law: a unit voted by ALL decided votes wins outright; when
+/// BOTH units drew votes the winner must hold a strict majority that is
+/// also a >= 2/3 supermajority of the decided votes, else the verdict is
+/// Ambiguous and fails closed (a lone dissenting or corrupt-but-plausible
+/// record can no longer deadlock the whole constellation, but a genuinely
+/// contested file is still rejected rather than guessed). No decided
+/// votes -> Semicircles (spec default; a GEO-only BDS constellation lands
+/// here — GEOs carry no evidence and their Kepler math is unused anyway).
 pub(crate) fn detect_ang_unit(lines: &[&str], hdr_end: usize, sys: char) -> AngUnit {
     let (mut rad, mut sc) = (0usize, 0usize);
     let mut j = hdr_end;
@@ -203,10 +211,23 @@ pub(crate) fn detect_ang_unit(lines: &[&str], hdr_end: usize, sys: char) -> AngU
         }
         j += 1;
     }
-    match (rad > 0, sc > 0) {
-        (true, true) => AngUnit::Ambiguous,
-        (true, false) => AngUnit::Radians,
-        _ => AngUnit::Semicircles,
+    let decided = rad + sc;
+    if decided == 0 {
+        return AngUnit::Semicircles;
+    }
+    if sc == 0 {
+        return AngUnit::Radians;
+    }
+    if rad == 0 {
+        return AngUnit::Semicircles;
+    }
+    // both units drew votes: the winner needs >= 2/3 of them (integer
+    // form, no float rounding)
+    let (win, unit) = if rad > sc { (rad, AngUnit::Radians) } else { (sc, AngUnit::Semicircles) };
+    if win * 3 >= decided * 2 {
+        unit
+    } else {
+        AngUnit::Ambiguous
     }
 }
 
@@ -234,8 +255,8 @@ pub struct RinexParse {
     /// newest valid issue per PRN — see parse_rinex_gps
     pub ephs: HashMap<u8, BrdcEph>,
     /// records skipped: any malformed/blank consumed field, an i0 failing
-    /// the chosen unit's sanity band, or wholesale under a fail-closed
-    /// Ambiguous unit verdict
+    /// the chosen unit's sanity band, a known-unhealthy SV (health hard-
+    /// excluded), or wholesale under a fail-closed Ambiguous unit verdict
     pub rejected: usize,
     /// the angle-unit verdict applied to every angular field
     pub unit: AngUnit,
@@ -279,7 +300,12 @@ fn gps_sow(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> f64 {
 /// in the RINEX navigation message files is a continuous number without
 /// roll-over"), so the (week, toe) tuple compare is rollover-exact across
 /// the week boundary — unlike the old bare `toe > toe`, which kept last
-/// week's record over a fresh one with a small toe.
+/// week's record over a fresh one with a small toe. A record with KNOWN
+/// nonzero SV health never enters the map (hard-excluded in
+/// parse_gps_record), and among a PRN's candidates a record whose fit
+/// window provably covers the constellation's newest issue epoch beats
+/// one whose window has expired (an out-of-fit record stays usable when
+/// no in-fit alternative exists).
 pub fn parse_rinex_gps(text: &str) -> HashMap<u8, BrdcEph> {
     let r = parse_rinex_gps_nav(text);
     if r.rejected > 0 {
@@ -300,7 +326,7 @@ pub fn parse_rinex_gps_nav(text: &str) -> RinexParse {
     }
     hdr += 1;
     let unit = detect_ang_unit(&lines, hdr, 'G');
-    let mut out: HashMap<u8, BrdcEph> = HashMap::new();
+    let mut recs: Vec<BrdcEph> = Vec::new();
     let mut rejected = 0usize;
     let mut i = hdr;
     while i < lines.len() {
@@ -311,18 +337,45 @@ pub fn parse_rinex_gps_nav(text: &str) -> RinexParse {
         }
         let b: Vec<&str> = (0..7).map(|k| lines[i + 1 + k]).collect();
         match parse_gps_record(ln, &b, unit) {
-            Some(e) => {
-                out.entry(e.prn)
-                    .and_modify(|cur| {
-                        if (e.week, e.toe) > (cur.week, cur.toe) {
-                            *cur = e.clone();
-                        }
-                    })
-                    .or_insert(e);
-            }
+            Some(e) => recs.push(e),
             None => rejected += 1,
         }
         i += 8;
+    }
+    // Selection per PRN, newest valid issue — with a fit-window
+    // preference. The reference epoch is the constellation's newest
+    // (week, toe): the text-only parse's only notion of "now" is the file
+    // itself. A record whose fit window provably covers the reference
+    // (toe .. toe + fit_h hours) beats one whose window has provably
+    // expired; an out-of-fit record is still usable when no in-fit
+    // alternative exists. fit_h unknown -> not provably in-fit, and
+    // recency decides between equals. RINEX weeks are continuous (3.05
+    // §4.1.1), so the (week, toe) tuple compare is rollover-exact.
+    let t_ref = recs
+        .iter()
+        .map(|e| (e.week, e.toe))
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let in_fit = |e: &BrdcEph| match (t_ref, e.fit_h) {
+        (Some((w, t)), Some(f)) => {
+            let age = (w - e.week) * WEEK_S + (t - e.toe);
+            (0.0..=f * 3600.0).contains(&age)
+        }
+        _ => false,
+    };
+    let mut out: HashMap<u8, BrdcEph> = HashMap::new();
+    for e in recs {
+        out.entry(e.prn)
+            .and_modify(|cur| {
+                let replace = if in_fit(&e) != in_fit(cur) {
+                    in_fit(&e)
+                } else {
+                    (e.week, e.toe) > (cur.week, cur.toe)
+                };
+                if replace {
+                    *cur = e.clone();
+                }
+            })
+            .or_insert(e);
     }
     RinexParse { ephs: out, rejected, unit }
 }
@@ -331,8 +384,10 @@ pub fn parse_rinex_gps_nav(text: &str) -> RinexParse {
 /// consumed field must parse — a blank/malformed core field rejects the
 /// record (None) where the old df() silently zero-filled. Optional metadata
 /// (SV health, IODC, fit interval) is blank-tolerant (RINEX-3.05 §3 allows
-/// trimmed trailing blanks) but rejects when present-and-malformed. The raw
-/// i0 must pass [`i0_sane`] for the file's unit verdict.
+/// trimmed trailing blanks) but rejects when present-and-malformed. A
+/// KNOWN-unhealthy record (health Some, != 0) is rejected outright — an
+/// unhealthy SV's ephemeris must never win selection. The raw i0 must
+/// pass [`i0_sane`] for the file's unit verdict.
 ///
 /// RINEX-3.05 GPS nav record layout (Appendix A6, "GNSS Navigation Message
 /// File — GPS Data Record Description"; the 8-line record is unchanged since
@@ -371,6 +426,13 @@ fn parse_gps_record(ln: &str, b: &[&str], unit: AngUnit) -> Option<BrdcEph> {
         Some(_) => return None,
         None => None,
     };
+    // A known-unhealthy SV is hard-excluded at the source (IS-GPS-200
+    // 20.3.3.3.1.4: 0 = healthy): its ephemeris must never win selection,
+    // even when it is the only record on file for the PRN. None (no
+    // health field) stays eligible.
+    if matches!(health, Some(h) if h != 0) {
+        return None;
+    }
     let iodc = match df_opt(fld(b[5], 61, 80)).ok()? {
         Some(v) if (0.0..=1023.0).contains(&v) => Some(v as u16), // 10-bit
         Some(_) => return None,
@@ -569,6 +631,12 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
     /// first field at col 4 (writers left-pad positive numbers with a
     /// space, so a positive first field reads as 5 leading blanks).
     fn rinex_record(prn: u8, week: f64, toe: f64, i0: &str) -> String {
+        rinex_record_hf(prn, week, toe, i0, "0.000000000000D+00", "4.000000000000D+00")
+    }
+
+    /// rinex_record with L7 field 2 (SV health) and L8 field 2 (fit
+    /// interval hours) parameterised, for the health/fit selection tests.
+    fn rinex_record_hf(prn: u8, week: f64, toe: f64, i0: &str, health: &str, fit: &str) -> String {
         format!(
             "G{prn:02} 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00\n\
              \x20    1.000000000000D+02-5.000000000000D+00 4.000000000000D-09 3.000000000000D-01\n\
@@ -576,8 +644,8 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
              \x20   {toe:19.12E} 1.000000000000D-08-2.500000000000D+00 2.000000000000D-08\n\
              \x20   {i0:>19} 2.000000000000D+02-5.000000000000D-01-8.000000000000D-09\n\
              \x20   -2.600000000000D-10 0.000000000000D+00{week:19.12E} 0.000000000000D+00\n\
-             \x20    0.000000000000D+00 0.000000000000D+00-1.000000000000D-08 1.000000000000D+02\n\
-             \x20   {toe:19.12E} 4.000000000000D+00 0.000000000000D+00 0.000000000000D+00"
+             \x20    0.000000000000D+00{health:>19}-1.000000000000D-08 1.000000000000D+02\n\
+             \x20   {toe:19.12E}{fit:>19} 0.000000000000D+00 0.000000000000D+00"
         )
     }
 
@@ -677,5 +745,88 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         // order-independent: the same outcome when the file lists new first
         let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{new}\n{old}"));
         assert_eq!(r.ephs[&5].week, 2351.0);
+    }
+
+    #[test]
+    fn unit_vote_supermajority_resolves_a_lone_dissenter() {
+        // 134 sc-like records vs 1 rad-like dissenter: the supermajority
+        // rules. The old any-mix law failed the WHOLE constellation closed
+        // over one corrupt-but-plausible record.
+        let mut txt = String::from(RNX_HDR);
+        for k in 0..134u32 {
+            let prn = (k % 32 + 1) as u8;
+            let rec = rinex_record(prn, 2350.0, 345_600.0 + k as f64 * 1800.0, "3.000000000000D-01");
+            txt.push_str(&rec);
+            txt.push('\n');
+        }
+        txt.push_str(&rinex_record(33, 2350.0, 345_600.0, "9.600000000000D-01"));
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Semicircles, "134 vs 1: the supermajority wins");
+        assert_eq!(r.rejected, 0, "the dissenter is unit-sane under semicircles (0.96 <= 1)");
+        assert_eq!(r.ephs.len(), 33);
+        assert!((r.ephs[&1].m0 - 0.3 * PI).abs() < 1e-9, "the majority unit is applied");
+    }
+
+    #[test]
+    fn unit_vote_near_even_split_still_fails_closed() {
+        // 3 sc-like vs 2 rad-like: 3/5 < 2/3 — genuinely contested content
+        // still fails closed; the supermajority law is not a coin flip.
+        let mut txt = String::from(RNX_HDR);
+        for (k, i0) in ["3.000000000000D-01", "3.100000000000D-01", "3.200000000000D-01",
+            "9.500000000000D-01", "9.600000000000D-01"]
+            .iter()
+            .enumerate()
+        {
+            txt.push_str(&rinex_record(k as u8 + 5, 2350.0, 345_600.0, i0));
+            txt.push('\n');
+        }
+        let r = parse_rinex_gps_nav(&txt);
+        assert_eq!(r.unit, AngUnit::Ambiguous, "a 3:2 split has no supermajority");
+        assert_eq!(r.rejected, 5);
+        assert!(r.ephs.is_empty());
+    }
+
+    #[test]
+    fn unhealthy_records_never_win_selection() {
+        let healthy_old =
+            rinex_record_hf(5, 2350.0, 345_600.0, "3.000000000000D-01", "0.000000000000D+00", "4.000000000000D+00");
+        let unhealthy_new =
+            rinex_record_hf(5, 2350.0, 349_200.0, "3.000000000000D-01", "1.000000000000D+00", "4.000000000000D+00");
+        // the unhealthy NEWER record loses to the healthy older one
+        let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{healthy_old}\n{unhealthy_new}"));
+        assert_eq!(r.rejected, 1, "the unhealthy record is hard-excluded");
+        assert_eq!(r.ephs[&5].toe, 345_600.0, "the healthy older record wins");
+        // ...and selects nothing even when it is the ONLY record on file
+        let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{unhealthy_new}"));
+        assert_eq!(r.rejected, 1);
+        assert!(r.ephs.get(&5).is_none(), "an unhealthy-only PRN selects nothing");
+        // health unknown (blank field -> None) stays eligible
+        let blank_health =
+            rinex_record_hf(7, 2350.0, 345_600.0, "3.000000000000D-01", "", "4.000000000000D+00");
+        let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{blank_health}"));
+        assert_eq!(r.rejected, 0);
+        assert_eq!(r.ephs[&7].health, None);
+    }
+
+    #[test]
+    fn fit_window_preference_picks_the_in_fit_record() {
+        // Reference epoch = the constellation's newest (week, toe): PRN 6's
+        // record at toe 363601 puts PRN 5's NEWER record (toe 349200, fit
+        // 4 h) 1 s PAST its fit window while the OLDER record (toe 345600,
+        // fit 6 h) still covers it — the in-fit record beats the newer
+        // out-of-fit one, in either file order.
+        let old_long =
+            rinex_record_hf(5, 2350.0, 345_600.0, "3.000000000000D-01", "0.000000000000D+00", "6.000000000000D+00");
+        let new_short =
+            rinex_record_hf(5, 2350.0, 349_200.0, "3.000000000000D-01", "0.000000000000D+00", "4.000000000000D+00");
+        let clock_ref = rinex_record(6, 2350.0, 363_601.0, "3.100000000000D-01");
+        for order in [&format!("{new_short}\n{old_long}"), &format!("{old_long}\n{new_short}")] {
+            let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{order}\n{clock_ref}"));
+            assert_eq!(r.rejected, 0);
+            assert_eq!(r.ephs[&5].toe, 345_600.0, "in-fit beats newer out-of-fit");
+        }
+        // an out-of-fit record is still usable when it is the only candidate
+        let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{new_short}\n{clock_ref}"));
+        assert_eq!(r.ephs[&5].toe, 349_200.0, "out-of-fit sole candidate stays selected");
     }
 }
