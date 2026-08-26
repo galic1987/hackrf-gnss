@@ -516,10 +516,13 @@ def main():
         if mean is not None:
             state["consensus_ppm"] = round(mean, 4)
         state["alerts"] = alerts
-        # CLKIN tri-state (round-8 review): the One is held full-time by
-        # phase_producer, so the CLKIN-detection read usually can't open it —
-        # publish True/False/None and never let "cabled" read as "locked".
-        state.setdefault("clock", {})["clkin_verified"] = locked
+        # CLKIN tri-state (round-8/9b reviews): the r9 probe measures the
+        # CLKIN pin frequency in a 9-11 MHz window — i.e. "a 10 MHz-class
+        # signal is present", NOT proof the One's clocks run from it (that
+        # depends on the input switch state, which this read can't see; and
+        # the One is held full-time by phase_producer so the read usually
+        # can't even open it -> None). Never let "cabled" read as "locked".
+        state.setdefault("clock", {})["clkin_signal_present"] = locked
         tmp = STATE + ".band.tmp"   # unique tmp: sync/phase producers share STATE
         json.dump(state, open(tmp, "w"), indent=1)
         os.replace(tmp, STATE)

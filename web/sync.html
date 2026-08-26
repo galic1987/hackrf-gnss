@@ -2602,7 +2602,10 @@ function renderPhysChain(st) {
     : (d.actuate === true ? '<span class="pill ok">ACTUATING</span> ' : "");
   nodes.push(journeyNode("Clock tree",
     d.correction_ppm !== undefined ? "corr <b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + "</b> ppm" : "—",
-    shadPill + "TCXO 10 MHz → Si5351 synthesizer · CLKOUT feeds the second radio's CLKIN",
+    shadPill + "TCXO 10 MHz → Si5351 synthesizer · CLKOUT feeds the second radio's CLKIN" +
+      ((st.clock || {}).clkin_signal_present === true ? ' · CLKIN signal present (≠ lock proof)' :
+       (st.clock || {}).clkin_signal_present === false ? ' · CLKIN: no 10 MHz-class signal' :
+       ' · CLKIN unreadable (One busy)'),
     "shared reference → errors cancel in consensus",
     "Clock tree — Si5351 + TCXO + CLKOUT",
     "What happens here — a 10 MHz TCXO is the physics; the Si5351 synthesizer derives every sample clock from it through fractional dividers; the FPGA's fp_1_63 correction register (±1% window) is the actuator the discipline loop would pull; and 10 MHz leaves on CLKOUT to slave the HackRF One's CLKIN. Why it matters — ONE clock for everything is what makes consensus work: any clock error shifts every band identically, so cross-band agreement isolates and removes it, and the second radio inherits the same reference, making its errors common-mode too. What can go wrong — every actuating write collapses tracking (the 122/122 finding), so the loop runs SHADOW until a capture-boundary-safe write path exists; and CLKOUT ownership follows radio ownership — after any flash or reset it must be re-asserted (hackrf_clock -o 1) or the second radio silently freewheels."));
