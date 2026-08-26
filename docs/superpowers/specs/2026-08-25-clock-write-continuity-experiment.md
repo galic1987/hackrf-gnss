@@ -73,18 +73,25 @@ regardless of the continuity outcome.
 
 ### Round-9 update (2026-08-26, free measurements from the 0x469 flashes)
 
-Two control observations landed for free during the flash windows:
-
 1. A full board reset + reflash stepped the measured TCXO residual by
    **−0.0345 ppm with a slow thermal-recovery tail**; a plain tracker
    restart does NOT produce such a step. Treat "the board was reset" as a
    ~0.03 ppm-class disturbance event when comparing residuals across one.
-2. Across that full reset the residual did NOT jump by the cached ±0.34 ppm
-   — arguing the correction register was already at unity (nothing applied
-   to lose). This REMOVES the leading "double-counted applied correction"
-   explanation for the 0.34 ppm step and makes the read-back leg above the
-   decisive remaining test: it costs one minute of any window that is
-   already running the experiment.
+
+### Round-10b CORRECTION (2026-08-26, supersedes an earlier wrong inference)
+
+An earlier revision of this section claimed the 08:17 flash showed NO
+±0.34 ppm residual jump and argued the register was already unity,
+"removing" the double-counting explanation. That reading was backwards.
+The +0.3398 ppm step DID appear — at the 07:58 restart when 587da63
+(phantom add-back removal in the phase-drift producer) went live: the
+displayed consensus moved −0.7228 → −0.3829 ppm, i.e. up by exactly the
+cached correction that had been illegitimately added. That SUPPORTS the
+double-counted-add-back explanation for the original 0.34 ppm puzzle: the
+restart-era step was a bookkeeping artifact, visible only while the phantom
+add-back existed. The read-back leg remains the decisive test for what the
+hardware physically holds — the bookkeeping artifact is now believed dead,
+not the question of what a write physically does.
 
 ## Safety
 

@@ -36,7 +36,10 @@ HackRFs. Read this before touching anything that talks to the radios.
     child. What actually worked: niced AND thread-capped
     (RAYON_NUM_THREADS=4) short jobs, and no hot loops (a `continue` that
     skipped the producer's sleep once spun acq children back-to-back —
-    fixed d1c8490). Full `cargo build`/`cargo test` still belong to
+    fixed d1c8490). ERRATA: the realign timestamp cited in d1c8490's
+    commit and an earlier revision of this note (09:45:38) was wrong —
+    the real event was 09:12:57 (tracker log), under the hot-looping
+    niced+capped children. Full `cargo build`/`cargo test` still belong to
     tracker-down windows. `nice -n 19 cargo check`/targeted small test
     runs are tolerated; watch the tracker log for realigns after each.
     The real fix is negative-nice for live_radio (needs user sudo).
