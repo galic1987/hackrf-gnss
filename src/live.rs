@@ -289,7 +289,11 @@ pub struct Channel {
     /// SBAS 2 ms pairing holds a constant ABSOLUTE grid through it: a
     /// straddling leftover ms shifts the queue head, and a queue-relative
     /// parity latch would then flip the pairing every other second (the
-    /// par=1 phase slip). Reset with the SBAS generation (sbas_reset).
+    /// par=1 phase slip). Re-anchored to zero only when the grid origin
+    /// becomes meaningless: decoder resets across lost samples
+    /// (sbas_reset_decoder with keep_grid false — input gap, reseed) and
+    /// the full sbas_reset. A fade KEEPS it: the prompt queue never
+    /// stopped, so the re-probe must land on the same physical grid.
     nav_abs_ms: u64,
     bit_off: Option<usize>,
     /// decoded nav bits (0/1), polarity unresolved (Costas) — lnav handles it
@@ -338,6 +342,10 @@ pub struct Channel {
     /// SBAS/WAAS streaming decoder (Sys::Sbas only): fed once per second
     /// from the same 1 ms prompt buffer the GPS/BDS nav demod collects in
     /// nav_ms (sbas_tick drains it, so the 200k cap never binds for SBAS).
+    /// The decoder dies on every stream break (sbas_reset_decoder) —
+    /// fade noise must never decode across a seam; the correction caches
+    /// below SURVIVE transient breaks and die only on a CRC-proven pairing
+    /// break (sbas_reset) or their own DO-229 validity expiry.
     sbas_dec: crate::sbas::Decoder,
     /// Latched 1 ms->2 ms symbol pairing while the decoder is locked
     /// (review round 5: re-picking by energy every second lets a noisy
@@ -346,11 +354,15 @@ pub struct Channel {
     /// the queue-relative start is derived per tick from nav_abs_ms. None
     /// = probing.
     sbas_par: Option<usize>,
-    /// The pairing the RETAINED decoder window was built with, pinned when
-    /// the latch engages and kept across lock losses. A re-probed pairing
-    /// that differs from it means a coded symbol was inserted/deleted at
-    /// the seam — the symbol stream is broken and the decode generation
-    /// terminates (sbas_reset). None = no established window pairing.
+    /// The pairing of the last CRC-LOCKED decode, pinned when the latch
+    /// engages and kept across lock losses AND decoder-only resets — it is
+    /// the stream-break detector's memory. A re-probed pairing that differs
+    /// from it is only SUSPECT (the unlocked energy probe flaps on noise,
+    /// and a wrong pairing can never produce a CRC-locked decode): the
+    /// whole generation (sbas_reset, caches included) terminates only when
+    /// the changed pairing PROVES itself with a CRC-locked decode — then a
+    /// coded symbol was inserted/deleted at the seam and messages may have
+    /// been missed. None = no established locked pairing.
     sbas_par_prev: Option<usize>,
     /// Apply-once watermark: the absolute stream position
     /// (sbas::DecodedMessage::sym_pos) of the newest block applied to the
@@ -359,11 +371,17 @@ pub struct Channel {
     /// watermark may touch the caches — a replayed block must never refresh
     /// an insert timestamp (review round 6: the replay re-inserted every
     /// cached message each second with age 0.0, freshness fabricated by
-    /// replay). Reset with the SBAS generation (sbas_reset).
+    /// replay). Dies with EVERY decoder reset (sbas_reset_decoder and
+    /// sbas_reset): the fresh decoder restarts the sym_pos identity space,
+    /// and a carried-over watermark would suppress legitimate
+    /// re-application.
     sbas_applied: Option<usize>,
     /// Latest per-PRN fast corrections (PRC m, UDREI, insert stream-time
-    /// s), from MT2-5 messages decoded by this channel. Cleared on reseed
-    /// and on an MT1 mask-generation change (IODP).
+    /// s), from MT2-5 messages decoded by this channel. Cleared on an MT1
+    /// mask-generation change (IODP), on UDREI >= 14 eviction, and on a
+    /// CRC-proven pairing break (sbas_reset); survives fades, input gaps
+    /// and reseeds — rows expire on their own 60 s stream-time validity
+    /// window.
     sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
     /// Do-not-use records: GPS PRN -> stream time of the latest UDREI >= 14
     /// eviction (an MT2-5 don't-use row or MT6 integrity). This is the
@@ -373,25 +391,32 @@ pub struct Channel {
     /// correction instead converts "do not use" into "use broadcast-only"
     /// under an SBAS label. A fresh usable MT2-5 row CLEARS the record
     /// (the provider re-enabled the satellite); cleared with the
-    /// correction caches on a mask-generation change (IODP) and on
-    /// sbas_reset.
+    /// correction caches on a mask-generation change (IODP) and on a
+    /// CRC-proven pairing break (sbas_reset) — but NOT on fades/gaps/
+    /// reseeds: an unexpired record stays honest on the stream clock and
+    /// dies on the 60 s window it shares with the fast corrections.
     sbas_dnu: std::collections::BTreeMap<u8, f64>,
     /// Latest MT1 PRN mask: (absolute slot numbers of the set bits in
     /// mask order, IODP). MT2-5 and MT24/25 corrections only decode
     /// against this mask — DO-229 addresses their entries by ORDINAL of
-    /// the set bits and gates them on IODP match. Cleared on reseed.
+    /// the set bits and gates them on IODP match. Survives fades/gaps/
+    /// reseeds (provider state, re-validated by every decoded MT1);
+    /// cleared only on a CRC-proven pairing break (sbas_reset).
     sbas_mask: Option<(Vec<u8>, u8)>,
     /// Latest per-PRN long-term corrections (LtCorr in physical units —
     /// vc=1 rows carry rates and t_lt, insert stream-time s), from MT24/25
-    /// halves decoded by this channel. Cleared on reseed and on an MT1
-    /// mask-generation change (IODP).
+    /// halves decoded by this channel. Cleared on an MT1 mask-generation
+    /// change (IODP) and on a CRC-proven pairing break (sbas_reset);
+    /// survives fades/gaps/reseeds, expiring on its own 360 s window.
     sbas_lt: std::collections::BTreeMap<u8, (crate::sbas::LtCorr, f64)>,
     /// Latest iono grid masks by band (iodi, IGP list, insert stream-time
-    /// s), from MT18. Cleared on reseed.
+    /// s), from MT18. Survives fades/gaps/reseeds; cleared only on a
+    /// CRC-proven pairing break (sbas_reset).
     sbas_igpmask: std::collections::BTreeMap<u8, (u8, Vec<u16>, f64)>,
     /// Latest iono delay blocks by (band, block_id): (iodi, 15 x
     /// (vertical-delay counts, GIVEI), insert stream-time s), from MT26.
-    /// Cleared on reseed.
+    /// Survives fades/gaps/reseeds; cleared only on a CRC-proven pairing
+    /// break (sbas_reset).
     sbas_iono: std::collections::BTreeMap<(u8, u8), (u8, [(u16, u8); 15], f64)>,
 }
 
@@ -902,17 +927,13 @@ impl Channel {
         let used = s + 2 * soft.len();
         self.nav_ms.drain(..used);
         self.nav_abs_ms += used as u64;
-        // Generation termination on a symbol-pairing CHANGE (review round
-        // 6): while the decode is locked the pairing is latched (round 5);
-        // a lock loss releases the latch and the energy probe re-picks. If
-        // the re-pick DIFFERS from the pairing the retained window was
-        // built with, one coded symbol was inserted/deleted at the seam —
-        // the stream is broken, so the whole generation (window + caches +
-        // watermark) dies BEFORE the new-pairing symbols land in a fresh
-        // decoder. A re-pick of the SAME pairing is seamless: no reset.
-        if self.sbas_par_prev.is_some() && self.sbas_par_prev != Some(par) {
-            self.sbas_reset();
-        }
+        // NO generation termination here (the round-6 probe-time reset is
+        // refined away): a re-picked pairing that differs from
+        // sbas_par_prev is only SUSPECT at probe time. While the decode is
+        // unlocked the latch is released and the energy probe free-runs, so
+        // noise can flip the pick — and a wrong pairing can never produce a
+        // CRC-locked decode, so the flap is harmless. The flip is settled
+        // after decode() below, on PROOF.
         self.sbas_dec.push_symbols(&soft);
         if !self.locked {
             return Some(SbasSummary {
@@ -927,11 +948,34 @@ impl Channel {
             });
         }
         let rep = self.sbas_dec.decode(SBAS_MIN_BLOCKS);
+        // Pairing-flip settlement: a CRC-LOCKED decode on a pairing
+        // different from the last locked one is the ONLY proof the symbol
+        // stream actually broke (a coded symbol was inserted/deleted at the
+        // seam, so messages may have been MISSED — the caches can no longer
+        // be trusted to be current). Only then does the whole generation
+        // die, caches included — BEFORE any message of the flipped
+        // generation is applied or published. The fresh decoder
+        // re-accumulates from the next second, so this tick reports
+        // unlocked; probe flapping on noise never reaches this branch and
+        // costs nothing.
+        if rep.sync.locked && self.sbas_par_prev.is_some() && self.sbas_par_prev != Some(par) {
+            self.sbas_reset();
+            return Some(SbasSummary {
+                locked: false,
+                n_msgs: 0,
+                types: std::collections::BTreeMap::new(),
+                fast_corr: Vec::new(),
+                dont_use: Vec::new(),
+                lt_corr: Vec::new(),
+                igp_mask: Vec::new(),
+                iono_delay: Vec::new(),
+            });
+        }
         // Latch the pairing that produced a locked decode (and remember it
-        // as the window's pairing for the change detector above); release
+        // as the last locked pairing for the flip detector above); release
         // the latch when lock drops so the next lock re-probes (round 5) —
         // the release alone does NOT break the stream, only a changed
-        // re-pick does.
+        // re-pick PROVEN by a locked decode does.
         if rep.sync.locked {
             self.sbas_par = Some(par);
             self.sbas_par_prev = Some(par);
@@ -1177,10 +1221,18 @@ impl Channel {
                     // a slip for this report second
                     self.slip = true;
                     self.slip_count += 1;
-                    // RF unlock breaks the SBAS symbol stream: the decode
-                    // generation (window + correction caches + apply
-                    // watermark) dies with it (review round 6)
-                    self.sbas_reset();
+                    // RF unlock after a few weak seconds is a FADE: it
+                    // drops no samples, so the absolute pairing grid and
+                    // the caches' stream-time ages stay intact. Only the
+                    // decoder half dies — the retained window must never
+                    // decode fade noise across the break, and the apply
+                    // watermark dies with the decoder's identity space.
+                    // The corrections are CRC24Q-validated records inside
+                    // their DO-229 validity windows; they survive and
+                    // expire on their own. keep_grid: the prompt queue is
+                    // continuous, so the re-probe must land on the same
+                    // physical grid.
+                    self.sbas_reset_decoder(true);
                 }
             } else {
                 self.below = 0;
@@ -1232,18 +1284,25 @@ impl Channel {
         self.below = 0;
         // the reseed also breaks the SBAS symbol stream: a fresh decoder
         // and a released parity latch (review round 5 — stale state would
-        // otherwise decode across the break); review round 6: the whole
-        // decode generation dies together, correction caches included
-        self.sbas_reset();
+        // otherwise decode across the break). Only the decoder half dies:
+        // the correction caches are CRC24Q-validated records whose
+        // stream-time ages keep advancing honestly, so they survive within
+        // their DO-229 validity windows. keep_grid false: the prompt queue
+        // is discontinuous across the re-acquisition, so the old grid
+        // origin is meaningless — re-anchor it.
+        self.sbas_reset_decoder(false);
     }
 
-    /// Terminate the SBAS decode generation (review round 6): the decoder
-    /// window, the parity latch, the apply-once watermark, and every
-    /// harvested correction cache (fast, long-term, mask, iono) die
-    /// together. Any break in the 500 sym/s symbol stream — RF unlock, a
-    /// symbol-pairing change, reseed, input gap — invalidates both the
-    /// retained window AND the corrections harvested from it; the next
-    /// lock starts clean instead of replaying or trusting the old one.
+    /// Terminate the WHOLE SBAS decode generation: the decoder window, the
+    /// parity latch and its locked-pairing memory, the apply-once
+    /// watermark, and every harvested correction cache (fast, long-term,
+    /// mask, iono, do-not-use) die together. Reserved for the one event
+    /// that PROVES the symbol stream broke and that messages may have been
+    /// missed: a CRC-locked decode on a DIFFERENT pairing than the last
+    /// locked one (sbas_tick's flip settlement). Transient breaks (fade,
+    /// reseed, input gap) kill only the decoder — see sbas_reset_decoder;
+    /// the corrections they harvested are CRC24Q-validated records whose
+    /// DO-229 validity windows, not the break, decide when they die.
     fn sbas_reset(&mut self) {
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
@@ -1259,6 +1318,31 @@ impl Channel {
         self.sbas_lt.clear();
         self.sbas_igpmask.clear();
         self.sbas_iono.clear();
+    }
+
+    /// Kill only the DECODER half of the SBAS state on a transient stream
+    /// break (RF fade, reseed, input gap): the retained window must never
+    /// decode across the seam (fade noise or re-aligned samples would
+    /// otherwise be decoded and applied), so the decoder, the pairing
+    /// latch (released so a re-probe can happen) and the apply-once
+    /// watermark die together — the fresh decoder restarts the sym_pos
+    /// identity space, and a stale watermark would suppress legitimate
+    /// re-application. Everything CRC24Q-validated SURVIVES: the
+    /// locked-pairing memory (sbas_par_prev — still needed to detect a
+    /// PROVEN pairing flip) and all correction caches, whose stream-time
+    /// insert ages keep advancing honestly (a fade drops no samples; a gap
+    /// is jumped by in_t) and which expire on their own DO-229 validity
+    /// windows. keep_grid: false zeroes nav_abs_ms (the absolute pairing
+    /// grid's origin is meaningless across lost samples); true preserves
+    /// it (a fade never stopped the prompt queue — the re-probe must land
+    /// on the same physical grid).
+    fn sbas_reset_decoder(&mut self, keep_grid: bool) {
+        self.sbas_dec = crate::sbas::Decoder::new();
+        self.sbas_par = None;
+        self.sbas_applied = None;
+        if !keep_grid {
+            self.nav_abs_ms = 0;
+        }
     }
 
     /// Shift the carrier loops by `df` Hz WITHOUT touching lock state.
@@ -1314,8 +1398,9 @@ pub struct SbasSummary {
     /// converts "do not use" into "use broadcast-only" under an SBAS
     /// label); a never-corrected satellite has no record here and is used
     /// uncorrected. Cleared by a fresh usable MT2-5 row for the same PRN,
-    /// a mask-generation change, or a decode-generation reset. 60 s
-    /// stream-time freshness, the same window as fast_corr.
+    /// a mask-generation change, or a CRC-proven pairing break (the full
+    /// sbas_reset) — it SURVIVES fades and input gaps, expiring on its
+    /// own: 60 s stream-time freshness, the same window as fast_corr.
     pub dont_use: Vec<(u8, f64)>,
     /// Latest long-term corrections (MT24/25) held by this channel, one
     /// JSON object per row: the flattened sbas::LtCorr (GPS PRN; dx, dy,
@@ -1559,12 +1644,21 @@ impl Band {
     /// samples). See Engine::note_gap_bytes.
     pub fn note_gap(&mut self, band_samples: u64) {
         self.in_t += band_samples as f64 / self.fs;
-        // The gap drops samples: no channel's SBAS symbol stream crosses
-        // it, so every decode generation (retained window + correction
-        // caches + apply watermark) dies here (review round 6). Channel
-        // phases are invalidated separately (force_reseed on big gaps).
+        // The gap drops samples: no channel's SBAS decoder window crosses
+        // it, so the decoder half of every channel dies here (fresh
+        // decoder, released latch, reset watermark — nothing decodes or
+        // re-applies across the seam). The correction caches SURVIVE with
+        // honestly-advanced ages: in_t above jumps the gap, so every
+        // insert stamp stays on the true stream clock and the DO-229
+        // validity windows still expire them on schedule. keep_grid
+        // false: the absolute pairing grid re-anchors (its origin is
+        // meaningless across lost samples); if a post-gap re-probe then
+        // CRC-locks on a DIFFERENT pairing than sbas_par_prev, THAT is
+        // the proven break and sbas_tick's flip settlement takes the
+        // caches too. Channel phases are invalidated separately
+        // (force_reseed on big gaps).
         for ch in self.channels.iter_mut() {
-            ch.sbas_reset();
+            ch.sbas_reset_decoder(false);
         }
         // A partial seed/align accumulation that spans the gap is corrupt
         // (acquisition needs a coherent snapshot) — restart it on fresh
@@ -3830,9 +3924,11 @@ mod tests {
     }
 
     /// Do-not-use records are mask-ordinal state: a new mask generation
-    /// (IODP bump) invalidates them together with the corrections, and a
-    /// decode-generation reset (sbas_reset) kills them too — no stale
-    /// exclusion may outlive the state it was decided from.
+    /// (IODP bump) invalidates them together with the corrections, and the
+    /// full decode-generation reset (sbas_reset — the CRC-proven pairing
+    /// break) kills them too: no stale exclusion may outlive the state it
+    /// was decided from. Fades and input gaps no longer kill them — they
+    /// expire on their own 60 s stream-time window.
     #[test]
     fn sbas_dont_use_dies_with_mask_generation_and_reset() {
         let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
@@ -3853,7 +3949,7 @@ mod tests {
         assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(1));
         assert!(ch.sbas_dnu.is_empty(), "the record dies with the mask generation");
         assert!(sums.last().unwrap().dont_use.is_empty());
-        // and with the decode generation (unlock/reseed path)
+        // and with the full generation (the CRC-proven pairing-flip path)
         let sums = feed_sbas_blocks(&mut ch, 5.0, &blocks);
         assert!(sums.last().unwrap().dont_use.iter().any(|r| r.0 == 7));
         ch.sbas_reset();
@@ -3938,7 +4034,11 @@ mod tests {
     /// advances monotonically across RF unlock/relock — never on lock_s,
     /// which RESETS to 0 on unlock (end_second): a row cached at lock_s
     /// 500 and re-checked after a relock at lock_s 1 computed a NEGATIVE
-    /// age and passed any freshness window (review round 4).
+    /// age and passed any freshness window (review round 4). The
+    /// stream-time stamps make that bug class dead regardless of any
+    /// clearing — and that is load-bearing NOW: caches survive fades and
+    /// gaps, so the validity windows are the SOLE expiry mechanism across
+    /// transient breaks.
     #[test]
     fn sbas_freshness_survives_lock_s_reset() {
         let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
@@ -3960,10 +4060,28 @@ mod tests {
         // true elapsed time, not on lock state
         let row9 = s.fast_corr.iter().find(|r| r.0 == 9).expect("fresh row");
         assert!((row9.3 - 6.0).abs() < 1e-9, "published age: {:?}", row9);
+        // the decoder-only reset (the fade/gap path) keeps the caches: the
+        // expired row must STILL not publish and the fresh row's age must
+        // keep advancing honestly
+        ch.sbas_reset_decoder(true);
+        let s = ch.sbas_tick(182.0).expect("summary");
+        assert!(
+            s.fast_corr.iter().all(|r| r.0 != 7),
+            "an expired row stays expired across a decoder reset: {:?}",
+            s.fast_corr
+        );
+        let row9 = s
+            .fast_corr
+            .iter()
+            .find(|r| r.0 == 9)
+            .expect("the fresh row survives the decoder reset");
+        assert!((row9.3 - 7.0).abs() < 1e-9, "its age keeps advancing: {:?}", row9);
     }
 
     // -----------------------------------------------------------------
-    // SBAS apply-once + generation termination (review round 6)
+    // SBAS apply-once (review round 6) + the refined break contract: the
+    // decoder dies on EVERY stream break; the caches die only on a
+    // CRC-proven pairing break or their own DO-229 validity expiry
     // -----------------------------------------------------------------
 
     /// REGRESSION (the live replay bug): sbas_tick re-decodes the RETAINED
@@ -3997,31 +4115,44 @@ mod tests {
         assert_eq!(s.fast_corr.iter().find(|r| r.0 == 3).unwrap().3, 2.0);
     }
 
-    /// Generation termination on RF unlock: the lock watchdog dropping the
-    /// channel must kill the decoder window AND every correction cache.
-    /// After relock, nothing from the dead generation comes back without
-    /// NEW messages — and genuinely new blocks do re-populate the caches
-    /// (the generation is dead, not wedged).
+    /// FADE SURVIVAL (the refined break contract): a few seconds of weak
+    /// carrier trip the lock watchdog, but a fade drops NO samples — the
+    /// absolute pairing grid and the caches' stream-time ages stay intact.
+    /// The watchdog must kill only the decoder half (window, latch,
+    /// watermark); the CRC24Q-validated caches (fast/LT corrections, mask,
+    /// do-not-use records) survive inside their DO-229 validity windows,
+    /// and a relock on the SAME pairing flushes nothing.
     #[test]
-    fn sbas_unlock_terminates_generation() {
+    fn sbas_watchdog_unlock_kills_decoder_keeps_caches() {
         let fs = 4.0e6;
         let ns = (fs / 1000.0) as usize;
         let mut ch = Channel::new(Sys::Sbas, 131, fs, 800.0, 0.0);
         let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let mut udrei51 = [0u8; 51];
+        udrei51[1] = 14; // ordinal 2 -> slot 7: don't use
+        // the eviction rides an MT6 (not a don't-use MT2): MT6 evicts
+        // WITHOUT re-stamping the usable rows, so each cache's insert stamp
+        // unambiguously names its own tick — fast 4.0, dnu 5.0, LT 6.0
         let blocks = vec![
             sbas_block(0, 1, &mt1_payload(&slots, 0)),
             sbas_block(1, 1, &mt1_payload(&slots, 0)),
             sbas_block(2, 1, &mt1_payload(&slots, 0)),
             sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
-            sbas_block(4, 25, &mt25_payload([1, 2], 0)),
+            sbas_block(4, 6, &mt6_payload(&udrei51)),
+            sbas_block(5, 25, &mt25_payload([1, 2], 0)),
         ];
         feed_sbas_blocks(&mut ch, 0.0, &blocks);
         assert!(ch.sbas_mask.is_some() && !ch.sbas_prc.is_empty() && !ch.sbas_lt.is_empty());
+        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the eviction stamps at its tick");
+        assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0));
+        assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0));
+        assert_eq!(ch.sbas_par_prev, Some(0), "locked on the probed pairing");
+        let grid0 = ch.nav_abs_ms;
         // drive the REAL unlock path: sub-threshold C/N0 until the
         // end_second watchdog fires (same noise shape as the slip test),
         // ticking sbas_tick every second exactly like Band::end_second does
         let mut st = 0x1b87_3593u64;
-        let mut t = 5.0;
+        let mut t = 6.0;
         for _ in 0..12 {
             for _ in 0..1000 {
                 let noise: Vec<Complex<f32>> = (0..ns)
@@ -4043,42 +4174,124 @@ mod tests {
             }
         }
         assert!(!ch.locked, "the watchdog must drop the channel");
-        assert!(ch.sbas_mask.is_none(), "the mask dies with the generation");
-        assert!(ch.sbas_prc.is_empty(), "fast corrections die with it");
-        assert!(ch.sbas_lt.is_empty(), "LT corrections die with it");
-        assert!(ch.sbas_applied.is_none(), "the apply watermark resets");
-        // relock: ticking with no NEW blocks must not resurrect any row
-        ch.locked = true;
-        for k in 0..3 {
-            let s = ch.sbas_tick(30.0 + k as f64).expect("summary");
-            assert!(s.fast_corr.is_empty() && s.lt_corr.is_empty());
+        // the decoder half died: latch released, watermark gone, the window
+        // holds only post-reset fade noise — nothing decodes
+        assert!(ch.sbas_applied.is_none(), "the apply watermark dies with the decoder");
+        assert!(ch.sbas_par.is_none(), "the pairing latch is released");
+        let rep = ch.sbas_dec.decode(SBAS_MIN_BLOCKS);
+        assert!(
+            rep.messages.is_empty() && !rep.sync.locked,
+            "the retained window is dead"
+        );
+        // ...but the grid and the locked-pairing memory survive, and every
+        // cache keeps its UNCHANGED insert stamp
+        assert!(ch.nav_abs_ms > grid0, "the grid is never re-anchored on a fade");
+        assert_eq!(ch.sbas_par_prev, Some(0), "the locked-pairing memory survives");
+        assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(0), "the mask survives the fade");
+        assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0), "fast corrections survive the fade");
+        assert!(!ch.sbas_prc.contains_key(&7), "the evicted row stays evicted");
+        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the do-not-use record survives the fade");
+        assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0), "LT corrections survive the fade");
+        // relock on the SAME pairing: the fade's noise probe may have left
+        // a straddling prompt — drain it honestly and step the absolute
+        // grid onto the pairing the dead window locked on, as the
+        // continuous physical stream would present it
+        let used = ch.nav_ms.len();
+        ch.nav_ms.clear();
+        ch.nav_abs_ms += used as u64;
+        let prev = ch.sbas_par_prev.unwrap();
+        if (ch.nav_abs_ms % 2) as usize != prev {
+            ch.nav_abs_ms += 1; // one more prompt elapsed: absolute grid step
         }
-        assert!(ch.sbas_prc.is_empty() && ch.sbas_lt.is_empty() && ch.sbas_mask.is_none());
-        // genuinely NEW blocks start the next generation cleanly
         let gen1 = vec![
-            sbas_block(5, 1, &mt1_payload(&slots, 0)),
             sbas_block(6, 1, &mt1_payload(&slots, 0)),
             sbas_block(7, 1, &mt1_payload(&slots, 0)),
-            sbas_block(8, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+            sbas_block(8, 1, &mt1_payload(&slots, 0)),
         ];
-        let sums = feed_sbas_blocks(&mut ch, 33.0, &gen1);
-        assert!(!ch.sbas_prc.is_empty(), "new messages must re-populate");
-        let row = sums
-            .last()
-            .unwrap()
-            .fast_corr
-            .iter()
-            .find(|r| r.0 == 3)
-            .unwrap();
+        let sums = feed_sbas_blocks(&mut ch, t, &gen1);
+        let s = sums.last().unwrap();
+        assert!(s.locked, "the re-fed blocks re-lock the decoder");
+        assert_eq!(ch.sbas_par_prev, Some(prev), "same-pairing relock: no flip, no flush");
+        assert_eq!(
+            ch.sbas_prc.get(&3).map(|r| r.2),
+            Some(4.0),
+            "the pre-fade row kept its stamp"
+        );
+        let row = s.fast_corr.iter().find(|r| r.0 == 3).expect("row");
+        assert_eq!(row.3, t + 3.0 - 4.0, "the age advances with stream time only");
+        let rec = s.dont_use.iter().find(|r| r.0 == 7).expect("record");
+        assert_eq!(rec.1, t + 3.0 - 5.0, "the record ages honestly too");
+        let lt = s.lt_corr.iter().find(|r| r.corr.prn == 3).expect("LT row");
+        assert_eq!(lt.age_s, t + 3.0 - 6.0);
+        // and genuinely NEW blocks still apply on top of the survivors
+        let gen2 = vec![sbas_block(9, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13]))];
+        let sums = feed_sbas_blocks(&mut ch, t + 3.0, &gen2);
+        let s = sums.last().unwrap();
+        let row = s.fast_corr.iter().find(|r| r.0 == 3).expect("row");
         assert_eq!(row.3, 0.0, "a NEW insert is honestly age 0");
+        assert!(ch.sbas_dnu.is_empty(), "a fresh usable row clears the survived record");
     }
 
-    /// Generation termination on an input gap: Band::note_gap advances the
-    /// stream clock past dropped samples — the SBAS symbol stream cannot
-    /// cross the gap, so every channel's decode generation (window +
-    /// caches) dies with it.
+    /// GAP SURVIVAL (the refined break contract): Band::note_gap advances
+    /// the stream clock past dropped samples, so every cache age stays on
+    /// the true stream clock — the corrections die on their own DO-229
+    /// validity windows, not on the gap. Only the decoder half dies per
+    /// channel (window + latch + watermark), and the absolute pairing grid
+    /// re-anchors: its origin is meaningless across lost samples.
     #[test]
-    fn sbas_gap_terminates_generation() {
+    fn sbas_gap_kills_decoder_keeps_caches() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let mut udrei51 = [0u8; 51];
+        udrei51[1] = 14; // ordinal 2 -> slot 7: don't use
+        // MT6 eviction (see the fade test): no usable-row re-stamp, so each
+        // cache's insert stamp names its own tick — fast 4.0, dnu 5.0, LT 6.0
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+            sbas_block(4, 6, &mt6_payload(&udrei51)),
+            sbas_block(5, 25, &mt25_payload([1, 2], 0)),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(!ch.sbas_prc.is_empty() && ch.sbas_dnu.contains_key(&7));
+        let mut band = Band::new_l1(4.0e6, 0.0);
+        band.channels.push(ch);
+        band.note_gap(4_000_000); // 1 s of dropped band samples
+        assert!((band.in_t - 1.0).abs() < 1e-9, "the clock still advances");
+        let ch = &band.channels[0];
+        // the decoder half died...
+        assert!(ch.sbas_applied.is_none(), "the apply watermark dies with the decoder");
+        assert!(ch.sbas_par.is_none(), "the pairing latch is released");
+        assert_eq!(
+            ch.sbas_par_prev,
+            Some(0),
+            "the locked-pairing memory survives the gap"
+        );
+        assert_eq!(ch.nav_abs_ms, 0, "the pairing grid re-anchors across lost samples");
+        assert!(
+            ch.sbas_dec.decode(SBAS_MIN_BLOCKS).messages.is_empty(),
+            "the retained window is dead"
+        );
+        // ...but every cache survives with its insert stamp UNCHANGED
+        assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(0), "the mask survives the gap");
+        assert_eq!(ch.sbas_prc.get(&3).map(|r| r.2), Some(4.0), "fast corrections survive the gap");
+        assert!(!ch.sbas_prc.contains_key(&7), "the evicted row stays evicted");
+        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "the do-not-use record survives");
+        assert_eq!(ch.sbas_lt.get(&3).map(|r| r.1), Some(6.0), "LT corrections survive the gap");
+    }
+
+    /// PROBE-FLAP SAFETY (the refined break contract): while the decode is
+    /// unlocked the pairing latch is released and the energy probe
+    /// free-runs — noise can flip the pick. A flipped PROBE alone must
+    /// flush nothing: a wrong pairing can never produce a CRC-locked
+    /// decode, so nothing is proven. Only when the changed pairing earns a
+    /// CRC-LOCKED decode (a coded symbol inserted/deleted at the seam —
+    /// messages may have been missed) does the WHOLE generation die,
+    /// caches included, BEFORE any flipped-generation message is applied.
+    #[test]
+    fn sbas_probe_flap_without_lock_flushes_nothing() {
         let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
         let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
         let blocks = vec![
@@ -4089,15 +4302,117 @@ mod tests {
         ];
         feed_sbas_blocks(&mut ch, 0.0, &blocks);
         assert!(!ch.sbas_prc.is_empty());
+        assert_eq!(ch.sbas_par_prev, Some(0), "locked on the probed pairing");
+        let wm = ch.sbas_applied.expect("the fed blocks applied");
+        // FLAP: an unlocked re-probe to the OPPOSITE pairing. Release the
+        // latch the way an unlocked decode tick does (sbas_par = None), so
+        // the energy probe free-runs. The weak head prompt then makes the
+        // odd queue offset win the probe no matter the random signs
+        // (e1 = 2*500 provably beats e0 <= 1.001 + 2*499); the recovered
+        // symbols carry random bits, so no CRC lock can follow — the flip
+        // stays unproven.
+        ch.sbas_par = None;
+        let mut st = 0x2f6e_5b29u64;
+        ch.nav_ms.push(0.001);
+        for _ in 0..500 {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            let v = if (st >> 40) & 1 == 1 { 1.0 } else { -1.0 };
+            ch.nav_ms.push(v);
+            ch.nav_ms.push(v); // strong same-sign pairs at the odd offset
+        }
+        let s = ch.sbas_tick(5.0).expect("summary");
+        assert!(!s.locked, "noise never earns a lock");
+        assert_eq!(ch.sbas_par_prev, Some(0), "the locked-pairing memory is untouched");
+        assert_eq!(ch.sbas_applied, Some(wm), "the watermark survives an unproven flap");
+        assert_eq!(
+            ch.sbas_prc.get(&3).map(|r| r.2),
+            Some(4.0),
+            "no flush, no replayed refresh"
+        );
+        assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(0));
+        // PROVEN FLIP: the queue head now sits at an odd absolute index, so
+        // clean offset-0 pairs ARE the opposite pairing — when they
+        // re-lock the decoder, the stream break is proven and the whole
+        // generation dies BEFORE the flipped generation's messages apply.
+        let flip = vec![
+            sbas_block(4, 1, &mt1_payload(&slots, 0)),
+            sbas_block(5, 1, &mt1_payload(&slots, 0)),
+            sbas_block(6, 1, &mt1_payload(&slots, 0)),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 5.0, &flip);
+        let s = sums.last().unwrap();
+        assert!(
+            !s.locked && s.n_msgs == 0,
+            "the flip tick reports unlocked: the flipped generation is never applied"
+        );
+        assert!(ch.sbas_prc.is_empty(), "a CRC-proven pairing break takes the fast corrections");
+        assert!(ch.sbas_mask.is_none(), "...the mask...");
+        assert!(ch.sbas_dnu.is_empty(), "...the do-not-use records...");
+        assert!(ch.sbas_lt.is_empty(), "...and the LT corrections");
+        assert!(ch.sbas_applied.is_none() && ch.sbas_par.is_none() && ch.sbas_par_prev.is_none());
+        assert_eq!(ch.nav_abs_ms, 0, "the grid re-anchors with the dead generation");
+        // the fresh decoder re-accumulates from the next second: the next
+        // generation locks cleanly and re-populates the caches
+        let regen = vec![
+            sbas_block(7, 1, &mt1_payload(&slots, 0)),
+            sbas_block(8, 1, &mt1_payload(&slots, 0)),
+            sbas_block(9, 1, &mt1_payload(&slots, 0)),
+            sbas_block(10, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 8.0, &regen);
+        let s = sums.last().unwrap();
+        assert!(s.locked, "the next generation locks cleanly");
+        assert_eq!(ch.sbas_par_prev, Some(0), "re-probed from the fresh grid");
+        let row = s.fast_corr.iter().find(|r| r.0 == 3).expect("re-populated");
+        assert_eq!(row.3, 0.0, "a NEW insert is honestly age 0");
+    }
+
+    /// Cache ages run on the stream clock: a gap advances them by EXACTLY
+    /// the gap duration (in_t jumps the dropped samples; the insert stamps
+    /// keep their absolute position). A row pushed past its validity edge
+    /// by the gap must be gone afterwards — honest expiry is the other
+    /// half of cache survival.
+    #[test]
+    fn sbas_cache_ages_advance_across_gap() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        let s = sums.last().unwrap();
+        let row = s.fast_corr.iter().find(|r| r.0 == 3).expect("row");
+        assert_eq!(row.3, 0.0, "a fresh insert is age 0 at its own tick");
         let mut band = Band::new_l1(4.0e6, 0.0);
         band.channels.push(ch);
-        band.note_gap(4_000_000); // 1 s of dropped band samples
-        assert!((band.in_t - 1.0).abs() < 1e-9, "the clock still advances");
-        let ch = &band.channels[0];
-        assert!(ch.sbas_mask.is_none(), "the mask dies on the gap");
-        assert!(ch.sbas_prc.is_empty(), "fast corrections die on the gap");
-        assert!(ch.sbas_lt.is_empty());
-        assert!(ch.sbas_igpmask.is_empty() && ch.sbas_iono.is_empty());
-        assert!(ch.sbas_applied.is_none(), "the apply watermark resets");
+        // 10 s of dropped band samples: the stream clock jumps, the stamp
+        // does not — the published age must advance by exactly the gap
+        band.note_gap(40_000_000);
+        assert!((band.in_t - 10.0).abs() < 1e-9);
+        let s = band.channels[0]
+            .sbas_tick(4.0 + 10.0)
+            .expect("summary after the gap");
+        let row = s
+            .fast_corr
+            .iter()
+            .find(|r| r.0 == 3)
+            .expect("the row survives the gap");
+        assert_eq!(row.3, 10.0, "the age advances by exactly the gap duration");
+        // a second gap pushes the row past the 60 s validity edge: honest
+        // expiry, no reset involved
+        band.note_gap(200_000_000); // +50 s of dropped band samples
+        let s = band.channels[0]
+            .sbas_tick(4.0 + 10.0 + 50.0)
+            .expect("summary after the second gap");
+        assert!(
+            s.fast_corr.iter().all(|r| r.0 != 3),
+            "a row 60 s old must not publish: {:?}",
+            s.fast_corr
+        );
     }
 }
