@@ -47,12 +47,18 @@ EXT = ".parquet" if HAVE_PARQUET else ".csv.gz"
 # Every stream carries `epoch` (float unix seconds, UTC). Reserved/placeholder
 # columns (az/el, residual, temp, gain, tdc stream) exist from day one so
 # future producers fill columns instead of migrating schemas.
+# cls (satellite) was added after archives already existed; no migration is
+# needed — load_partition reads old partitions as plain dicts and
+# write_partition re-projects every merged row via r.get(n) against the
+# current schema, so pre-cls rows read back as NULL and the next rewrite of
+# that partition adds the column.
 
 FIELDS = {
     "satellite": [("epoch", "f"), ("sys", "s"), ("prn", "i"), ("cn0", "f"),
                   ("doppler_hz", "f"), ("lock_s", "f"), ("rho_m", "f"),
                   ("t_tx", "f"), ("ppm", "f"),
-                  ("az_deg", "f"), ("el_deg", "f"), ("residual_m", "f")],
+                  ("az_deg", "f"), ("el_deg", "f"), ("residual_m", "f"),
+                  ("cls", "s")],
     "clock_drift": [("epoch", "f"), ("source", "s"), ("band", "s"),
                     ("ppm", "f"), ("sigma_ppm", "f"), ("anchor", "s"),
                     ("n_sats", "i"), ("sats", "s"), ("kind", "s"),
@@ -215,7 +221,8 @@ def parse_telemetry(d):
 
 def parse_sky(d):
     """One sky_producer cycle line -> satellite-stream rows with the reserved
-    az_deg/el_deg columns finally filled (sky_history.jsonl)."""
+    az_deg/el_deg columns filled, plus the sky classification (cls:
+    predicted/tracked/unexpected/absent/below) from sky_history.jsonl."""
     t = d.get("t")
     if t is None:
         return {}
@@ -228,7 +235,7 @@ def parse_sky(d):
                      "lock_s": s.get("lock_s"), "rho_m": s.get("rho_m"),
                      "t_tx": s.get("t_tx"), "ppm": s.get("ppm"),
                      "az_deg": s.get("az_deg"), "el_deg": s.get("el_deg"),
-                     "residual_m": None})
+                     "residual_m": None, "cls": s.get("cls")})
     return {"satellite": rows} if rows else {}
 
 

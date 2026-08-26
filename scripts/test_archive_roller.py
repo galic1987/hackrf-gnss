@@ -78,10 +78,16 @@ def main():
                             {"band": "GPS L5", "kind": "Presence",
                              "value": None, "epoch": now, "sats": ["~PRN 25"],
                              "anchor": "Pro snapshot", "producer": "band"}]}) + "\n")
+        with open(os.path.join(obs, "sky_history.jsonl"), "w") as f:
+            f.write(json.dumps({"t": now, "sats": [
+                {"sys": "glonass", "prn": 5, "cls": "predicted",
+                 "az_deg": 10.0, "el_deg": 25.0},
+                {"sys": "gps", "prn": 30, "cls": "tracked", "cn0": 44.0,
+                 "lock_s": 300.0, "az_deg": 200.0, "el_deg": 60.0}]}) + "\n")
 
         # --- pass 1: backfill ----------------------------------------------
         parsed, skipped, written = roller.roll()
-        check("backfill parses good lines", parsed == 8, f"parsed={parsed}")
+        check("backfill parses good lines", parsed == 9, f"parsed={parsed}")
         check("backfill skips bad lines", skipped == 1, f"skipped={skipped}")
 
         date = "2026-08-24"
@@ -98,17 +104,23 @@ def main():
               "(3 history + 1 telemetry source)")
         check("phase rows", nrows("phase") == 3)
         check("loop_log rows", nrows("loop_log") == 2)
-        check("satellite rows", nrows("satellite") == 1)
+        check("satellite rows", nrows("satellite") == 3,
+              "(1 telemetry + 2 sky)")
         check("discipline rows", nrows("discipline") == 1)
         check("telemetry rows", nrows("telemetry") == 1)
         check("presence rows", nrows("presence") == 1)
 
         if roller.HAVE_PARQUET:
             t = roller.pq.read_table(os.path.join(adir, "satellite" + ext))
-            row = t.to_pylist()[0]
+            by_sat = {(r["sys"], r["prn"]): r for r in t.to_pylist()}
+            row = by_sat[("gps", 26)]       # the telemetry-sourced row
             check("reserved columns exist and are null",
                   row["az_deg"] is None and row["el_deg"] is None
                   and row["residual_m"] is None)
+            check("sky cls lands in satellite rows",
+                  by_sat[("glonass", 5)]["cls"] == "predicted"
+                  and by_sat[("gps", 30)]["cls"] == "tracked")
+            check("telemetry-sourced row keeps cls null", row["cls"] is None)
             tt = roller.pq.read_table(os.path.join(adir, "telemetry" + ext))
             trow = tt.to_pylist()[0]
             check("telemetry reserved temp/gain/radio null",
@@ -125,10 +137,10 @@ def main():
 
         # --- pass 3: --full re-read still dedupes ------------------------------
         parsed3, _, _ = roller.roll(full=True)
-        check("full re-read reparses all", parsed3 == 8, f"parsed={parsed3}")
+        check("full re-read reparses all", parsed3 == 9, f"parsed={parsed3}")
         check("full re-read does not duplicate",
               nrows("clock_drift") == 4 and nrows("phase") == 3
-              and nrows("loop_log") == 2 and nrows("satellite") == 1)
+              and nrows("loop_log") == 2 and nrows("satellite") == 3)
 
         # --- incremental append ------------------------------------------------
         with open(os.path.join(obs, "phase_history.jsonl"), "a") as f:
@@ -137,6 +149,33 @@ def main():
                                 "lock": False}) + "\n")
         roller.roll()
         check("incremental append lands", nrows("phase") == 4)
+
+        # --- schema evolution: satellite partition written BEFORE cls existed ---
+        if roller.HAVE_PARQUET:
+            old_epoch = now + 86400.0
+            odir = os.path.join(obs, "archive", roller.date_of(old_epoch))
+            os.makedirs(odir, exist_ok=True)
+            old_row = {"epoch": old_epoch, "sys": "glonass", "prn": 9,
+                       "cn0": None, "doppler_hz": None, "lock_s": None,
+                       "rho_m": None, "t_tx": None, "ppm": None,
+                       "az_deg": 5.0, "el_deg": 6.0, "residual_m": None}
+            # no cls key at all: pyarrow infers a schema without the column,
+            # exactly like the live partitions that predate the fix
+            roller.pq.write_table(roller.pa.Table.from_pylist([old_row]),
+                                  os.path.join(odir, "satellite" + ext),
+                                  compression="zstd")
+            with open(os.path.join(obs, "sky_history.jsonl"), "a") as f:
+                f.write(json.dumps({"t": old_epoch, "sats": [
+                    {"sys": "glonass", "prn": 10, "cls": "predicted",
+                     "az_deg": 1.0, "el_deg": 2.0}]}) + "\n")
+            roller.roll()
+            orows = roller.pq.read_table(
+                os.path.join(odir, "satellite" + ext)).to_pylist()
+            by_prn = {r["prn"]: r for r in orows}
+            check("pre-cls partition merges without error", len(orows) == 2)
+            check("pre-cls row reads back cls NULL", by_prn[9]["cls"] is None)
+            check("new row in pre-cls partition carries cls",
+                  by_prn[10]["cls"] == "predicted")
 
         # --- collector: missing / corrupt / expired state files ----------------
         # obs has NO state.*.json at all -> row with empty files, no crash
