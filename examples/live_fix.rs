@@ -89,6 +89,54 @@ fn merge_lt_corr(
     map.insert(prn, (row, age));
 }
 
+/// Multi-GEO merge of one SBAS do-not-use record (UDREI >= 14 eviction),
+/// freshest age wins — the same rule as merge_fast_corr. The map only
+/// records presence: ANY locked GEO's fresh record excludes the satellite
+/// (a provider's "do not use" must dominate another provider's usable row
+/// — integrity, not availability).
+fn merge_dont_use(map: &mut std::collections::HashMap<u8, f64>, prn: u8, age: f64) {
+    if let Some(&prev_age) = map.get(&prn) {
+        if age >= prev_age {
+            return;
+        }
+    }
+    map.insert(prn, age);
+}
+
+/// SBAS applicability of one GPS satellite to a corrected solve. The
+/// distinction that matters (the zero-substitution integrity inversion):
+/// "no correction on file" and "corrections EVICTED as do-not-use" both
+/// present as a missing fast_corr row, but the first satellite is used
+/// uncorrected while the second must not enter an SBAS-corrected solve at
+/// all. The tracker publishes the eviction as a do-not-use record
+/// (SbasSummary::dont_use).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SbasApplicability {
+    /// Live do-not-use record (UDREI >= 14 eviction): EXCLUDE the
+    /// measurement from any SBAS-corrected solve.
+    DoNotUse,
+    /// Usable, with this PRC (metres, ADDED to the pseudorange, DO-229).
+    Corrected(f64),
+    /// No corrections and no do-not-use record (never corrected): usable
+    /// uncorrected, exactly the pre-DNU behavior.
+    Uncorrected,
+}
+
+fn sbas_applicability(
+    prc: &std::collections::HashMap<u8, (f64, f64)>,
+    dnu: &std::collections::HashMap<u8, f64>,
+    prn: u8,
+) -> SbasApplicability {
+    if dnu.contains_key(&prn) {
+        SbasApplicability::DoNotUse
+    } else {
+        match prc.get(&prn) {
+            Some(&(p, _)) => SbasApplicability::Corrected(p),
+            None => SbasApplicability::Uncorrected,
+        }
+    }
+}
+
 /// Canonical site anchor (observations/site.json) — NO hardcoded
 /// coordinates. Only a coarse (~150 km) guess is needed for the light-time
 /// anchor / snapshot solver, but even that must come from the one file.
@@ -237,6 +285,11 @@ fn main() {
         std::collections::HashMap::new();
     let mut sbas_lt: std::collections::HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)> =
         std::collections::HashMap::new();
+    // SBAS do-not-use records: GPS PRN -> record age s, from any locked
+    // GEO's published evictions (SbasSummary::dont_use). A satellite on
+    // this map was told "do not use" (UDREI >= 14) — it is EXCLUDED from
+    // the SBAS-corrected solve below, never sailed with a zero correction.
+    let mut sbas_dnu: std::collections::HashMap<u8, f64> = std::collections::HashMap::new();
     let mut sbas_conf: std::collections::BTreeMap<u8, f64> = std::collections::BTreeMap::new();
     for s in v["tracker"]["sats"].as_array().into_iter().flatten() {
         if s["sys"].as_str() != Some("sbas") {
@@ -272,6 +325,17 @@ fn main() {
                 merge_lt_corr(&mut sbas_lt, corr.prn, corr, age);
             }
         }
+        // do-not-use records [prn, age_s]: a satellite whose corrections
+        // were evicted on UDREI >= 14 must be excluded from the corrected
+        // solve — its empty fast_corr slot is NOT a zero correction.
+        // Rows from a pre-DNU tracker build are absent -> no records, the
+        // old (pre-fix) behavior.
+        for row in s["sbas_msgs"]["dont_use"].as_array().into_iter().flatten() {
+            if let Some(prn) = row[0].as_u64() {
+                let age = row[1].as_f64().unwrap_or(f64::MAX);
+                merge_dont_use(&mut sbas_dnu, prn as u8, age);
+            }
+        }
     }
     if !sbas_conf.is_empty() {
         let list: Vec<String> = sbas_conf
@@ -285,6 +349,10 @@ fn main() {
     }
     let mut n_sbas_corr = 0usize;
     let mut n_lt_corr = 0usize;
+    // satellites EXCLUDED from the corrected solve on a live SBAS
+    // do-not-use record (UDREI >= 14) — published with the fix so the
+    // panel can tell a degraded-geometry solve from a clean one
+    let mut n_sbas_excluded = 0usize;
     // LT corrections present but not applied cleanly: rejected = IOD
     // mismatch vs the self-decoded ephemeris in use; ungated = BRDC
     // ephemeris (no IODE — unverifiable, applied anyway)
@@ -373,7 +441,22 @@ fn main() {
                     dt_sv = d;
                     a = t_tx - d + r / 299_792_458.0;
                 }
-                let prc = sbas_prc.get(&prn).map(|&(p, _)| p).unwrap_or(0.0);
+                // SBAS applicability (integrity fix): a satellite under a
+                // live do-not-use record (its corrections were EVICTED on
+                // UDREI >= 14) is EXCLUDED from the solve — substituting a
+                // zero correction here used to convert "do not use" into
+                // "use broadcast-only" inside an SBAS-labelled solution. A
+                // satellite with no record at all (never corrected) keeps
+                // the old uncorrected use. The remaining solve's trust
+                // fields then speak only to satellites no provider flagged.
+                let prc = match sbas_applicability(&sbas_prc, &sbas_dnu, prn) {
+                    SbasApplicability::DoNotUse => {
+                        n_sbas_excluded += 1;
+                        continue;
+                    }
+                    SbasApplicability::Corrected(p) => p,
+                    SbasApplicability::Uncorrected => 0.0,
+                };
                 if prc != 0.0 {
                     n_sbas_corr += 1;
                 }
@@ -553,8 +636,8 @@ fn main() {
             let (geo_red, integ, trusted) =
                 trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km);
             println!(
-                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, gate
+                "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -568,6 +651,7 @@ fn main() {
                     "geometry_redundant": geo_red, "integrity_valid": integ,
                     "trusted_for_history": trusted,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "n_sbas_excluded": n_sbas_excluded,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW/SOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
@@ -662,6 +746,7 @@ fn main() {
                                 "integrity_valid": fi.residual_rms_m < RMS_INTEGRITY_M && alt_sane(fi.alt_km),
                                 "trusted_for_history": false,
                                 "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                                "n_sbas_excluded": n_sbas_excluded,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                                 "loo": loo_note,
                                 "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
@@ -732,8 +817,8 @@ fn main() {
             let (geo_red, integ, trusted) =
                 trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km);
             println!(
-                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} [{}]",
-                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, gate
+                "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
+                f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
             );
             let doc = serde_json::json!({
                 "epoch": now,
@@ -746,6 +831,7 @@ fn main() {
                     "geometry_redundant": geo_red, "integrity_valid": integ,
                     "trusted_for_history": trusted,
                     "n_sbas_corr": n_sbas_corr, "n_lt_corr": n_lt_corr, "n_iono_corr": n_iono_corr,
+                    "n_sbas_excluded": n_sbas_excluded,
                     "n_lt_rejected": n_lt_rejected, "n_lt_ungated": n_lt_ungated,
                     "source": "live TOW-anchored pseudoranges + self-decoded/BRDC ephemeris",
                 }
@@ -912,5 +998,85 @@ mod tests {
         });
         let c0: hackrf_gnss::sbas::LtCorr = serde_json::from_value(j0).unwrap();
         assert_eq!(c0.propagate(123_456.0), (1.0, 0.0, 0.0, 0.0));
+    }
+
+    /// REGRESSION (the zero-substitution integrity inversion): a satellite
+    /// whose SBAS corrections were evicted on UDREI >= 14 (do not use) must
+    /// come out of sbas_applicability as DoNotUse — the main path EXCLUDES
+    /// it. The old code read its missing fast_corr row as a ZERO correction
+    /// and kept using the satellite broadcast-only under an SBAS label.
+    /// Do-not-use must also dominate a simultaneous usable row (the
+    /// multi-GEO case: one provider's eviction beats another's fresh PRC).
+    #[test]
+    fn sbas_dont_use_excludes_not_zero_substitutes() {
+        let mut prc = std::collections::HashMap::new();
+        let mut dnu = std::collections::HashMap::new();
+        prc.insert(7u8, (1.5, 3.0)); // a usable PRC row on file for G7
+        merge_dont_use(&mut dnu, 7, 2.0); // ...but another GEO evicted it
+        assert_eq!(
+            sbas_applicability(&prc, &dnu, 7),
+            SbasApplicability::DoNotUse,
+            "do-not-use must dominate a simultaneous usable row"
+        );
+        // a corrected satellite with NO record applies its PRC as before
+        prc.insert(12u8, (-0.5, 1.0));
+        assert_eq!(
+            sbas_applicability(&prc, &dnu, 12),
+            SbasApplicability::Corrected(-0.5)
+        );
+    }
+
+    /// The other side of the distinction: a satellite that NEVER had
+    /// corrections (no fast_corr row, no do-not-use record) is used
+    /// uncorrected, exactly the pre-DNU behavior — the fix must not start
+    /// excluding everything the SBAS never mentioned.
+    #[test]
+    fn sbas_never_corrected_sat_keeps_uncorrected_use() {
+        let prc = std::collections::HashMap::new();
+        let mut dnu = std::collections::HashMap::new();
+        assert_eq!(
+            sbas_applicability(&prc, &dnu, 20),
+            SbasApplicability::Uncorrected
+        );
+        // the do-not-use merge keeps the freshest record per PRN (same
+        // multi-GEO rule as merge_fast_corr)
+        merge_dont_use(&mut dnu, 9, 5.0);
+        merge_dont_use(&mut dnu, 9, 1.0);
+        assert_eq!(dnu[&9], 1.0, "the freshest record is kept");
+        merge_dont_use(&mut dnu, 9, 8.0);
+        assert_eq!(dnu[&9], 1.0, "an older record never displaces a fresher one");
+        assert_eq!(
+            sbas_applicability(&prc, &dnu, 9),
+            SbasApplicability::DoNotUse
+        );
+        assert_eq!(
+            sbas_applicability(&prc, &dnu, 10),
+            SbasApplicability::Uncorrected,
+            "a record on G9 must not touch G10"
+        );
+    }
+
+    /// Exclusion shrinks the candidate set instead of backfilling it: with
+    /// one of four GPS satellites under a do-not-use record, only three
+    /// usable measurements remain — the solve drops to the 3-sat
+    /// (alt-hold / no-SBAS-fix) paths rather than silently including the
+    /// excluded satellite to reach 4.
+    #[test]
+    fn sbas_exclusion_drops_solve_below_four_sats() {
+        let mut prc = std::collections::HashMap::new();
+        let mut dnu = std::collections::HashMap::new();
+        for p in [3u8, 7, 12, 18] {
+            prc.insert(p, (1.0, 2.0));
+        }
+        merge_dont_use(&mut dnu, 7, 0.5); // G7 evicted as don't-use
+        let usable: Vec<u8> = [3u8, 7, 12, 18]
+            .into_iter()
+            .filter(|&p| sbas_applicability(&prc, &dnu, p) != SbasApplicability::DoNotUse)
+            .collect();
+        assert_eq!(usable, vec![3, 12, 18]);
+        assert!(
+            usable.len() < 4,
+            "no 4-sat SBAS-corrected solve with an excluded satellite"
+        );
     }
 }

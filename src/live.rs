@@ -365,6 +365,17 @@ pub struct Channel {
     /// s), from MT2-5 messages decoded by this channel. Cleared on reseed
     /// and on an MT1 mask-generation change (IODP).
     sbas_prc: std::collections::BTreeMap<u8, (f64, u8, f64)>,
+    /// Do-not-use records: GPS PRN -> stream time of the latest UDREI >= 14
+    /// eviction (an MT2-5 don't-use row or MT6 integrity). This is the
+    /// difference between "no correction on file" and "do not use this
+    /// satellite": the consumer (live_fix) must EXCLUDE a recorded
+    /// satellite from any SBAS-corrected solve — substituting a zero
+    /// correction instead converts "do not use" into "use broadcast-only"
+    /// under an SBAS label. A fresh usable MT2-5 row CLEARS the record
+    /// (the provider re-enabled the satellite); cleared with the
+    /// correction caches on a mask-generation change (IODP) and on
+    /// sbas_reset.
+    sbas_dnu: std::collections::BTreeMap<u8, f64>,
     /// Latest MT1 PRN mask: (absolute slot numbers of the set bits in
     /// mask order, IODP). MT2-5 and MT24/25 corrections only decode
     /// against this mask — DO-229 addresses their entries by ORDINAL of
@@ -477,6 +488,7 @@ impl Channel {
             sbas_par_prev: None,
             sbas_applied: None,
             sbas_prc: std::collections::BTreeMap::new(),
+            sbas_dnu: std::collections::BTreeMap::new(),
             sbas_mask: None,
             sbas_lt: std::collections::BTreeMap::new(),
             sbas_igpmask: std::collections::BTreeMap::new(),
@@ -908,6 +920,7 @@ impl Channel {
                 n_msgs: 0,
                 types: std::collections::BTreeMap::new(),
                 fast_corr: Vec::new(),
+                dont_use: Vec::new(),
                 lt_corr: Vec::new(),
                 igp_mask: Vec::new(),
                 iono_delay: Vec::new(),
@@ -944,6 +957,16 @@ impl Channel {
             .filter(|(_, (_, _, t))| now - t < 60.0)
             .map(|(&prn, &(prc_m, udrei, t))| (prn, prc_m, udrei, now - t))
             .collect();
+        // do-not-use records ride the fast-correction freshness window:
+        // the eviction decision stems from the same MT2-5/MT6 stream, and
+        // a provider that stops asserting don't-use for 60 s of stream
+        // time is no longer asserting it
+        let dont_use: Vec<(u8, f64)> = self
+            .sbas_dnu
+            .iter()
+            .filter(|&(_, &t)| now - t < 60.0)
+            .map(|(&prn, &t)| (prn, now - t))
+            .collect();
         // long-term corrections have their own, longer validity: DO-229D
         // Table 2-1 gives a 360 s timeout for MT24/25 (en-route/terminal;
         // 240 s on approach) — the 60 s fast-corr window would drop
@@ -979,6 +1002,7 @@ impl Channel {
             n_msgs: rep.messages.len(),
             types,
             fast_corr,
+            dont_use,
             lt_corr,
             igp_mask,
             iono_delay,
@@ -1000,6 +1024,9 @@ impl Channel {
                 if self.sbas_mask.as_ref().map(|(_, p)| *p) != Some(*iodp) {
                     self.sbas_prc.clear();
                     self.sbas_lt.clear();
+                    // do-not-use records are mask-ordinal state: they die
+                    // with the mask generation like the corrections
+                    self.sbas_dnu.clear();
                 }
                 self.sbas_mask = Some((slots.clone(), *iodp));
             }
@@ -1010,7 +1037,11 @@ impl Channel {
             // UDREI >= 14 row (not monitored / don't use) EVICTS the
             // cached usable correction for that PRN — otherwise a dead
             // satellite's stale PRC stays applicable for the rest of the
-            // freshness window (review round 4).
+            // freshness window (review round 4) — and RECORDS the
+            // do-not-use decision so the consumer can exclude the
+            // satellite outright instead of sailing it with a zero
+            // correction. A fresh USABLE row clears the record: the
+            // provider re-enabled the satellite.
             crate::sbas::Message::Fast { first_slot, iodp, prc, udrei, .. } => {
                 if let Some((mask_slots, mask_iodp)) = &self.sbas_mask {
                     for (prn, prc_m, u) in
@@ -1018,8 +1049,10 @@ impl Channel {
                     {
                         if u < 14 {
                             self.sbas_prc.insert(prn, (prc_m, u, t_s));
+                            self.sbas_dnu.remove(&prn);
                         } else {
                             self.sbas_prc.remove(&prn);
+                            self.sbas_dnu.insert(prn, t_s);
                         }
                     }
                 }
@@ -1034,8 +1067,12 @@ impl Channel {
             // and only the don't-use half is enforced (UDREI >= 14 evicts
             // the satellite's cached fast AND long-term corrections — a
             // not-monitored/don't-use satellite has no usable corrections
-            // at all). Degraded-but-usable UDREI updates do not rewrite
-            // cached rows.
+            // at all — and records the do-not-use decision for the
+            // consumer). Degraded-but-usable UDREI updates do not rewrite
+            // cached rows, and an MT6 usable indication does NOT clear a
+            // do-not-use record either: with the IODF sequencing untracked,
+            // only a fresh usable MT2-5 row (which also re-establishes a
+            // correction) re-enables the satellite.
             crate::sbas::Message::Integrity { udrei, .. } => {
                 let evict: Vec<u8> = match &self.sbas_mask {
                     Some((slots, _)) => udrei
@@ -1050,6 +1087,7 @@ impl Channel {
                 for slot in evict {
                     self.sbas_prc.remove(&slot);
                     self.sbas_lt.remove(&slot);
+                    self.sbas_dnu.insert(slot, t_s);
                 }
             }
             // harvest long-term corrections (MT25 halves; MT24 long-term
@@ -1216,6 +1254,7 @@ impl Channel {
         // discontinuous or redefined, so the old grid origin is meaningless)
         self.nav_abs_ms = 0;
         self.sbas_prc.clear();
+        self.sbas_dnu.clear();
         self.sbas_mask = None;
         self.sbas_lt.clear();
         self.sbas_igpmask.clear();
@@ -1266,6 +1305,18 @@ pub struct SbasSummary {
     /// dropped (conservative vs the MT7 degradation model, not yet
     /// implemented). Empty when none decoded.
     pub fast_corr: Vec<(u8, f64, u8, f64)>,
+    /// Do-not-use records: (GPS PRN, age in seconds of stream time) for
+    /// satellites whose corrections were EVICTED by a fresh UDREI >= 14
+    /// (an MT2-5 don't-use row or MT6 integrity) — the difference between
+    /// "no correction on file" and "do not use this satellite". The
+    /// consumer must EXCLUDE these satellites from any SBAS-corrected
+    /// solve (never substitute a zero correction and keep them — that
+    /// converts "do not use" into "use broadcast-only" under an SBAS
+    /// label); a never-corrected satellite has no record here and is used
+    /// uncorrected. Cleared by a fresh usable MT2-5 row for the same PRN,
+    /// a mask-generation change, or a decode-generation reset. 60 s
+    /// stream-time freshness, the same window as fast_corr.
+    pub dont_use: Vec<(u8, f64)>,
     /// Latest long-term corrections (MT24/25) held by this channel, one
     /// JSON object per row: the flattened sbas::LtCorr (GPS PRN; dx, dy,
     /// dz metres and daf0 seconds at t_lt; vc=1 rates ddx/ddy/ddz in m/s
@@ -3694,6 +3745,140 @@ mod tests {
         );
         assert!(ch.sbas_prc.contains_key(&3), "unaffected rows stay");
         assert!(ch.sbas_lt.contains_key(&3), "unaffected rows stay");
+    }
+
+    /// REGRESSION (the zero-substitution integrity inversion): an evicted
+    /// satellite used to vanish from fast_corr, and live_fix read "no row"
+    /// as "zero correction" — broadcast-only data under an SBAS label. The
+    /// eviction must leave a PUBLISHED do-not-use record so the consumer
+    /// can exclude the satellite outright; a fresh usable MT2-5 row for
+    /// the same PRN clears the record (the provider re-enabled it).
+    #[test]
+    fn sbas_dont_use_record_publishes_and_clears_on_usable_row() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(ch.sbas_prc.contains_key(&7), "usable row must cache");
+        assert!(ch.sbas_dnu.is_empty(), "no eviction yet -> no record");
+        // ordinal 2 -> slot 7: don't use
+        let mut bad = [0u8; 13];
+        bad[1] = 14;
+        let blocks2 = vec![sbas_block(4, 2, &mt2_payload(0, 0, &[8i16; 13], &bad))];
+        let sums = feed_sbas_blocks(&mut ch, 4.0, &blocks2);
+        let s = sums.last().unwrap();
+        assert!(!ch.sbas_prc.contains_key(&7), "the usable row is evicted");
+        assert_eq!(ch.sbas_dnu.get(&7), Some(&5.0), "insert stamp at the eviction tick");
+        let rec = s
+            .dont_use
+            .iter()
+            .find(|r| r.0 == 7)
+            .expect("the do-not-use record must publish");
+        assert_eq!(rec.1, 0.0, "a fresh record is honestly age 0");
+        assert!(
+            s.dont_use.iter().all(|r| r.0 != 3),
+            "unaffected satellites carry no record: {:?}",
+            s.dont_use
+        );
+        assert!(
+            s.fast_corr.iter().all(|r| r.0 != 7),
+            "and no usable row rides alongside the record"
+        );
+        // a fresh USABLE MT2 row re-enables the satellite: the correction
+        // re-caches and the do-not-use record clears
+        let blocks3 = vec![sbas_block(5, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13]))];
+        let sums = feed_sbas_blocks(&mut ch, 5.0, &blocks3);
+        let s = sums.last().unwrap();
+        assert!(ch.sbas_prc.contains_key(&7), "the usable row re-caches");
+        assert!(ch.sbas_dnu.is_empty(), "the record clears on a usable row");
+        assert!(
+            s.dont_use.is_empty(),
+            "nothing do-not-use remains published: {:?}",
+            s.dont_use
+        );
+    }
+
+    /// An MT6 integrity eviction (UDREI >= 14 per mask ordinal) leaves the
+    /// same published do-not-use record as an MT2-5 don't-use row.
+    #[test]
+    fn sbas_mt6_dont_use_publishes_record() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &[0u8; 13])),
+        ];
+        feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        let mut udrei51 = [0u8; 51];
+        udrei51[1] = 14; // ordinal 2 -> slot 7
+        let blocks2 = vec![sbas_block(4, 6, &mt6_payload(&udrei51))];
+        let sums = feed_sbas_blocks(&mut ch, 4.0, &blocks2);
+        let s = sums.last().unwrap();
+        assert!(
+            s.dont_use.iter().any(|r| r.0 == 7),
+            "the MT6 eviction must publish a do-not-use record: {:?}",
+            s.dont_use
+        );
+        assert!(s.dont_use.iter().all(|r| r.0 != 3), "unaffected ordinals stay silent");
+    }
+
+    /// Do-not-use records are mask-ordinal state: a new mask generation
+    /// (IODP bump) invalidates them together with the corrections, and a
+    /// decode-generation reset (sbas_reset) kills them too — no stale
+    /// exclusion may outlive the state it was decided from.
+    #[test]
+    fn sbas_dont_use_dies_with_mask_generation_and_reset() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        let slots = vec![3u8, 7, 12, 18, 24, 29, 31, 36];
+        let mut bad = [0u8; 13];
+        bad[1] = 14; // ordinal 2 -> slot 7
+        let blocks = vec![
+            sbas_block(0, 1, &mt1_payload(&slots, 0)),
+            sbas_block(1, 1, &mt1_payload(&slots, 0)),
+            sbas_block(2, 1, &mt1_payload(&slots, 0)),
+            sbas_block(3, 2, &mt2_payload(0, 0, &[8i16; 13], &bad)),
+        ];
+        let sums = feed_sbas_blocks(&mut ch, 0.0, &blocks);
+        assert!(sums.last().unwrap().dont_use.iter().any(|r| r.0 == 7));
+        // new mask generation: the record clears with the caches
+        let gen1 = vec![sbas_block(4, 1, &mt1_payload(&slots, 1))];
+        let sums = feed_sbas_blocks(&mut ch, 4.0, &gen1);
+        assert_eq!(ch.sbas_mask.as_ref().map(|(_, p)| *p), Some(1));
+        assert!(ch.sbas_dnu.is_empty(), "the record dies with the mask generation");
+        assert!(sums.last().unwrap().dont_use.is_empty());
+        // and with the decode generation (unlock/reseed path)
+        let sums = feed_sbas_blocks(&mut ch, 5.0, &blocks);
+        assert!(sums.last().unwrap().dont_use.iter().any(|r| r.0 == 7));
+        ch.sbas_reset();
+        assert!(ch.sbas_dnu.is_empty(), "sbas_reset kills the record");
+    }
+
+    /// Do-not-use freshness runs on stream time with the same 60 s window
+    /// as the fast corrections: a provider that stops asserting don't-use
+    /// for 60 s is no longer asserting it (and the consumer stops
+    /// excluding the satellite — it reverts to plain uncorrected use).
+    #[test]
+    fn sbas_dont_use_freshness_window() {
+        let mut ch = Channel::new(Sys::Sbas, 131, 4.0e6, 800.0, 0.0);
+        ch.locked = true;
+        ch.sbas_mask = Some((vec![3u8, 7, 12], 0));
+        ch.sbas_dnu.insert(7, 100.0);
+        ch.sbas_dnu.insert(9, 175.0);
+        let s = ch.sbas_tick(181.0).expect("summary");
+        assert!(
+            s.dont_use.iter().all(|r| r.0 != 7),
+            "an 81 s old record must not publish: {:?}",
+            s.dont_use
+        );
+        let rec = s.dont_use.iter().find(|r| r.0 == 9).expect("fresh record");
+        assert!((rec.1 - 6.0).abs() < 1e-9, "published age: {rec:?}");
     }
 
     /// REGRESSION (dead-LT finding): a decoded velocity-code-1 MT25 half
