@@ -360,10 +360,12 @@ def main():
                 try:
                     out = run_acq([ACQ, "/tmp/band_waas.f32", "8000000",
                                    "-3000", "3000", "500", "2000"], timeout=300)
-                    if out is None:
-                        continue
-                    res = json.loads(out)
-                    gps = [r for r in res if r.get("acquired") and r["prn"] <= 32] or None
+                    # None = analysis failed — skip only this sub-step; a
+                    # `continue` here would skip the loop's 45 s sleep and
+                    # hot-spin the radio grabs (round-9b review).
+                    if out is not None:
+                        res = json.loads(out)
+                        gps = [r for r in res if r.get("acquired") and r["prn"] <= 32] or None
                 except Exception:
                     gps = None
             if gps:
