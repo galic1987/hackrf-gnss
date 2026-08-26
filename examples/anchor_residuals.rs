@@ -2,7 +2,7 @@
 //! anchored-PVT pipeline, computed WITHOUT the solver.
 //!
 //! For every TOW-anchored channel in the live tracker state:
-//!     resid_i = rho_i - |r_surveyed - sat_i(E_i)| - clock
+//!     resid_i = rho_i - |r_site - sat_i(E_i)| - clock
 //! where E_i = t_tx_i - dt_sv is the GPS emission time (reception-anchored
 //! light-time solve) and clock = median over channels of (rho_i - geometric
 //! range) — the common-mode stream-time offset the solver's clock unknown
@@ -221,7 +221,7 @@ fn main() {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let clock = sorted[sorted.len() / 2];
 
-    println!("surveyed site ECEF [{:.3}, {:.3}, {:.3}] km", site[0], site[1], site[2]);
+    println!("site ECEF [{:.3}, {:.3}, {:.3}] km", site[0], site[1], site[2]);
     println!("common-mode clock (median): {clock:.3} km ({:.3} us)\n",
              clock / C_KM_S * 1e6);
     if raw.len() < 3 {
