@@ -1127,14 +1127,16 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
 
     #[test]
     fn bds_geo_records_carry_no_unit_evidence() {
-        // a GEO-only constellation: i0 ~ 0.02 is neutral, the spec default
-        // (semicircles) applies, and the record is accepted (the GEO Kepler
-        // math is unused downstream regardless)
+        // a GEO-only constellation: i0 ~ 0.02 is neutral, so the SPEC
+        // default applies — RADIANS (RINEX-3.05 Table A6 fn. ***: the
+        // generator converts semi-circles to radians; round-13). The
+        // record is accepted (the GEO Kepler math is unused downstream
+        // regardless)
         let geo = bds_rinex_record(1, 1077.0, 345600.0, "2.000000000000D-02");
         let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{geo}"));
-        assert_eq!(r.unit, AngUnit::Semicircles);
+        assert_eq!(r.unit, AngUnit::Radians);
         assert_eq!(r.rejected, 0);
-        assert!((r.ephs[&1].i0 - 0.02 * std::f64::consts::PI).abs() < 1e-12);
+        assert!((r.ephs[&1].i0 - 0.02).abs() < 1e-12, "radians: no xPI scaling");
         // and a grey-band i0 (0.5: impossible under either unit) rejects
         let grey = bds_rinex_record(2, 1077.0, 345600.0, "5.000000000000D-01");
         let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{grey}"));
