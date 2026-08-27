@@ -2603,8 +2603,9 @@ function renderRfChain(st) {
     "40-bit tick = 31.25 ns",
     "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — 31.25 ns-quantized timing recovered on hardware (2.84M anchors); the nibble/IQ association carries a few-sample skew under review, so these are bounded-uncertainty anchors, not zero-jitter. The CIC filter decimates, and the carry-chain TDC aims to subdivide one tick to ~0.5 ns (provisional self-test figure). The Hz shown is the live tick poll — PC-read jitter applies."));
   nodes.push(journeyNode("Cortex-M4", "control core",
-    "USB stack · SPI house-keeping · clock-correction register " +
-      (d.correction_ppm !== undefined ? "<b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm</b>" : "—"),
+    "USB stack · SPI house-keeping · correction register <b>unity</b> (never written; readback 2026-08-26)" +
+      ((d.correction_ppm !== undefined && d.correction_ppm !== null)
+        ? " · shadow intent " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : ""),
     "would steer the Si5351 (SHADOW: no writes)",
     "Cortex-M4 + correction register", "The main ARM core runs the USB stack, host requests, SPI register access and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
   nodes.push(journeyNode("Cortex-M0", "SGPIO dataplane", "serializes the sample stream → USB queue", "91.9% loaded at 20 Msps",
