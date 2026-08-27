@@ -84,6 +84,21 @@ DEC = 50                          # segment decimation; must divide the block
 FIFO = "/tmp/phase_producer.iq"
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.phase.json"
 HIST = "/Volumes/Radiator 8TB/gnss/observations/phase_history.jsonl"
+SERIES_STATE = "/Volumes/Radiator 8TB/gnss/observations/state.series.json"
+
+
+def _clkin_label():
+    """Anchor label from series_producer's drift-lock verdict (round-14):
+    true -> measured drift-lock; false -> evidence AGAINST the chain; null/
+    unreadable -> unverified. This producer never opens a radio for it."""
+    try:
+        with open(SERIES_STATE) as f:
+            v = json.load(f).get("clkin_soft_verified")
+    except Exception:
+        v = None
+    return ("drift-locked (soft-verified)" if v is True
+            else "chain drift evidence NEGATIVE" if v is False
+            else "lock unverified")
 MY_BAND = "ATSC ch35"
 EST_SAMPLES = 1 << 24             # 2.8 s coherent FFT @ 6 Msps for initial freq
 AMP_DROP = 0.35                   # epoch low-flag: amp < 35% of running median
@@ -510,11 +525,11 @@ def main():
                         "ref_hz": F_PILOT, "epoch": round(t, 2),
                         "sats": ["GPS-disciplined Tx"],
                         # honesty (round-13): the One is CABLED to the Pro's
-                        # CLKOUT, but lock was never verified — the r9 probe
-                        # measures a 10 MHz-class signal at the pin at most,
-                        # and the One is busy here so even that is usually
-                        # unreadable. Never claim "locked".
-                        "anchor": "One ← Pro CLKOUT cable (lock unverified)",
+                        # CLKOUT. Round-14 added the soft proof: when
+                        # series_producer's drift-lock verifier (state.series
+                        # .json clkin_soft_verified) reads true, the ATSC−WAAS
+                        # series move 1:1 — the chain is measured, not assumed.
+                        "anchor": "One ← Pro CLKOUT cable (" + _clkin_label() + ")",
                         "ns_per_s": round(ppm * 1000.0, 1),
                         "m_per_s": round(ppm * 1e-6 * C_MPS, 2),
                     }
