@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Antenna A/B comparison on the BENCH HackRF Pro (spare/testing radio).
 
-Captures a snapshot on the production GNSS tune (1568.25 MHz, 8 Msps — L1 +
-B1I + E1 + SBAS in one baseband) and runs the crate's offline acquisition
-binaries, printing a per-PRN metric table. Two runs (A and B) can then be
+Captures per-band snapshots, each tuned so the target signal sits near
+zero IF (the acquisition binaries search Doppler around 0 IF and do NOT
+mix a band offset): L1 at 1575.42 MHz (GPS C/A + Galileo E1 + SBAS share
+it) and B1I at 1561.098 MHz, both at 8 Msps. Two prior revisions failed
+for window reasons, not antenna reasons: 8 Msps at 1568.25 spans neither
+signal, and 16 Msps at 1568.25 leaves L1 at +7.17 MHz — far outside the
+acq Doppler search. (Round-15 review chain.)
+
+Runs the crate's offline acquisition binaries and prints a per-PRN metric
+table. Two runs (A and B) can then be
 diffed:  antenna_compare.py run A --bias   …swap antennas…
          antenna_compare.py run B          ; antenna_compare.py diff A B
 
@@ -23,8 +30,7 @@ import numpy as np
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 EX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "examples")
 BENCH = "0000000000000000645061de252d6613"   # Pro#2 — the ONLY allowed radio
-F_HZ = 1568250000                            # production tune (B1I+L1+E1+SBAS)
-FS = 8_000_000
+FS = 8_000_000                   # per-band captures; signals sit near zero IF
 LNA, VGA = "40", "46"
 
 _ACQ_ENV = {**os.environ, "RAYON_NUM_THREADS": "4"}
@@ -42,14 +48,18 @@ def run(cmd, timeout):
         return None
 
 
-def capture(label, seconds, bias):
-    raw = f"/tmp/antenna_{label}.iq"
+BANDS = [("l1", 1575420000), ("b1i", 1561098000)]   # zero-IF per band
+
+
+def capture(label, seconds, bias, band):
+    f_hz = dict(BANDS)[band]
+    raw = f"/tmp/antenna_{label}_{band}.iq"
     try:
         os.unlink(raw)
     except OSError:
         pass
     n = int(FS * seconds)
-    cmd = [f"{TOOLS}/hackrf_transfer", "-d", BENCH, "-f", str(F_HZ), "-s", str(FS),
+    cmd = [f"{TOOLS}/hackrf_transfer", "-d", BENCH, "-f", str(f_hz), "-s", str(FS),
            "-l", LNA, "-g", VGA, "-a", "0", "-n", str(n), "-r", raw]
     if bias:
         cmd += ["-p", "1"]
@@ -64,15 +74,16 @@ def capture(label, seconds, bias):
     d = np.fromfile(raw, dtype=np.int8).astype(np.float32)
     iq = np.empty(len(d) // 2, dtype=np.complex64)
     iq.real, iq.imag = d[0::2], d[1::2]
-    f32 = f"/tmp/antenna_{label}.f32"
+    f32 = f"/tmp/antenna_{label}_{band}.f32"
     iq.tofile(f32)
     health = (float(np.std(d)), float(np.mean(np.abs(d) > 120) * 100))
     return f32, health
 
 
-def acquire(f32):
-    """Per-PRN acquisition metrics on the shared baseband."""
+def acquire(f32_l1, f32_b1i):
+    """Per-PRN acquisition metrics; each band's capture is zero-IF."""
     out = {}
+    f32 = f32_l1
     # GPS C/A (JSON rows)
     o = run([f"{EX}/acquire_file", f32, str(FS), "-3000", "3000", "500", "2000"], 300)
     if o:
@@ -91,8 +102,8 @@ def acquire(f32):
             m = prn_re.search(line)
             if m and "ACQUIRED" in line:
                 out[f"E{int(m.group(1)):02d}"] = round(float(m.group(2)), 2)
-    # BeiDou B1I
-    o = run([f"{EX}/beidou_acq", f32, str(FS), "1561098000", "6"], 300)
+    # BeiDou B1I — on the b1i-tuned capture
+    o = run([f"{EX}/beidou_acq", f32_b1i, str(FS), "1561098000", "6"], 300)
     if o:
         import re
         for m in re.finditer(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== ACQUIRED", o):
@@ -135,11 +146,14 @@ def main():
     for i, a in enumerate(sys.argv[3:]):
         if a == "--seconds" and i + 4 < len(sys.argv):
             seconds = float(sys.argv[i + 4])
-    print(f"capturing {seconds:.0f}s on the BENCH Pro (bias {'ON' if bias else 'OFF'}, "
-          f"gain {LNA}/{VGA} fixed)…", flush=True)
-    f32, (std, clip) = capture(label, seconds, bias)
-    print(f"health: std {std:.1f} (24 nominal), clip {clip:.2f}% (>0.5% = gain too hot)")
-    res = acquire(f32)
+    caps = {}
+    for band, _hz in BANDS:
+        print(f"capturing {seconds:.0f}s {band} on the BENCH Pro (bias {'ON' if bias else 'OFF'}, "
+              f"gain {LNA}/{VGA} fixed)…", flush=True)
+        f32, (std, clip) = capture(label, seconds, bias, band)
+        print(f"{band} health: std {std:.1f} (24 nominal), clip {clip:.2f}% (>0.5% = gain too hot)")
+        caps[band] = f32
+    res = acquire(caps["l1"], caps["b1i"])
     json.dump(res, open(f"/tmp/antenna_{label}.json", "w"))
     print(f"{len(res)} PRNs acquired:")
     for p in sorted(res):

@@ -37,14 +37,24 @@ Three antennas, 3 cm apart on a south-facing line, same sky, same clock:
 |---|---|---|
 | AA.250 (active patch) | Pro#1 tracker, continuous | 8–14 locks steady; top C/N0 43.6–45.3 dB-Hz |
 | Bodnar puck | LBE-1421 NMEA GSV | 10 GPS sats, SNR max 47 (G26, el 81°) |
-| Antenna #3 ("GPS antenna", 3–5 V active) | Pro#2, 12-s captures + 4 acquisition engines | **zero acquisitions**, even at 10-s integration / 250 Hz Doppler step; LNA alive (noise std 23.6→31.2 with bias) but no signal |
+| Antenna #3 ("GPS antenna", 3–5 V active) | Pro#2, per-band captures | **works** — 5 GPS PRNs (G27 metric 63.7, G04 18.0, G03 10.6, G31 6.7, G16 4.2); no BeiDou/Galileo/SBAS |
 
-Reading: #3's LNA draws bias and raises the noise floor, yet not one
-satellite crosses threshold where the AA.250 locks 8+. Either its patch
-element is dead/disconnected behind a live LNA, or it is not an L1-band
-antenna at all. Next decisive test (no production cost): put #3 on the
-Bodnar's own SMA — the GPSDO's GSV SNR table will say within a minute
-whether it hears anything. The whip, when tested, should land several dB
+CORRECTION (same evening, round-15 review chain): the first "zero
+acquisitions" verdict was a TOOL bug, not the antenna —
+antenna_compare.py's first revision captured 8 Msps at 1568.25 MHz
+(±4 MHz spans neither L1 nor B1I) and the second left L1 at +7.17 MHz IF,
+outside the acquisition engines' zero-IF Doppler search. Per-band zero-IF
+captures (the band_producer pattern) fixed it; #3 hears fine.
+
+What the fair captures show: #3 favors the LOW southern sky (G03 at 3° el
+and G31 at 28° acquired solidly; G16 at 62-87° is its weakest sat in both
+independent captures) — a horizon/south-facing pattern, consistent with
+its physical mounting. The AA.250 is flatter and stronger (35-44 dB-Hz
+across 7-81°, and it alone locks BeiDou + SBAS). #3's silence at B1I
+(capture noise std 20.5 vs 41.4 at L1) plus no Galileo says its filter is
+narrow around L1 — it is effectively an L1-only antenna. If #3 is to serve
+MEO positioning, re-aim it toward zenith; as mounted it is a fine
+GEO-belt/horizon antenna. The whip, when tested, should land several dB
 under the AA.250 by physics (linear vs RHCP, no ground plane, no LNA).
 
 ## What the 3-cm baseline array is actually good for (and the honest caveats)
