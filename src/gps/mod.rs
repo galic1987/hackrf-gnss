@@ -7,6 +7,7 @@ pub mod acquire;
 pub mod broadcast;
 pub mod ca_code;
 pub mod ephemeris;
+pub mod hatch;
 pub mod l2c_code;
 pub mod l5_code;
 pub mod lnav;
