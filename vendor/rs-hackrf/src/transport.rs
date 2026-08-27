@@ -328,6 +328,9 @@ pub struct HackRf {
     usb_api_version: u16,
     /// Bulk IN endpoint for RX streaming (opened on start_rx, closed on stop_rx).
     rx_endpoint: Option<Endpoint<Bulk, In>>,
+    /// FPGA image index (high nibble of BUILD_ID register 0x3E), read once:
+    /// it cannot change without an image load, which reinitializes us anyway.
+    image_index: std::sync::OnceLock<u8>,
 }
 
 impl HackRf {
@@ -404,6 +407,7 @@ impl HackRf {
             usb_device,
             usb_api_version,
             rx_endpoint: None,
+            image_index: std::sync::OnceLock::new(),
         })
     }
 
@@ -743,6 +747,23 @@ impl HackRf {
     pub fn ts_read_now(&self) -> Result<u64> {
         const TS_REG_SNAP_SEL: u8 = 0x10;
         const TS_REG_VAL0: u8 = 0x11;
+        // Image-aware guard (round-17 review): the 2_extprec_rx image (slot 2)
+        // OMITS the 0x10-0x16 now-latch registers to fit the UP5K fabric —
+        // reading them returns 0 and a caller silently computes a zero tick
+        // rate. Fail loudly and point at the in-stream ts_nibble decoder.
+        let idx = match self.image_index.get() {
+            Some(&i) => i,
+            None => {
+                let i = self.fpga_read_register(0x3E)? >> 4;
+                let _ = self.image_index.set(i);
+                i
+            }
+        };
+        if idx == 2 {
+            return Err(Error::ConfigFailed(
+                "ts_read_now: the slot-2 ext_precision_rx image omits the 0x10-0x16 now-latch registers; use the in-stream ts_nibble decoder".into(),
+            ));
+        }
         self.fpga_write_register(TS_REG_SNAP_SEL, 2)?;
         std::thread::sleep(std::time::Duration::from_millis(1));
         let mut ticks = 0u64;
@@ -1105,8 +1126,19 @@ fn streaming_thread(
                     }
                 }
                 StreamControl::QueryTsNow(reply) => {
-                    if let Ok(t) = dev.ts_read_now() {
-                        let _ = reply.send(t);
+                    match dev.ts_read_now() {
+                        Ok(t) => {
+                            let _ = reply.send(t);
+                        }
+                        Err(e) => {
+                            // loud ONCE (the failure repeats every poll
+                            // otherwise — e.g. on the slot-2 image)
+                            static WARNED: std::sync::atomic::AtomicBool =
+                                std::sync::atomic::AtomicBool::new(false);
+                            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                tracing::warn!("HackRF ts_read_now failed (further failures silent): {}", e);
+                            }
+                        }
                     }
                 }
             }
