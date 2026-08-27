@@ -14,6 +14,16 @@ table. Two runs (A and B) can then be
 diffed:  antenna_compare.py run A --bias   …swap antennas…
          antenna_compare.py run B          ; antenna_compare.py diff A B
 
+MEASUREMENT DISCIPLINE (round-18 review): use an ABBA sequence (known-good
+/ unknown / unknown / known-good) without touching receiver, cable, adapter,
+or gain between runs; report matched-PRN acquisition probability and metric
+differences per band; the acq metric is a correlation figure — do NOT quote
+20*log10 of its ratio as antenna gain. Start one gain step BELOW production
+and confirm clip stays < 0.5% before using lna 40 / vga 46; RF amp stays off.
+Active antennas: the Pro bias-tee is 3.3 V/50 mA max — the antenna's 3-5 V
+rating is compatible only if its steady-state draw is under 50 mA; get the
+part's current rating before enabling bias.
+
 LAWS: the bench Pro (serial 645061de…) is the ONLY radio this tool may
 touch — the tracker owns Pro#1 and phase_producer owns the One 24/7
 (AGENTS.md); any other --serial is refused. Gain is FIXED at the tracker
@@ -41,11 +51,19 @@ def _nice19():
 
 
 def run(cmd, timeout):
+    """(stdout, error-note). Failures are REPORTED, never read as 'no
+    acquisitions' (round-18: silent None conversion made tool crashes
+    indistinguishable from a dead antenna)."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              preexec_fn=_nice19, env=_ACQ_ENV).stdout
-    except Exception:
-        return None
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           preexec_fn=_nice19, env=_ACQ_ENV)
+        if r.returncode != 0:
+            return None, f"exit {r.returncode}: {r.stderr.strip()[:120]}"
+        return r.stdout, None
+    except subprocess.TimeoutExpired:
+        return None, f"timeout >{timeout} s"
+    except Exception as e:
+        return None, str(e)
 
 
 BANDS = [("l1", 1575420000), ("b1i", 1561098000)]   # zero-IF per band
@@ -77,45 +95,52 @@ def capture(label, seconds, bias, band):
     f32 = f"/tmp/antenna_{label}_{band}.f32"
     iq.tofile(f32)
     health = (float(np.std(d)), float(np.mean(np.abs(d) > 120) * 100))
-    return f32, health
+    return f32, health, raw
 
 
-def acquire(f32_l1, f32_b1i):
-    """Per-PRN acquisition metrics; each band's capture is zero-IF."""
-    out = {}
-    f32 = f32_l1
-    # GPS C/A (JSON rows)
-    o = run([f"{EX}/acquire_file", f32, str(FS), "-3000", "3000", "500", "2000"], 300)
-    if o:
-        try:
-            for r in json.loads(o):
-                if r.get("acquired") and r["prn"] <= 32:
-                    out[f"G{r['prn']:02d}"] = round(float(r["metric"]), 2)
-        except Exception:
-            pass
-    # Galileo E1B — per-line ACQUIRED law, same as band_producer.parse_prn
+def acquire(f32_l1, raw_b1i):
+    """Per-PRN acquisition metrics + per-engine error report. `f32_l1` is the
+    L1-centered complex64 capture (GPS/GAL/SBAS engines want zero-IF f32);
+    `raw_b1i` is the B1I-centered RAW int8 capture path (beidou_acq reads
+    int8 and mixes the IF itself — passing f32 was the round-18 bug that
+    made the B1I leg silently invalid)."""
     import re
+    out, errs = {}, {}
     prn_re = re.compile(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)")
-    o = run([f"{EX}/galileo_acq", f32, str(FS), "4000"], 300)
-    if o:
+    engines = [
+        ("GPS", [f"{EX}/acquire_file", f32_l1, str(FS), "-3000", "3000", "500", "2000"], 300),
+        ("GAL", [f"{EX}/galileo_acq", f32_l1, str(FS), "4000"], 300),
+        ("BDS", [f"{EX}/beidou_acq", raw_b1i, str(FS), "1561098000", "6"], 300),
+        ("SBAS", [f"{EX}/sbas_acq", f32_l1, str(FS), "4000"], 240),
+    ]
+    for name, cmd, to in engines:
+        o, err = run(cmd, to)
+        if err:
+            errs[name] = err
+            continue
+        if not o:
+            errs[name] = "no output"
+            continue
+        if name == "GPS":
+            try:
+                for r in json.loads(o):
+                    if r.get("acquired") and r["prn"] <= 32:
+                        out[f"G{r['prn']:02d}"] = round(float(r["metric"]), 2)
+            except Exception as e:
+                errs[name] = f"parse: {e}"
+            continue
         for line in o.splitlines():
             m = prn_re.search(line)
-            if m and "ACQUIRED" in line:
-                out[f"E{int(m.group(1)):02d}"] = round(float(m.group(2)), 2)
-    # BeiDou B1I — on the b1i-tuned capture
-    o = run([f"{EX}/beidou_acq", f32_b1i, str(FS), "1561098000", "6"], 300)
-    if o:
-        import re
-        for m in re.finditer(r"PRN\s+(\d+)\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== ACQUIRED", o):
-            out[f"C{int(m.group(1)):02d}"] = round(float(m.group(2)), 2)
-    # SBAS GEOs — same per-line law
-    o = run([f"{EX}/sbas_acq", f32, str(FS), "4000"], 240)
-    if o:
-        for line in o.splitlines():
-            m = prn_re.search(line)
-            if m and "ACQUIRED" in line:
-                out[f"S{int(m.group(1))}"] = round(float(m.group(2)), 2)
-    return out
+            if not m:
+                continue
+            if name == "BDS":
+                if "<== ACQUIRED" in line:
+                    out[f"C{int(m.group(1)):02d}"] = round(float(m.group(2)), 2)
+            elif "ACQUIRED" in line:
+                pre = "E" if name == "GAL" else "S"
+                out[f"{pre}{int(m.group(1)):02d}" if name == "GAL" else f"S{int(m.group(1))}"] = \
+                    round(float(m.group(2)), 2)
+    return out, errs
 
 
 def main():
@@ -123,8 +148,8 @@ def main():
         sys.exit(__doc__)
     if sys.argv[1] == "diff":
         a, b = sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "B"
-        A = json.load(open(f"/tmp/antenna_{a}.json"))
-        B = json.load(open(f"/tmp/antenna_{b}.json"))
+        A = json.load(open(f"/tmp/antenna_{a}.json")).get("metrics", {})
+        B = json.load(open(f"/tmp/antenna_{b}.json")).get("metrics", {})
         prns = sorted(set(A) | set(B))
         print(f"{'PRN':6} {a:>8} {b:>8} {'dB-ish Δ':>9}")
         for p in prns:
@@ -146,15 +171,19 @@ def main():
     for i, a in enumerate(sys.argv[3:]):
         if a == "--seconds" and i + 4 < len(sys.argv):
             seconds = float(sys.argv[i + 4])
-    caps = {}
+    caps, raws = {}, {}
     for band, _hz in BANDS:
         print(f"capturing {seconds:.0f}s {band} on the BENCH Pro (bias {'ON' if bias else 'OFF'}, "
               f"gain {LNA}/{VGA} fixed)…", flush=True)
-        f32, (std, clip) = capture(label, seconds, bias, band)
+        f32, (std, clip), raw = capture(label, seconds, bias, band)
         print(f"{band} health: std {std:.1f} (24 nominal), clip {clip:.2f}% (>0.5% = gain too hot)")
-        caps[band] = f32
-    res = acquire(caps["l1"], caps["b1i"])
-    json.dump(res, open(f"/tmp/antenna_{label}.json", "w"))
+        caps[band], raws[band] = f32, raw
+    res, errs = acquire(caps["l1"], raws["b1i"])
+    json.dump({"metrics": res, "errors": errs}, open(f"/tmp/antenna_{label}.json", "w"))
+    if errs:
+        print("ENGINE FAILURES (these mean the run is INVALID, not a weak antenna):")
+        for k, v in errs.items():
+            print(f"  {k}: {v}")
     print(f"{len(res)} PRNs acquired:")
     for p in sorted(res):
         print(f"  {p:5} metric {res[p]}")
