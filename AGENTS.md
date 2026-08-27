@@ -15,6 +15,36 @@ HackRFs. Read this before touching anything that talks to the radios.
   (ATSC ch35 carrier-phase track). CLKIN-slaved to the Pro's CLKOUT.
   CLKOUT ownership follows radio ownership: `live_radio` asserts it at
   startup; any flash/reset must re-assert it (`hackrf_clock -o 1`).
+- **HackRF Pro #2 (bench)** `…645061de252d6613` — spare/testing radio,
+  free for bench work (flashed 2026-08-26 with the current batch:
+  2026.01.3+/API 1.16, FPGA build 0x469, manifest PASS x4). It sits INSIDE
+  the clock cascade (see below): a reset, image load, or antenna bench
+  session on it breaks the One's downstream clock attestation — after any
+  such event, force its clock switch with a 1-s RX (`hackrf_transfer -d
+  …6450… -f 100000000 -s 2000000 -n 2000 -r /tmp/p.iq`), verify
+  `hackrf_clock -d …6450… -i`, and re-check the chain.
+
+## Clock chain (since 2026-08-26; GPSDO-referenced)
+
+Bodnar LBE-1421 GPSDO OUT2 (10 MHz, GPS-locked) → Pro#1 `…977c…` P1 CLKIN
+→ Pro#1 P2 CLKOUT → Pro#2 `…6450…` P1 CLKIN → Pro#2 P2 CLKOUT → One
+`…922c…` P1 CLKIN. All TCXOs bypassed while the chain lives. Clock switches
+happen ONLY at RX/TX begin (per radio) — connecting or flashing a link
+does nothing until that radio's next stream start. CLKOUT must be asserted
+(`hackrf_clock -o 1`) on both Pros after any reset. The soft drift-lock
+verifier (series_producer, state.series.json `clkin_soft_verified`) is the
+chain's live proof; False means evidence AGAINST the chain — investigate
+before trusting cross-radio comparisons. NOTE: the Pro's local
+clock-correction register acts on PLL-A (sample clocks) ONLY — CLKOUT and
+the One ride PLL-B (si5351c.c Praline map): local correction never
+propagates down the chain, and in GPSDO-referenced operation the shadow
+loop's intent is ~0 by construction.
+
+**Trigger plane ≠ clock plane.** Both Pro SMA ports are consumed by the
+cascade, so a `hackrf_clock -1/-2 trigger_in` re-route SEVERS a clock
+link. The Bodnar 1PPS (OUT1) has no home on the current SMA map — the TDC
+bench needs a separate trigger path (header pin) and exactly one trigger
+master; do not reconfigure P1/P2 to trigger modes while the chain is up.
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
   `live_radio` first and SIGSTOPping `band_producer`; restart after, from
   current binaries (they carry queued fixes).
