@@ -115,19 +115,43 @@ SOFT_RMS_PPM = 0.015            # just above the ±0.01 ppm GEO-motion floor;
 SOFT_SLOPE_PPM_MIN = 0.003      # locked p90 0.002; free p50 0.004; the
                                 # differential-TCXO class is 0.01-0.1 ppm/min
 SOFT_TOL_S = 30.0               # epoch-match tolerance (both series ~30 s)
+SOFT_GAP_S = 60.0               # epoch gap = a new generation (producer/
+                                # tracker restart, clock-chain break). Both
+                                # series publish at ~30 s cadence, so a
+                                # missed cycle or two must NOT reset.
 SOFT_ATSC = "ATSC ch35"         # One: phase_producer 60-Hz pilot track
 SOFT_WAAS = "L1 / WAAS (live)"  # Pro: tracker 1-Hz WAAS-GEO Doppler mean
 
 
+def _latest_segment(pts, gap_s):
+    """Split a time-ordered series into generations at epoch gaps > gap_s.
+    A paired-diff window must never straddle a generation boundary (round-18,
+    seen live: the One fell off the clock chain and re-acquired ~1 ppm off —
+    pre-break points mixed into the window poisoned the post-break RMS/slope
+    and the verifier failed long after the chain had settled). Returns
+    (latest_segment, n_segments); n_segments > 1 means older points were
+    dropped this cycle."""
+    start, n = 0, 1 if pts else 0
+    for i in range(1, len(pts)):
+        if pts[i][0] - pts[i - 1][0] > gap_s:
+            start, n = i, n + 1
+    return pts[start:], n
+
+
 def clkin_soft_verify(atsc_pts, waas_pts, window=SOFT_WINDOW,
                       min_pairs=SOFT_MIN_PAIRS, rms_ppm=SOFT_RMS_PPM,
-                      slope_ppm_min=SOFT_SLOPE_PPM_MIN, tol_s=SOFT_TOL_S):
-    """Pair each WAAS point with the nearest ATSC point within tol_s, keep
-    the last `window` seconds of pairs, and judge drift-lock from the diff's
-    wander RMS (about the window mean) and least-squares slope. Returns
-    (verdict, diag); verdict is True/False, or None when pairs < min_pairs
-    (insufficient evidence — the gate stays closed)."""
+                      slope_ppm_min=SOFT_SLOPE_PPM_MIN, tol_s=SOFT_TOL_S,
+                      gap_s=SOFT_GAP_S):
+    """Keep only the LATEST generation of each series (see _latest_segment),
+    pair each surviving WAAS point with the nearest surviving ATSC point
+    within tol_s, keep the last `window` seconds of pairs, and judge
+    drift-lock from the diff's wander RMS (about the window mean) and
+    least-squares slope. Returns (verdict, diag); verdict is True/False, or
+    None when pairs < min_pairs (insufficient evidence — the gate stays
+    closed)."""
     import bisect
+    atsc_pts, a_segs = _latest_segment(atsc_pts, gap_s)
+    waas_pts, w_segs = _latest_segment(waas_pts, gap_s)
     at = [p[0] for p in atsc_pts]
     pairs = []
     for wt, wv in waas_pts:
@@ -142,6 +166,8 @@ def clkin_soft_verify(atsc_pts, waas_pts, window=SOFT_WINDOW,
         cutoff = pairs[-1][0] - window
         pairs = [p for p in pairs if p[0] >= cutoff]
     diag = {"pairs": len(pairs), "window_s": window,
+            "segments_used": {"atsc": a_segs, "waas": w_segs},
+            "window_reset": a_segs > 1 or w_segs > 1,
             "diff_rms_ppm": None, "diff_slope_ppm_per_min": None,
             "mean_diff_ppm": None}
     if len(pairs) < min_pairs:
@@ -327,11 +353,13 @@ def main():
         if cons is not None:
             if suspect:
                 # Null-consensus law (round-8 review): an unarbitrated
-                # midpoint is NOT a consensus — never publish it as a
-                # number downstream math can consume. The midpoint stays
-                # visible as a diagnostic candidate.
+                # value is NOT a consensus — never publish it as a
+                # number downstream math can consume. It stays
+                # visible as a diagnostic candidate (round-18: with a
+                # single voter it is not a midpoint of anything, so the
+                # key is candidate_value_ppm).
                 out["consensus_ppm"] = None
-                out["candidate_midpoint_ppm"] = round(cons, 4)
+                out["candidate_value_ppm"] = round(cons, 4)
             else:
                 out["consensus_ppm"] = round(cons, 4)
                 out["consensus_voters"] = len(voters)

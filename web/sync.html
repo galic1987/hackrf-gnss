@@ -1614,8 +1614,9 @@ function render(st) {
   }
   // headline = the REAL clock number (consensus of independent references);
   // the SPI-poll tick rate is PC-read jitter — diagnostics, demoted below.
-  // Round-8 null-consensus law: a suspect midpoint publishes consensus_ppm:null
-  // plus candidate_midpoint_ppm — the headline must never render null as a
+  // Round-8 null-consensus law: a suspect value publishes consensus_ppm:null
+  // plus candidate_value_ppm (round-18 rename — a single voter is no
+  // midpoint) — the headline must never render null as a
   // number (Math.abs(null) === 0 would fake a perfect clock).
   if (st.consensus_ppm !== undefined && st.consensus_ppm !== null) {
     var cp = st.consensus_ppm;
@@ -1627,10 +1628,10 @@ function render(st) {
     if (st.consensus_suspect)
       document.getElementById("livedata").innerHTML +=
         ' <span class="pill warn">UNARBITRATED</span>';
-  } else if (st.consensus_suspect && st.candidate_midpoint_ppm !== undefined && st.candidate_midpoint_ppm !== null) {
-    var cm = st.candidate_midpoint_ppm;
+  } else if (st.consensus_suspect && st.candidate_value_ppm !== undefined && st.candidate_value_ppm !== null) {
+    var cm = st.candidate_value_ppm;
     document.getElementById("livedata").innerHTML =
-      "consensus <b>unarbitrated</b> — midpoint candidate " + sgn(cm) + Math.abs(cm).toFixed(3) +
+      "consensus <b>unarbitrated</b> — candidate " + sgn(cm) + Math.abs(cm).toFixed(3) +
       ' ppm <span class="pill warn">trust neither</span>';
   }
   if (c.live_tick_hz) {

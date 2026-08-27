@@ -83,6 +83,8 @@ def main():
           f"rms={d['diff_rms_ppm']} slope={d['diff_slope_ppm_per_min']}")
     check("diag carries pairs/window/stats", d["pairs"] == n and d["window_s"] == sp.SOFT_WINDOW
           and d["diff_rms_ppm"] is not None and d["mean_diff_ppm"] is not None, f"{d}")
+    check("continuous series: no reset", d["window_reset"] is False
+          and d["segments_used"] == {"atsc": 1, "waas": 1}, f"{d}")
 
     # independent TCXOs: the One's own wander does NOT cancel — diff wanders
     # and drifts well beyond the gates (0.06 ppm amplitude, 240 s period).
@@ -97,6 +99,34 @@ def main():
     v, d = sp.clkin_soft_verify(atsc_bias, waas)
     check("constant transmitter offset still verifies", v is True,
           f"mean={d['mean_diff_ppm']} rms={d['diff_rms_ppm']}")
+
+    # --- generation reset (round-18): a >60 s epoch gap starts a new
+    # generation; the verdict must come from the post-gap segment alone ------
+    gap, t1 = 300.0, t0 + n * dt + 300.0
+    quiet2 = lambda base: [[t1 + i * dt, common[i] + base(i)] for i in range(n)]
+    # broken -> re-locked (the live-evidence case): gen1 wanders independent,
+    # gen2 settled back onto the shared clock. Mixed eras would fail the RMS
+    # gate; post-gap-only verifies.
+    atsc_rel = atsc_free + quiet2(lambda i: 0.002 * math.sin(i * 1.7))
+    waas_rel = waas + quiet2(lambda i: 0.008 * math.sin(i * 2.9 + 1.0))
+    v, d = sp.clkin_soft_verify(atsc_rel, waas_rel)
+    check("mid-window gap resets: post-gap-only verdict", v is True
+          and d["pairs"] == n, f"{d}")
+    check("gap sets window_reset + segment counts", d["window_reset"] is True
+          and d["segments_used"] == {"atsc": 2, "waas": 2}, f"{d}")
+    # mirror: locked -> broken — post-gap wander alone fails the gate
+    atsc_brk = atsc + quiet2(lambda i: 0.06 * math.sin(i * dt / 240.0))
+    v, d = sp.clkin_soft_verify(atsc_brk, waas_rel)
+    check("post-gap break fails on post-gap data", v is False
+          and d["pairs"] == n and d["window_reset"] is True, f"{d}")
+
+    # a 45 s jitter gap (missed cycle) must NOT reset: <= 60 s is one segment
+    jit = [t0 + i * dt + (15.0 if i > 25 else 0.0) for i in range(n)]  # one 45-s step
+    v, d = sp.clkin_soft_verify([[jit[i], a[1]] for i, a in enumerate(atsc)],
+                                [[jit[i], w[1]] for i, w in enumerate(waas)])
+    check("45 s jitter gap does not reset", v is True
+          and d["window_reset"] is False
+          and d["segments_used"] == {"atsc": 1, "waas": 1}, f"{d}")
 
     # insufficient pairs -> None (unknown): the gate stays closed, never guesses
     v, d = sp.clkin_soft_verify(atsc[:10], waas[:10])
