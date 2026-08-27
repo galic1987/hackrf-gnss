@@ -141,6 +141,18 @@ the -0.34 ppm TCXO era to -0.0011 ppm; the One's ATSC pilot offset went
 The site anchor is now Bodnar-surveyed (site.json: 39.0029556, -77.6051478,
 77.1 m ellipsoidal, ~2 m class, survey-in).
 
+## Clock-tree scope truth (2026-08-26, si5351c.c Praline map, round-18)
+
+RADIO_CLOCK_CORRECTION acts on the PLL-A sample-clock synthesis ONLY
+(AFE_CLK / FPGA_CLK). CLKOUT, XCVR_CLK, MIX_CLK and MCU_CLK ride PLL-B.
+Two consequences: (1) a local correction never propagates down the
+CLKOUT chain — disciplining the Pro's sample clock would never have
+disciplined the One; (2) in Bodnar-referenced operation the correction
+loop is moot by construction (the external reference disciplines every
+PLL) — the shadow loop's intent reads ~0, and any FUTURE actuation design
+must explicitly arbitrate itself against an already-disciplined external
+reference before writing (the two clocks would otherwise fight).
+
 ## Safety
 
 Shadow mode stays on except the scripted single writes; each write is
