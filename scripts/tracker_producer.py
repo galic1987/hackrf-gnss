@@ -52,7 +52,7 @@ import time
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 ENV = dict(os.environ,
            DYLD_LIBRARY_PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/libhackrf/src")
-PRO = "0000000000000000977c64de2b557213"
+PRO = os.environ.get("PRO_SERIAL", "0000000000000000645061de252d6613")  # Pro#2 (Pro#1 977c… dead 2026-08-27, hw power fault)
 FS = 16_000_000
 FC = 1_568_250_000
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json"
@@ -117,7 +117,7 @@ def open_stream():
     stopped = pause_sync_producer()
     try:
         rust_err = open("/tmp/live_track.stderr.log", "ab", buffering=0)
-        rust = subprocess.Popen([TRACKER], env=ENV,
+        rust = subprocess.Popen([TRACKER, PRO], env=ENV,
                                 stdout=subprocess.PIPE,
                                 stderr=rust_err, text=False)
         _rust = rust
