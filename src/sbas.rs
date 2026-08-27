@@ -884,10 +884,14 @@ pub fn parse_block(bits: &[u8]) -> Option<Message> {
             // decode_sbstype9 (src/sbas.c: t0 at its buffer offset 22 with
             // the type field at offset 8 -> payload+8, URA at +21, XG at
             // +25, ..., aGf1 at +204): RTKLIB never reads the leading
-            // "spare" byte, which DO-229D labels IODN. A re-review claiming
-            // "IODN at the payload tail, t0 first" (round 13/15) is refuted
-            // by that offset table — an 8-bit shift would not close at 212
-            // bits with these widths and would garbage every GEO position.
+            // "spare" byte, which DO-229D labels IODN. PRIMARY SOURCE:
+            // RINEX 3.00 spec, SBAS section — "The IODN is defined as the
+            // 8 first bits after the message type 9, called IODN in RTCA
+            // DO229 Annex A and Annex B and called spare in Annex C".
+            // A re-review claiming "IODN at the payload tail, t0 first"
+            // (rounds 13/15/16) is refuted by BOTH — an 8-bit shift would
+            // not close at 212 bits with these widths and would garbage
+            // every GEO position.
             let iodn = d.u(8) as u8;
             let t0_s = d.u(13) as u32 * 16;
             let ura = d.u(4) as u8;
