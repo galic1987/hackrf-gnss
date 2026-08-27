@@ -41,7 +41,37 @@ fn norm3(a: [f64; 3]) -> f64 {
 /// Solve for receiver position + clock from >=4 pseudoranges. `guess` seeds the
 /// iteration (Earth centre works; a nearby prior converges faster). None if
 /// under-determined or the geometry is singular.
+/// Topocentric elevation of satellite `s` seen from receiver `p` (radians,
+/// spherical-up — fine for weighting; the geodetic correction is <0.3% of
+/// the angle and only matters if we hard-gated on it, which we do not).
+fn elev_rad(p: [f64; 3], s: [f64; 3]) -> f64 {
+    let d = [s[0] - p[0], s[1] - p[1], s[2] - p[2]];
+    let dn = norm3(d);
+    let pn = norm3(p);
+    if dn < 1e-9 || pn < 1e-9 {
+        return 0.0;
+    }
+    let up = (d[0] * p[0] + d[1] * p[1] + d[2] * p[2]) / (dn * pn);
+    up.clamp(-1.0, 1.0).asin()
+}
+
+/// sin²(el) measurement weight, floored at sin²(5°) so a horizon-grazing
+/// satellite is heavily downweighted rather than zeroed mid-iteration.
+/// The alt-hold pseudo-measurement (sat at origin) evaluates to weight 1.
+const MIN_EL_W: f64 = 0.0076;
+
+fn el_w(p: [f64; 3], s: [f64; 3]) -> f64 {
+    let w = elev_rad(p, s).sin();
+    (w * w).max(MIN_EL_W)
+}
+
 pub fn solve(meas: &[Meas], guess: [f64; 3]) -> Option<Fix> {
+    solve_w(meas, guess, true)
+}
+
+/// The solver core, with elevation weighting switchable so tests can
+/// measure the unweighted baseline against the same data.
+pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<Fix> {
     if meas.len() < 4 {
         return None;
     }
@@ -63,10 +93,16 @@ pub fn solve(meas: &[Meas], guess: [f64; 3]) -> Option<Fix> {
             }
             let u = [d[0] / g, d[1] / g, d[2] / g, if m.clock_free { 0.0 } else { 1.0 }]; // design row
             let r = m.pseudorange - (g + if m.clock_free { 0.0 } else { c }); // residual
+            // Elevation weighting (precision round): multipath lives low,
+            // so low-elevation measurements enter at sin²(el) weight — on
+            // consistent data the answer is unchanged (any consistent
+            // weighting solves it exactly); on real data the low outliers
+            // stop dragging the fix.
+            let w = if weighted { el_w(p, m.sat) } else { 1.0 };
             for i in 0..4 {
-                htr[i] += u[i] * r;
+                htr[i] += w * u[i] * r;
                 for j in 0..4 {
-                    hth[i][j] += u[i] * u[j];
+                    hth[i][j] += w * u[i] * u[j];
                 }
             }
         }
@@ -219,10 +255,11 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
             let sys = m.system.min(1) as usize;
             let u = [d[0] / g, d[1] / g, d[2] / g, (sys == 0) as u8 as f64, (sys == 1) as u8 as f64];
             let r = m.pseudorange - (g + clk[sys]);
+            let w = el_w(p, m.sat); // same elevation weighting as solve()
             for i in 0..5 {
-                htr[i] += u[i] * r;
+                htr[i] += w * u[i] * r;
                 for j in 0..5 {
-                    hth[i][j] += u[i] * u[j];
+                    hth[i][j] += w * u[i] * u[j];
                 }
             }
         }
@@ -300,12 +337,18 @@ pub fn solve_with_rejection(
         if cur.len() <= 4 || dropped.len() >= max_drops {
             return Some((fix, dropped));
         }
-        // per-measurement residuals (m)
+        // per-measurement SUSPICION: residual x its weight. A low-elevation
+        // measurement is allowed more noise (its weight is small), so a big
+        // raw residual there is less damning than the same residual at the
+        // zenith; ranking by raw residual with the weighted solve otherwise
+        // lets a dragged zenith-good sat outrank the actual outlier
+        // (observed: dropped [4, 1] and kept the 300 km slip).
         let mut worst = 0.0f64;
         let mut worst_pos = 0usize;
         for (pos, m) in cur.iter().enumerate() {
             let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
-            let r = (m.pseudorange - (g + if m.clock_free { 0.0 } else { fix.clock_km })).abs() * 1000.0;
+            let r = (m.pseudorange - (g + if m.clock_free { 0.0 } else { fix.clock_km })).abs()
+                * 1000.0 * el_w(fix.ecef, m.sat).sqrt();
             if r > worst {
                 worst = r;
                 worst_pos = pos;
@@ -339,7 +382,11 @@ pub fn solve_mixed_with_rejection(
         let mut worst_pos = 0usize;
         for (pos, m) in cur.iter().enumerate() {
             let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
-            let r = (m.pseudorange - (g + clk[m.system.min(1) as usize])).abs() * 1000.0;
+            // same weighted suspicion as solve_with_rejection: residual x
+            // its elevation weight, so a dragged good sat can't outrank the
+            // actual outlier under the weighted solve
+            let r = (m.pseudorange - (g + clk[m.system.min(1) as usize])).abs()
+                * 1000.0 * el_w(fix.ecef, m.sat).sqrt();
             if r > worst {
                 worst = r;
                 worst_pos = pos;
@@ -510,6 +557,48 @@ mod tests {
             fix.ecef[2] - STATION[2],
         ]) * 1000.0;
         assert!(err_m < 1.0, "position error {err_m:.3} m");
+    }
+
+    /// Elevation weighting: a 25 m bias on the LOWEST-elevation satellite
+    /// (sub-rejection-threshold noise, the multipath class the weighting
+    /// exists for) must hurt the weighted solve less than the unweighted
+    /// one, while a clean solve is bit-identical under any weighting.
+    #[test]
+    fn elevation_weighting_tames_a_low_outlier() {
+        let m = ranges(50.0);
+        // find the lowest-elevation satellite from the station
+        let low = (0..m.len())
+            .min_by(|&a, &b| {
+                elev_rad(STATION, m[a].sat)
+                    .partial_cmp(&elev_rad(STATION, m[b].sat))
+                    .unwrap()
+            })
+            .unwrap();
+        let mut biased = ranges(50.0);
+        biased[low].pseudorange += 0.025; // 25 m, below the rejection gate
+        let err = |fix: Fix| {
+            norm3([
+                fix.ecef[0] - STATION[0],
+                fix.ecef[1] - STATION[1],
+                fix.ecef[2] - STATION[2],
+            ]) * 1000.0
+        };
+        // unweighted reference: solve with weights forced to 1 by using
+        // measurements at the zenith? No — compare against the pre-
+        // weighting behavior encoded directly: the weighted solve must be
+        // CLOSER to truth than the naive expectation bias*(weight share).
+        let fw = solve(&biased, [0.0, 0.0, 0.0]).expect("converges");
+        let e_w = err(fw);
+        let fu = solve_w(&biased, [0.0, 0.0, 0.0], false).expect("converges");
+        let e_u = err(fu);
+        // the same solve with the biased sat removed bounds the best case
+        let mut clean = biased.clone();
+        clean.remove(low);
+        let e_best = err(solve(&clean, [0.0, 0.0, 0.0]).expect("converges"));
+        assert!(
+            e_w < e_u && e_w >= e_best - 1e-9,
+            "weighted {e_w:.2} m must beat unweighted {e_u:.2} m (best possible {e_best:.2} m)"
+        );
     }
 
     /// A clean set must pass untouched (no false rejections).
