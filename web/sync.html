@@ -279,7 +279,7 @@
   <!-- ENU in time -->
   <div class="card s12 acc-green">
     <h2>Position &mdash; ENU in time</h2>
-    <div class="cvw tip" tabindex="0" data-tip-title="ENU in time" data-tip="Every fix as East/North/Up metres relative to the site anchor (site.json, self-bootstrapped — never surveyed), last 3 h. Filled markers are gated (redundant) fixes; the robust median ± 8×MAD axis keeps one bad fix from flattening the rest — outliers are marked at the edge instead."><canvas id="posenu" class="cv"></canvas></div>
+    <div class="cvw tip" tabindex="0" data-tip-title="ENU in time" data-tip="Every fix as East/North/Up metres relative to the site anchor (site.json — surveyed 2026-08-26 by the LBE-1421 GPSDO, ~2 m class), last 3 h. Filled markers are gated (redundant) fixes; the robust median ± 8×MAD axis keeps one bad fix from flattening the rest — outliers are marked at the edge instead."><canvas id="posenu" class="cv"></canvas></div>
     <div id="posenulegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Inter-system clock strip" data-tip="GPS minus BeiDou receiver clock from the mixed solves, in km of light-travel. A stable line means both constellations agree; a spoofer faking one side breaks it — this is the anti-spoof observable."><canvas id="posisx" class="cv"></canvas></div>
     <div id="posisxlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
@@ -317,7 +317,7 @@
         <button class="segbtn" id="scat3dplay">&#9654; replay</button>
         <button class="segbtn" id="scat3dreset">reset view</button>
       </span></h2>
-    <div class="cvw tip" tabindex="0" data-tip-title="Merged 3D scatter" data-tip="All three ENU components at once. Point size/brightness encodes depth; colour = solve class (blue pure GPS, purple mixed GPS+BDS, gray 2D alt-hold); the white cross is the site anchor (site.json — self-bootstrapped, never surveyed). Axes use the same robust median ± 8×MAD limits as the 2D views."><canvas id="scat3d" class="cv"></canvas></div>
+    <div class="cvw tip" tabindex="0" data-tip-title="Merged 3D scatter" data-tip="All three ENU components at once. Point size/brightness encodes depth; colour = solve class (blue pure GPS, purple mixed GPS+BDS, gray 2D alt-hold); the white cross is the site anchor (site.json — LBE-1421 GPSDO survey 2026-08-26, ~2 m class). Axes use the same robust median ± 8×MAD limits as the 2D views."><canvas id="scat3d" class="cv"></canvas></div>
     <div id="scat3dlegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
   </div>
 
@@ -935,8 +935,8 @@ function renderSummary(st) {
     var ageS = src.epoch ? Math.max(0, (st.epoch || Date.now() / 1000) - src.epoch) : null;
     headline = hd.toFixed(1) + " m";
     // Round-13 honesty: distance-scaled color, never a blanket green — a
-    // trusted fix hundreds of metres from the (self-bootstrapped, never
-    // surveyed) anchor is a WARNING sign, not a success banner. Green is
+    // trusted fix hundreds of metres from the (GPSDO-surveyed, ~2 m
+    // class since 2026-08-26) anchor is a WARNING sign, not a success banner. Green is
     // metre-class (< 25 m), amber to 100 m, red beyond. The sentence shows
     // the fix's own age, GDOP and RMS so "trusted" stays inspectable.
     sentence = "latest TRUSTED fix sits this far horizontally from the site anchor (Up " +
@@ -945,12 +945,12 @@ function renderSummary(st) {
       (src.gdop !== undefined && src.gdop !== null ? ", GDOP " + Number(src.gdop).toFixed(1) : "") +
       (src.residual_rms_m !== undefined && src.residual_rms_m !== null
         ? ", rms " + Number(src.residual_rms_m).toFixed(1) + " m" : "") +
-      " — a static station should hold metre-class; the anchor itself is self-bootstrapped, never surveyed.";
+      " — a static station should hold metre-class; the anchor was surveyed 2026-08-26 by the LBE-1421 GPSDO (~2 m class).";
     cardColor = hd < 25 ? "green" : hd < 100 ? "amber" : "red";
   }
   cards.push(sumCard(cardColor, "Position", headline, sentence,
     "Position — the bottom line",
-    "The latest trusted fix converted to East/North/Up metres against the site anchor (self-bootstrapped, never surveyed). Only fixes that pass redundancy AND plausibility gates enter this history; exact or plausibility-failed solves stay visible as diagnostics on the Position card, never here."));
+    "The latest trusted fix converted to East/North/Up metres against the site anchor (LBE-1421 GPSDO survey 2026-08-26, ~2 m class). Only fixes that pass redundancy AND plausibility gates enter this history; exact or plausibility-failed solves stay visible as diagnostics on the Position card, never here."));
 
   // Displacement
   var ph = st.phase;
@@ -1640,14 +1640,25 @@ function render(st) {
       " Hz (" + sgn(drift) + Math.abs(drift).toFixed(2) + " ppm vs session ref — PC-read jitter, diagnostics only)";
     drawSpark(c.recent);
   }
+  // utc_known is never published today: the FPGA counter has no UTC epoch
+  // (1PPS TS_SET is the pending bench item). The FREQUENCY reference is a
+  // physical-cabling fact (like the antenna label): Bodnar LBE-1421 GPSDO,
+  // chained 2026-08-26 — the soft-verify pill measures its drift-lock live.
   var anchor = c.utc_known ? '<span class="pill ok">FPGA counter anchored</span>'
-                           : '<span class="pill warn">anchor: ' + esc(c.anchor || "none") + "</span>";
+                           : '<span class="pill ok">freq ref: GPSDO (LBE-1421)</span> ' +
+                             '<span class="pill warn">epoch anchor: none — 1PPS TS_SET pending</span>';
   var cons = (st.consensus_ppm !== undefined && st.consensus_ppm !== null)
     ? ' &nbsp;·&nbsp; consensus <b>' + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>"
     : (st.consensus_suspect ? ' &nbsp;·&nbsp; consensus <span class="pill warn">unarbitrated</span>' : "");
   var corrTxt = (c.correction_ppm === undefined || c.correction_ppm === null)
     ? "correction register <b>0 ppm</b> (cleared by reflash)"
-    : "clock: correction <b>" + (c.correction_ppm >= 0 ? "+" : "") + c.correction_ppm.toFixed(2) + " ppm</b>";
+    : (st.discipline && st.discipline.actuate === false
+      // SHADOW: the number is computed intent, never written — the applied
+      // register was MEASURED unity by readback (2026-08-26 window); never
+      // render intent as if it were a live correction
+      ? "clock: <b>uncorrected</b> (register unity — nothing applied) · shadow intent " +
+        sgn(c.correction_ppm) + Math.abs(c.correction_ppm).toFixed(2) + " ppm"
+      : "clock: correction <b>" + (c.correction_ppm >= 0 ? "+" : "") + c.correction_ppm.toFixed(2) + " ppm</b>");
   document.getElementById("clock").innerHTML =
     discPill + corrTxt +
     (c.residual_ppm !== undefined ? ", residual <b>" + sgn(c.residual_ppm) + Math.abs(c.residual_ppm).toFixed(3) + " ppm</b>" +
@@ -1664,7 +1675,7 @@ function render(st) {
     var mps = Math.abs(res) * 299.792458;   // ppm -> m/s range-rate
     var corrNow = c.correction_ppm || 0;
     fpga += (Math.abs(corrNow) > 0.001
-      ? "The shadow correction estimate stands at <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
+      ? "The shadow loop's intent (never written; the applied register measured UNITY by readback 2026-08-26) stands at <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
         " ppm</b>; the live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>"
       : "The uncorrected live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>") +
       " = " + sgn(res) + Math.abs(res * 1000).toFixed(0) +
@@ -1672,7 +1683,7 @@ function render(st) {
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
       "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
       "the TDC adds sub-tick phase at a provisional ~0.5 ns (15 cm) self-test estimate, pending external calibration (P2a). " +
-      "The HackRF One is cabled to this same reference via CLKOUT→CLKIN. If the lock is active, every row above measures one clock — but the lock is unverified (the One is held full-time by the phase producer), so ATSC-vs-WAAS disagreement may be two clocks, not one.";
+      "The whole chain is GPSDO-rooted since 2026-08-26: Bodnar LBE-1421 (GPS-locked 10 MHz) → Pro#1 CLKIN → Pro#2 → the One — and the drift-lock is measured live by the soft verification above (no longer 'unverified'; the era of ATSC-vs-WAAS disagreement being two clocks ended with the chain).";
   }
   if (st.atsc_spread_ppm !== undefined) {
     fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
@@ -1771,8 +1782,9 @@ function render(st) {
       '<span class="dim">' + trk.sats.length + " channels · updated " + age(ltEpoch) +
       " · SBAS rows: green = within 0.1 ppm of consensus; MEO rows include orbital Doppler, clock not separable yet" +
       "<br>Not in the live window: <b>GLONASS</b> G1 (1598–1606 MHz), GPS L2C/L5, Galileo E5b/E6, BeiDou B2/B3 — " +
-      "the 16 Msps capture spans 1560.25–1576.25 MHz, so these get snapshot-rotation rows (band table above), " +
-      "never 1 Hz channels, until a second band is captured</span>";
+      "the 16 Msps capture spans 1560.25–1576.25 MHz. Their snapshot rows above are SUSPENDED " +
+      "(a snapshot on the tracker-owned Pro collapsed it every cycle — round-11); they return when the " +
+      "bench Pro takes over snapshots, which needs a working antenna there</span>";
   } else {
     lt.innerHTML = '<span class="dim">waiting for tracker producer&hellip;</span>';
   }
@@ -2651,7 +2663,7 @@ function renderPhysChain(st) {
     : (d.actuate === true ? '<span class="pill ok">ACTUATING</span> ' : "");
   nodes.push(journeyNode("Clock tree",
     d.correction_ppm !== undefined ? "corr <b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + "</b> ppm" : "—",
-    shadPill + "TCXO 10 MHz → Si5351 synthesizer · CLKOUT feeds the second radio's CLKIN" +
+    shadPill + "GPSDO master: LBE-1421 10 MHz (GPS-locked) → Pro#1 CLKIN → P2 chain → Pro#2 → One — TCXOs bypassed while the chain lives" +
       ((st.clock || {}).clkin_signal_present === true ? ' · CLKIN signal present (≠ lock proof)' :
        (st.clock || {}).clkin_signal_present === false ? ' · CLKIN: no 10 MHz-class signal' :
        ' · CLKIN unreadable (One busy)') +
