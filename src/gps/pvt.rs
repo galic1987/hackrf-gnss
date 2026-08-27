@@ -69,6 +69,11 @@ pub fn solve(meas: &[Meas], guess: [f64; 3]) -> Option<Fix> {
     solve_w(meas, guess, true)
 }
 
+/// Unweighted companion to `solve` (paired elevation-weighting A/B, Leg 1).
+pub fn solve_unweighted(meas: &[Meas], guess: [f64; 3]) -> Option<Fix> {
+    solve_w(meas, guess, false)
+}
+
 /// The solver core, with elevation weighting switchable so tests can
 /// measure the unweighted baseline against the same data.
 pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<Fix> {
