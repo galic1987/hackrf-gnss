@@ -117,10 +117,10 @@ fn main() -> anyhow::Result<()> {
     // For a square wave, P(ci_k != ci_{k+1}) = 2 * tap_delay_k / T_ro
     // (tap delay <= T_ro/2). Single-registered sampling adds metastability
     // bubbles (~uniform background of fake transitions), so treat small
-    // p_k as upper bounds. Only the 64 real taps are analyzed: the 16-byte
-    // block is zero-padded past the chain, and the tap63->pad boundary is
-    // an artifact, not a delay.
-    let taps = 64;
+    // p_k as upper bounds. Only the 48 real taps are analyzed: the shipped
+    // rev3c chain is 48 taps in a 6-byte block (the 64-tap/16-byte legacy
+    // panicked here on a real rev3c capture — round-15 chain).
+    let taps = 48;
     let bits: Vec<Vec<u8>> = recs
         .iter()
         .map(|r| thermo_bits(&r.thermo)[..taps].to_vec())
@@ -149,8 +149,8 @@ fn main() -> anyhow::Result<()> {
         println!("  {:2}->{:<2} p={:.3}{}", k, k + 1, pk, if hop { "  (segment hop)" } else { "" });
     }
     println!(
-        "segment-hop boundaries: 15->16 p={:.3}  31->32 p={:.3}  47->48 p={:.3}",
-        p[15], p[31], p[47]
+        "segment-hop boundaries: 15->16 p={:.3}  31->32 p={:.3}",
+        p[15], p[31]
     );
     let mut sorted_p = p.clone();
     sorted_p.sort_by(f64::total_cmp);
