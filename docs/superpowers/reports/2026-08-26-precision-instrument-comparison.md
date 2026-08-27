@@ -7,12 +7,12 @@ live station today; nothing here is aspirational unless marked TARGET.
 
 | Instrument / method | Measures | Live reading (today) | Demonstrated floor | Limit / target |
 |---|---|---|---|---|
-| Bodnar LBE-1421 (referee) | GPS-disciplined 10 MHz + 1PPS | reference | GPSDO class (~1e-11 ADEV) | the standard others are judged against |
+| Bodnar LBE-1421 (referee) | GPS-disciplined 10 MHz + 1PPS | reference | vendor-class expectation (~1e-11 ADEV class — NOT locally measured) | the standard others are judged against |
 | WAAS GEO Doppler drift (Pro#1, tracker) | station clock error vs GEO carriers | +0.0006 ppm deadband (Bodnar-referenced); TCXO era was −0.34 ppm | ~±0.01 ppm (GEO orbital motion floor) | sub-ppb reality when referenced |
 | ATSC pilot carrier phase (One, phase_producer) | clock error + displacement stability | offset −0.052 ppm (= ch35 transmitter constant); displacement σ 13 mm/10 s best, 90 mm/10 s median today | σ ~13 mm (10 s) | sub-mm needs the P0b carrier contract |
 | FPGA tick counter (32 MHz, in-band nibble) | time quantization | 31.25 ns/tick, PC-poll jitter dominates host reads (median −0.02 ppm class) | 31.25 ns quantization | absolute epoch via 1PPS (bench item) |
 | Carry-chain TDC (slot 0) | sub-tick subdivision | 499 ps RMS — PROVISIONAL internal ring-oscillator self-test | 499 ps (internal) | external 1PPS swept-edge calibration pending |
-| Code PVT (live_fix) | position vs surveyed anchor | 6.3 m RMS, 5 sats, 3D (current); 9–16 m typical with WAAS corr | ~2–5 m in good geometry | dm-class ceiling at L1-only (ionosphere); cm–mm needs short-baseline ∇Δ |
+| Code PVT (live_fix) | position vs surveyed anchor | 6.3 m = solve RESIDUAL RMS (not error vs the anchor; the anchor itself is ~2 m class), 5 sats, 3D, fresh at publication (a preserved older trusted fix carries its own aging epoch) | ~2–5 m in good geometry | dm-class ceiling at L1-only (ionosphere); cm–mm needs short-baseline ∇Δ |
 | Carrier replica phase (tracker channels) | per-channel phase | ~84–101 mm/10 s class — diagnostic, not a true observable | same | 0.5 mm TARGET requires P0b (prompt residual + epoch + ambiguity) |
 | Band snapshots (band_producer) | per-band presence/drift | GATED OFF since round-11 (never touches the tracker-owned Pro) — off-tune bands show last measurement | — | can return on Pro#2 once it has a real antenna |
 | Consensus (series_producer) | cross-instrument clock truth | −0.0285 ppm when drift-locked; null (fail-closed) when not | soft-verify wander RMS 0.009 ppm | now keyed on drift-lock, not a radio-opening probe |
@@ -36,8 +36,8 @@ Three antennas, 3 cm apart on a south-facing line, same sky, same clock:
 | Antenna | Instrument | Result |
 |---|---|---|
 | AA.250 (active patch) | Pro#1 tracker, continuous | 8–14 locks steady; top C/N0 43.6–45.3 dB-Hz |
-| Bodnar puck | LBE-1421 NMEA GSV | 10 GPS sats, SNR max 47 (G26, el 81°) |
-| Antenna #3 ("GPS antenna", 3–5 V active) | Pro#2, per-band captures | **works** — 5 GPS PRNs (G27 metric 63.7, G04 18.0, G03 10.6, G31 6.7, G16 4.2); no BeiDou/Galileo/SBAS |
+| Bodnar puck | LBE-1421 NMEA GSV | 10 GPS sats, SNR max 47 (G26, el 81°) — a REFERENCE antenna readout, not a third coherent IQ array element |
+| Antenna #3 ("GPS antenna", 3–5 V active) | Pro#2, per-band captures | **works at L1 GPS** — 5 PRNs (G27 63.7, G04 18.0, G03 10.6, G31 6.7, G16 4.2); the "no BeiDou/Galileo/SBAS" claim is RETRACTED (round-18: the B1I leg fed beidou_acq the wrong input format — invalid leg, not invalid band) |
 
 CORRECTION (same evening, round-15 review chain): the first "zero
 acquisitions" verdict was a TOOL bug, not the antenna —
@@ -65,14 +65,20 @@ term is directly invertible, and the midpoint symmetry lets you split
 geometry from cable/LNA group delay. The caveats from this station's review
 discipline:
 
-- "shared 10 MHz ⇒ 0 ppb relative drift" is now TRUE and soft-verified
-  (wander RMS 0.009 ppm). But shared clock ≠ shared sample zero: USB frame
-  phase and the nibble/IQ skew put an unknown constant sub-µs offset between
-  the radios' sample streams. The 1PPS line exists to calibrate exactly that.
-- The <0.5 mm formal claim needs a real carrier observable — today's
+- "shared 10 MHz ⇒ 0 ppb relative drift" — precisely: the measured
+  30-min wander RMS of the ATSC−WAAS difference is 0.009 ppm when
+  drift-locked (soft-verified, with generation resets at chain breaks).
+  Frequency lock is proven; an absolute common phase origin is NOT
+  established by it — USB frame phase and the nibble/IQ skew put an unknown
+  constant sub-µs offset between the radios' sample streams. The 1PPS line
+  exists to calibrate exactly that.
+- The sub-mm formal claims need a real carrier observable — today's
   carrier number is an integrated-replica diagnostic at ~90 mm/10 s. The
-  P0b contract (prompt residual + sample epoch + ambiguity generation + gap
-  invalidation) is the gate; the design is ledgered, not started.
+  ladder rungs are DIFFERENT observables, not refinements of one error:
+  31.25 ns tick ≈ 9.4 m of light; 499 ps TDC ≈ 150 mm; 150 ps ≈ 45 mm;
+  30–50 ps ≈ 9–15 mm; and carrier sub-mm additionally needs prompt
+  residuals, sample epoch, ambiguity generation, slip/gap invalidation and
+  calibrated hardware phase (the P0b contract — ledgered, not started).
 - The two-HackRF differential pair over a 6 cm baseline is the legitimate
   cm→mm path (double-differencing cancels clocks/ionosphere/orbit) — and it
   is now physically possible: two Pros, one GPSDO, co-located antennas.
