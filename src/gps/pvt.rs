@@ -82,7 +82,6 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
     }
     let mut p = guess;
     let mut c = 0.0f64; // clock bias (km)
-    let mut last_q = [[0.0f64; 4]; 4];
     let mut iters = 0;
 
     for _ in 0..12 {
@@ -111,8 +110,11 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
                 }
             }
         }
-        let q = inv4(&hth)?; // covariance ~ (H^T H)^-1
-        last_q = q;
+        // inverse of the (possibly weighted) normal matrix — used ONLY for
+        // the Gauss-Newton update; DOPs are geometric and recomputed from
+        // the unweighted normal matrix at the solution (below), so the
+        // elevation weighting cannot put a step into the published series.
+        let q = inv4(&hth)?;
         // dx = q * htr
         let mut dx = [0.0f64; 4];
         for i in 0..4 {
@@ -138,9 +140,14 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
     }
     let rms_m = (ss / meas.len() as f64).sqrt() * 1000.0;
 
-    let gdop = (last_q[0][0] + last_q[1][1] + last_q[2][2] + last_q[3][3]).sqrt();
-    let pdop = (last_q[0][0] + last_q[1][1] + last_q[2][2]).sqrt();
-    let tdop = last_q[3][3].sqrt();
+    // DOPs from the UNWEIGHTED normal-matrix inverse at the solution point
+    // (same measurement set, weights forced 1): pure-geometry semantics,
+    // independent of the elevation weighting — the semantics the published
+    // series carried before the weighting change.
+    let q = normal_inv4(meas, p)?;
+    let gdop = (q[0][0] + q[1][1] + q[2][2] + q[3][3]).sqrt();
+    let pdop = (q[0][0] + q[1][1] + q[2][2]).sqrt();
+    let tdop = q[3][3].sqrt();
     let (lat, lon, alt) = ecef_to_geodetic(p);
     Some(Fix {
         ecef: p,
@@ -155,6 +162,27 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
         tdop,
         n_sat: meas.len(),
     })
+}
+
+/// Unweighted normal-matrix inverse (H^T H)^-1 of the measurement set at
+/// point `p` — pure geometry. DOPs are read off its diagonal, and the
+/// rejection loop's leverage (hat-matrix) correction uses the full matrix.
+fn normal_inv4(meas: &[Meas], p: [f64; 3]) -> Option<[[f64; 4]; 4]> {
+    let mut hth = [[0.0f64; 4]; 4];
+    for m in meas {
+        let d = [p[0] - m.sat[0], p[1] - m.sat[1], p[2] - m.sat[2]];
+        let g = norm3(d);
+        if g < 1e-6 {
+            return None;
+        }
+        let u = [d[0] / g, d[1] / g, d[2] / g, if m.clock_free { 0.0 } else { 1.0 }];
+        for i in 0..4 {
+            for j in 0..4 {
+                hth[i][j] += u[i] * u[j];
+            }
+        }
+    }
+    inv4(&hth)
 }
 
 /// 4x4 inverse (Gauss-Jordan). None if singular.
@@ -237,6 +265,13 @@ pub struct FixMixed {
 /// >=5 rows with >=1 row per system (5 unknowns). Same Gauss-Newton skeleton
 /// as [`solve`], widened to a 5x5 normal-equations system.
 pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
+    solve_mixed_w(meas, guess, true)
+}
+
+/// The mixed solver core, with elevation weighting switchable so the
+/// rejection wrapper can police on the unweighted solve (see
+/// [`solve_with_rejection`]).
+pub(crate) fn solve_mixed_w(meas: &[MeasSys], guess: [f64; 3], weighted: bool) -> Option<FixMixed> {
     let n_gps = meas.iter().filter(|m| m.system == 0).count();
     let n_bds = meas.iter().filter(|m| m.system == 1).count();
     if meas.len() < 5 || n_gps == 0 || n_bds == 0 {
@@ -244,7 +279,6 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
     }
     let mut p = guess;
     let mut clk = [0.0f64; 2]; // [gps, bds] clock biases (km)
-    let mut last_q = [[0.0f64; 5]; 5];
     let mut iters = 0;
 
     for _ in 0..12 {
@@ -260,7 +294,8 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
             let sys = m.system.min(1) as usize;
             let u = [d[0] / g, d[1] / g, d[2] / g, (sys == 0) as u8 as f64, (sys == 1) as u8 as f64];
             let r = m.pseudorange - (g + clk[sys]);
-            let w = el_w(p, m.sat); // same elevation weighting as solve()
+            // same elevation weighting as solve(), when enabled
+            let w = if weighted { el_w(p, m.sat) } else { 1.0 };
             for i in 0..5 {
                 htr[i] += w * u[i] * r;
                 for j in 0..5 {
@@ -268,8 +303,8 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
                 }
             }
         }
+        // update-step inverse only; DOPs are geometric (see solve_w)
         let q = inv5(&hth)?;
-        last_q = q;
         let mut dx = [0.0f64; 5];
         for i in 0..5 {
             for j in 0..5 {
@@ -294,9 +329,12 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
     }
     let rms_m = (ss / meas.len() as f64).sqrt() * 1000.0;
 
-    let gdop = (last_q[0][0] + last_q[1][1] + last_q[2][2] + last_q[3][3] + last_q[4][4]).sqrt();
-    let pdop = (last_q[0][0] + last_q[1][1] + last_q[2][2]).sqrt();
-    let tdop = (last_q[3][3] + last_q[4][4]).sqrt();
+    // DOPs from the UNWEIGHTED normal-matrix inverse at the solution —
+    // geometric semantics, as in solve_w.
+    let q = normal_inv5(meas, p)?;
+    let gdop = (q[0][0] + q[1][1] + q[2][2] + q[3][3] + q[4][4]).sqrt();
+    let pdop = (q[0][0] + q[1][1] + q[2][2]).sqrt();
+    let tdop = (q[3][3] + q[4][4]).sqrt();
     let (lat, lon, alt) = ecef_to_geodetic(p);
     Some(FixMixed {
         ecef: p,
@@ -317,18 +355,54 @@ pub fn solve_mixed(meas: &[MeasSys], guess: [f64; 3]) -> Option<FixMixed> {
     })
 }
 
+/// Unweighted (H^T H)^-1 of the two-clock mixed set at `p` — see normal_inv4.
+fn normal_inv5(meas: &[MeasSys], p: [f64; 3]) -> Option<[[f64; 5]; 5]> {
+    let mut hth = [[0.0f64; 5]; 5];
+    for m in meas {
+        let d = [p[0] - m.sat[0], p[1] - m.sat[1], p[2] - m.sat[2]];
+        let g = norm3(d);
+        if g < 1e-6 {
+            return None;
+        }
+        let sys = m.system.min(1) as usize;
+        let u = [d[0] / g, d[1] / g, d[2] / g, (sys == 0) as u8 as f64, (sys == 1) as u8 as f64];
+        for i in 0..5 {
+            for j in 0..5 {
+                hth[i][j] += u[i] * u[j];
+            }
+        }
+    }
+    inv5(&hth)
+}
+
 /// Outlier-rejection threshold (metres). A full 1 ms code-period tooth slip
 /// is ~300 km — orders of magnitude outside this bound — while honest
 /// anchored channels sit meter-class to a few hundred metres indoors. The
 /// threshold removes only catastrophic outliers; fractional-tooth suspects
-/// stay (they are real signal, just biased).
+/// stay (they are real signal, just biased). The gated quantity is the
+/// studentized (leverage-corrected) residual of the unweighted policing
+/// solve, in metres — see [`solve_with_rejection`].
 pub const REJECT_THRESH_M: f64 = 1000.0;
 
 /// RAIM-style outlier rejection around `solve`: drop the worst measurement
-/// while its residual exceeds REJECT_THRESH_M, re-solve, at most `max_drops`
-/// times. Returns the fix plus the ORIGINAL indices of dropped rows.
-/// Exact solves (rows <= unknowns) are not policed — nothing independent
-/// left to test against.
+/// while its studentized residual exceeds REJECT_THRESH_M, re-solve, at
+/// most `max_drops` times. Returns the fix plus the ORIGINAL indices of
+/// dropped rows. Exact solves (rows <= unknowns) are not policed — nothing
+/// independent left to test against.
+///
+/// The policing solve is UNWEIGHTED; only the final returned fix is the
+/// weighted precision solve (`solve`). Suspicion is the raw residual
+/// de-smeared by the row's leverage h (its hat-matrix diagonal entry —
+/// pure geometry, so the metric is elevation-independent): a biased row
+/// shows only (1-h) of its bias in its own residual and smears the rest
+/// onto the good rows, so plain |r| lets a dragged good sat outrank the
+/// true outlier (observed: dropped [4, 1] and kept the 300 km slip under
+/// the weighted solve — and a horizon-grazing row is exactly the
+/// high-leverage one under the unweighted solve, so the failure straddles
+/// both). |r|/sqrt(1-h) restores the coherence: one number that is a
+/// provably correct ranking for a single outlier AND a metre-scale
+/// quantity for the flat gate — the "removes only catastrophic outliers"
+/// contract, elevation-independent.
 pub fn solve_with_rejection(
     meas: &[Meas],
     guess: [f64; 3],
@@ -338,29 +412,42 @@ pub fn solve_with_rejection(
     let mut dropped = Vec::new();
     loop {
         let cur: Vec<Meas> = idx.iter().map(|&i| meas[i]).collect();
-        let fix = solve(&cur, guess)?;
+        // policing solve: UNWEIGHTED (no weight-driven drag; the leverage
+        // correction below handles the residual smear)
+        let fix = solve_w(&cur, guess, false)?;
         if cur.len() <= 4 || dropped.len() >= max_drops {
-            return Some((fix, dropped));
+            // the returned fix is the weighted precision solve
+            return Some((solve(&cur, guess)?, dropped));
         }
-        // per-measurement SUSPICION: residual x its weight. A low-elevation
-        // measurement is allowed more noise (its weight is small), so a big
-        // raw residual there is less damning than the same residual at the
-        // zenith; ranking by raw residual with the weighted solve otherwise
-        // lets a dragged zenith-good sat outrank the actual outlier
-        // (observed: dropped [4, 1] and kept the 300 km slip).
+        let q = normal_inv4(&cur, fix.ecef)?;
         let mut worst = 0.0f64;
         let mut worst_pos = 0usize;
         for (pos, m) in cur.iter().enumerate() {
-            let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
+            let d = [fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]];
+            let g = norm3(d);
             let r = (m.pseudorange - (g + if m.clock_free { 0.0 } else { fix.clock_km })).abs()
-                * 1000.0 * el_w(fix.ecef, m.sat).sqrt();
-            if r > worst {
-                worst = r;
+                * 1000.0;
+            // leverage h = u^T (H^T H)^-1 u of this row at the policing point
+            let u = [d[0] / g, d[1] / g, d[2] / g, if m.clock_free { 0.0 } else { 1.0 }];
+            let mut h = 0.0f64;
+            for i in 0..4 {
+                for j in 0..4 {
+                    h += u[i] * q[i][j] * u[j];
+                }
+            }
+            // h -> 1 means the row carries no redundancy (the fit
+            // interpolates it): untestable by any residual method, so it is
+            // never blamed — the same fundamental limit the exact-solve
+            // exemption documents.
+            let den = 1.0 - h;
+            let susp = if den > 1e-9 { r / den.sqrt() } else { 0.0 };
+            if susp > worst {
+                worst = susp;
                 worst_pos = pos;
             }
         }
         if worst <= REJECT_THRESH_M {
-            return Some((fix, dropped));
+            return Some((solve(&cur, guess)?, dropped));
         }
         dropped.push(idx.remove(worst_pos));
     }
@@ -369,6 +456,8 @@ pub fn solve_with_rejection(
 /// The same for the mixed-constellation solve (5 unknowns: x,y,z,clk_gps,
 /// clk_bds). A single wrong-tooth channel otherwise drags the free isx
 /// state — observed live: isx -239.5 km with a 1 ms slip in the set.
+/// Policing is unweighted with the same studentized suspicion as
+/// [`solve_with_rejection`]; the returned fix is the weighted solve.
 pub fn solve_mixed_with_rejection(
     meas: &[MeasSys],
     guess: [f64; 3],
@@ -377,28 +466,37 @@ pub fn solve_mixed_with_rejection(
     let mut idx: Vec<usize> = (0..meas.len()).collect();
     let mut dropped = Vec::new();
     loop {
-        let cur: Vec<MeasSys> = idx.iter().map(|&i| meas[i].clone()).collect();
-        let fix = solve_mixed(&cur, guess)?;
+        let cur: Vec<MeasSys> = idx.iter().map(|&i| meas[i]).collect();
+        let fix = solve_mixed_w(&cur, guess, false)?;
         if cur.len() <= 5 || dropped.len() >= max_drops {
-            return Some((fix, dropped));
+            return Some((solve_mixed(&cur, guess)?, dropped));
         }
         let clk = [fix.clock_gps_km, fix.clock_bds_km];
+        let q = normal_inv5(&cur, fix.ecef)?;
         let mut worst = 0.0f64;
         let mut worst_pos = 0usize;
         for (pos, m) in cur.iter().enumerate() {
-            let g = norm3([fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]]);
-            // same weighted suspicion as solve_with_rejection: residual x
-            // its elevation weight, so a dragged good sat can't outrank the
-            // actual outlier under the weighted solve
-            let r = (m.pseudorange - (g + clk[m.system.min(1) as usize])).abs()
-                * 1000.0 * el_w(fix.ecef, m.sat).sqrt();
-            if r > worst {
-                worst = r;
+            let d = [fix.ecef[0] - m.sat[0], fix.ecef[1] - m.sat[1], fix.ecef[2] - m.sat[2]];
+            let g = norm3(d);
+            let sys = m.system.min(1) as usize;
+            let r = (m.pseudorange - (g + clk[sys])).abs() * 1000.0;
+            // same studentized suspicion as solve_with_rejection
+            let u = [d[0] / g, d[1] / g, d[2] / g, (sys == 0) as u8 as f64, (sys == 1) as u8 as f64];
+            let mut h = 0.0f64;
+            for i in 0..5 {
+                for j in 0..5 {
+                    h += u[i] * q[i][j] * u[j];
+                }
+            }
+            let den = 1.0 - h;
+            let susp = if den > 1e-9 { r / den.sqrt() } else { 0.0 };
+            if susp > worst {
+                worst = susp;
                 worst_pos = pos;
             }
         }
         if worst <= REJECT_THRESH_M {
-            return Some((fix, dropped));
+            return Some((solve_mixed(&cur, guess)?, dropped));
         }
         dropped.push(idx.remove(worst_pos));
     }
@@ -562,6 +660,100 @@ mod tests {
             fix.ecef[2] - STATION[2],
         ]) * 1000.0;
         assert!(err_m < 1.0, "position error {err_m:.3} m");
+    }
+
+    /// Synthetic horizon-grazer: 5 deg elevation, az 45 deg, 24,000 km slant
+    /// range from the station (geocentric radius ~25,362 km, GPS-orbit
+    /// class). The low-elevation RAIM tests need a satellite in the class
+    /// the elevation weighting downweights hardest; none of the six real
+    /// fixture sats is below 34 deg.
+    fn low_sat() -> [f64; 3] {
+        let pn = norm3(STATION);
+        let up = [STATION[0] / pn, STATION[1] / pn, STATION[2] / pn];
+        let lon = STATION[1].atan2(STATION[0]);
+        let lat = (STATION[2] / pn).asin();
+        let east = [-lon.sin(), lon.cos(), 0.0];
+        let north = [-lat.sin() * lon.cos(), -lat.sin() * lon.sin(), lat.cos()];
+        let el = 5.0f64.to_radians();
+        let az = 45.0f64.to_radians();
+        let d = [
+            el.cos() * (az.cos() * north[0] + az.sin() * east[0]) + el.sin() * up[0],
+            el.cos() * (az.cos() * north[1] + az.sin() * east[1]) + el.sin() * up[1],
+            el.cos() * (az.cos() * north[2] + az.sin() * east[2]) + el.sin() * up[2],
+        ];
+        [
+            STATION[0] + 24000.0 * d[0],
+            STATION[1] + 24000.0 * d[1],
+            STATION[2] + 24000.0 * d[2],
+        ]
+    }
+
+    /// The six real sats plus the horizon-grazer appended at index 6.
+    fn ranges_with_low(clock_km: f64) -> Vec<Meas> {
+        let mut m = ranges(clock_km);
+        let s = low_sat();
+        let g = norm3([STATION[0] - s[0], STATION[1] - s[1], STATION[2] - s[2]]);
+        m.push(Meas { sat: s, pseudorange: g + clock_km, clock_free: false });
+        m
+    }
+
+    /// The hole the elevation-weighted suspicion opened, pinned shut: a 5 km
+    /// bias on a LOW-elevation satellite must be REJECTED. Under 8cafeba the
+    /// suspicion read |r| x sin(el) ~ 92 m against the flat 1000 m gate — an
+    /// effective 1000/sin(5 deg) = 11,471 m raw threshold — and the outlier
+    /// was admitted (the live ~1000 km fixes). Plain raw |r| is not the
+    /// answer either: the horizon row is the high-leverage row (h ~ 0.79
+    /// here), so its smeared error outranks it on a good sat and the wrong
+    /// row gets dropped (verified numerically). The studentized
+    /// |r|/sqrt(1-h) reads ~2300 m on the outlier -> dropped.
+    #[test]
+    fn rejection_drops_a_low_elevation_outlier() {
+        let mut m = ranges_with_low(50.0);
+        assert!(
+            elev_rad(STATION, m[6].sat) < 10.0f64.to_radians(),
+            "fixture: the low sat must be below 10 deg"
+        );
+        m[6].pseudorange += 5.0; // 5 km, catastrophic but low-elevation
+        let (fix, dropped) =
+            solve_with_rejection(&m, [0.0, 0.0, 0.0], 3).expect("converges");
+        assert_eq!(dropped, vec![6], "the low-elevation outlier must be dropped");
+        let err_m = norm3([
+            fix.ecef[0] - STATION[0],
+            fix.ecef[1] - STATION[1],
+            fix.ecef[2] - STATION[2],
+        ]) * 1000.0;
+        assert!(err_m < 1.0, "position error {err_m:.3} m");
+    }
+
+    /// The audit's "~1000 km fix" class: a full tooth slip on the
+    /// horizon-grazer must be dropped, not absorbed.
+    #[test]
+    fn rejection_drops_a_low_elevation_tooth_slip() {
+        let mut m = ranges_with_low(50.0);
+        m[6].pseudorange -= 299.792; // 1 ms slip at ~5 deg elevation
+        let (fix, dropped) =
+            solve_with_rejection(&m, [0.0, 0.0, 0.0], 3).expect("converges");
+        assert_eq!(dropped, vec![6], "the low-elevation slip must be dropped");
+        let err_m = norm3([
+            fix.ecef[0] - STATION[0],
+            fix.ecef[1] - STATION[1],
+            fix.ecef[2] - STATION[2],
+        ]) * 1000.0;
+        assert!(err_m < 1.0, "position error {err_m:.3} m");
+    }
+
+    /// DOPs are GEOMETRY, not weighting: the same measurement set solved
+    /// weighted and unweighted must report identical gdop/pdop/tdop. The
+    /// 8cafeba weighted-covariance DOPs put a silent step into the published
+    /// series (1.85x measured live; 1.41x on this fixture's geometry).
+    #[test]
+    fn dop_is_geometric_not_weighted() {
+        let m = ranges(50.0);
+        let fw = solve(&m, [0.0, 0.0, 0.0]).expect("converges");
+        let fu = solve_unweighted(&m, [0.0, 0.0, 0.0]).expect("converges");
+        assert!((fw.gdop - fu.gdop).abs() < 1e-9, "gdop {} vs {}", fw.gdop, fu.gdop);
+        assert!((fw.pdop - fu.pdop).abs() < 1e-9, "pdop {} vs {}", fw.pdop, fu.pdop);
+        assert!((fw.tdop - fu.tdop).abs() < 1e-9, "tdop {} vs {}", fw.tdop, fu.tdop);
     }
 
     /// Elevation weighting: a 25 m bias on the LOWEST-elevation satellite
