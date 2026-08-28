@@ -5,8 +5,9 @@ HackRFs. Read this before touching anything that talks to the radios.
 
 ## Hardware ownership (the law)
 
-- **HackRF Pro** `…977c64de2b557213` — owned 24/7 by `examples/live_radio`
-  (spawned by `scripts/tracker_producer.py`). `hackrf_open` is EXCLUSIVE:
+- **HackRF Pro #2** `…645061de252d6613` — owned 24/7 by `examples/live_radio`
+  (spawned by `scripts/tracker_producer.py`). Became the production radio
+  2026-08-27 when Pro#1 died. `hackrf_open` is EXCLUSIVE:
   no other process can open the Pro while the tracker runs. External
   pollers/captures targeting the Pro will fail or, worse, inject USB
   contention that overflows the tracker's stream queue (the 2026-08-24
@@ -15,20 +16,24 @@ HackRFs. Read this before touching anything that talks to the radios.
   (ATSC ch35 carrier-phase track). CLKIN-slaved to the Pro's CLKOUT.
   CLKOUT ownership follows radio ownership: `live_radio` asserts it at
   startup; any flash/reset must re-assert it (`hackrf_clock -o 1`).
-- **HackRF Pro #2 (bench)** `…645061de252d6613` — spare/testing radio,
-  free for bench work (flashed 2026-08-26 with the current batch:
-  2026.01.3+/API 1.16, FPGA build 0x469, manifest PASS x4). It sits INSIDE
-  the clock cascade (see below): a reset, image load, or antenna bench
-  session on it breaks the One's downstream clock attestation — after any
-  such event, force its clock switch with a 1-s RX (`hackrf_transfer -d
-  …6450… -f 100000000 -s 2000000 -n 2000 -r /tmp/p.iq`), verify
-  `hackrf_clock -d …6450… -i`, and re-check the chain.
+- **HackRF Pro #1** `…977c64de2b557213` — **DEAD 2026-08-27** (no power on
+  any cable/charger incl. dumb charger and A-to-C, no DFU boot-ROM
+  enumeration — J1/Q4 input-path hardware fault, repair/RMA pending). Do
+  NOT target this serial in any command; several bench scripts still carry
+  it as a default and must be run with `PRO_SERIAL=…6450…` until cleaned
+  up. When it returns from repair it re-enters as the bench radio: a reset,
+  image load, or antenna bench session on the bench radio breaks the One's
+  downstream clock attestation — after any such event, force its clock
+  switch with a 1-s RX (`hackrf_transfer -d <serial> -f 100000000 -s
+  2000000 -n 2000 -r /tmp/p.iq`), verify `hackrf_clock -d <serial> -i`,
+  and re-check the chain.
 
 ## Clock chain (since 2026-08-26; GPSDO-referenced)
 
-Bodnar LBE-1421 GPSDO OUT2 (10 MHz, GPS-locked) → Pro#1 `…977c…` P1 CLKIN
-→ Pro#1 P2 CLKOUT → Pro#2 `…6450…` P1 CLKIN → Pro#2 P2 CLKOUT → One
-`…922c…` P1 CLKIN. All TCXOs bypassed while the chain lives. Clock switches
+Bodnar LBE-1421 GPSDO OUT2 (10 MHz, GPS-locked) → Pro#2 `…6450…` P1 CLKIN
+→ Pro#2 P2 CLKOUT → One `…922c…` P1 CLKIN. (Until 2026-08-27 the chain
+entered via Pro#1 `…977c…`; that unit is dead and out of the cascade.)
+All TCXOs bypassed while the chain lives. Clock switches
 happen ONLY at RX/TX begin (per radio) — connecting or flashing a link
 does nothing until that radio's next stream start. CLKOUT must be asserted
 (`hackrf_clock -o 1`) on both Pros after any reset. The soft drift-lock
@@ -53,7 +58,7 @@ master; do not reconfigure P1/P2 to trigger modes while the chain is up.
   USB streaming state wedged — the next `live_radio` then seeds deaf
   ("seed done — 0 candidates" forever). Procedure: `pkill -TERM
   tracker_producer.py; pkill -TERM -f examples/live_radio; sleep 3;
-  hackrf_spiflash -d 0000000000000000977c64de2b557213 -R; sleep 6;
+  hackrf_spiflash -d 0000000000000000645061de252d6613 -R; sleep 6;
   nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log &`.
   Never `pkill -9` live_radio.
 - **Host build load kills the tracker** (2026-08-25, measured live): cargo/

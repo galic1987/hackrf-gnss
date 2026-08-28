@@ -25,6 +25,7 @@
 //!
 //! stdout: one JSON line per tracked PRN per second (same as live_track),
 //! plus {"discipline": {...}} once per cycle. usage: live_radio [serial]
+//! (serial precedence: argv[1] > $PRO_SERIAL > built-in Pro#2 default).
 
 use hackrf_gnss::discipline::PlausibilityGate;
 use hackrf_gnss::live::{Engine, Sys};
@@ -35,7 +36,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const FS: f64 = 16.0e6;
 const FC: u64 = 1_568_250_000;
 const F_L1: f64 = 1575.42e6;
-const PRO: &str = "0000000000000000977c64de2b557213";
+/// Production radio default: Pro#2. Pro#1 (…977c64de2b557213) died
+/// 2026-08-27 (no power on any cable/charger, no DFU enumeration — J1/Q4
+/// input-path hardware fault, repair/RMA pending). Keep argv/$PRO_SERIAL
+/// overrides as the only way onto another radio.
+const PRO: &str = "0000000000000000645061de252d6613";
 const CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_seed_cache.json";
 const CORR_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_corr_cache.json";
 const EPH_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
@@ -105,7 +110,8 @@ fn set_realtime() {}
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let serial = a.get(1).map(|s| s.as_str()).unwrap_or(PRO);
+    let env_serial = std::env::var("PRO_SERIAL").ok();
+    let serial = a.get(1).map(|s| s.as_str()).or(env_serial.as_deref()).unwrap_or(PRO);
     let epoch0 = now_f64();
     set_realtime();
     // Discipline actuation gate. The 2026-08-25 retro analysis of the
