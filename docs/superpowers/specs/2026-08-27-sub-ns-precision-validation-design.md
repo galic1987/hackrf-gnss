@@ -33,7 +33,15 @@ Precision claim gates (all over ≥ 1 h of continuous data):
 - Antennas (DO NOT MOVE — mechanical freeze once measuring): AA.250 — 3 cm —
   Bodnar puck — 3 cm — One's patch, south-facing line.
 - Bodnar: out2 = 10 MHz → Pro#2 P1; out1 = 10 MHz → One (PPS currently NOT
-  available anywhere; out1 must return to PPS for the TDC leg).
+  available anywhere; out1 must return to PPS for the TDC leg). Star topology
+  verified 2026-08-28 (ATSC offset −0.0536 ppm matches the GPSDO era).
+  **Port budget — 2 outputs, 3 wanted signals (10 MHz ×2 + PPS):** exactly
+  one escape per experiment: (a) 10 MHz distribution amp/splitter on out2
+  feeding both radios, out1 restored to PPS; (b) the Pro's P22 alternate
+  CLKIN path to free a front-panel port; (c) pause the One for the window —
+  out1 → PPS → Pro#2 P2 (the One free-runs on its TCXO; its downstream
+  attestation for that window is void). Pro#2 P2 is free in the star; one
+  trigger master per experiment, never mid-collection.
 
 ## Leg 1 — solo clock-bias series (starts now, no new hardware)
 
