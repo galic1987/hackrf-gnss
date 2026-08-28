@@ -201,6 +201,11 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False):
     if not rep["tdev"]:
         rep["gate_fails"] = ["no gate tau evaluable (span < 3*tau)"]
         return rep
+    missing = [t for t in GATES_TAU if t not in rep["tdev"]]
+    if missing:
+        # never let verdict()'s all() pass vacuously on a partial tau table
+        rep["gate_fails"] = [f"gate tau(s) not evaluable: {missing}"]
+        return rep
     rep["verdict"] = verdict(rep["rms_ns"], rep["tdev"])
     d = [r["residual_rms_m"] - r["residual_rms_m_uw"] for r in seg_rows
          if "residual_rms_m_uw" in r]

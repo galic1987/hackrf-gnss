@@ -90,6 +90,28 @@ def test_gap_segmentation_longest_segment_analyzed():
     assert rep["tdev"], rep["tdev"]
 
 
+def test_missing_gate_tau_never_passes_vacuously():
+    # reviewer-constructed case: gates pass (3400 rows, span ~3672 s, max-gap
+    # 1.5 s) but the mixed cadence puts median dt at 0.8 s, so tau=1000 needs
+    # m=1250 -> n>=3751 and is OMITTED. v1's all() over the partial table
+    # returned a claim-supporting verdict with only tau={10,100} tested.
+    random.seed(11)
+    ep, t = [], 1_787_000_000.0
+    dts = [0.8] * 6 + [1.5] * 4            # 60/40 mix, median 0.8
+    for k in range(3400):
+        ep.append(t)
+        t += dts[k % 10]
+    rows = [{"epoch": e, "clock_ns": 0.0, "clock_ns_uw": 0.0,
+             "residual_rms_m": 5.0, "residual_rms_m_uw": 5.5,
+             "n_sat": 8, "n_fresh": 2, "n_pred": 6, "slips": 0,
+             "gen": "v2-1", "source": "clock_bias"} for e in ep]
+    rep = analyze(rows)
+    assert 1000 not in rep.get("tdev", {}), rep.get("tdev")
+    assert rep["gate_fails"] and "not evaluable" in rep["gate_fails"][0], \
+        rep["gate_fails"]
+    assert not rep.get("verdict"), rep.get("verdict")
+
+
 def test_continuity_gates_rows_do_not_equal_an_hour():
     # v1 defect: bare row count was treated as "a continuous hour".
     # Case A: rows >= 3400 but span < 3600 s (3700 rows @ 2 Hz = 1849.5 s)
