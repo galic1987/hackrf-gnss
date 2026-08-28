@@ -71,17 +71,20 @@ def wander_cycles(t, wander_a=WANDER_A):
 
 
 def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True,
-                 pilot=True, dark_after=None, dark_until=None):
+                 pilot=True, dark_after=None, dark_until=None,
+                 amp0=10.0, cn0=CN0_DBHZ):
     """Yield (iq complex64 block, t_epoch, truth_mm at epoch center).
 
     pilot=False emits pure noise (no pilot anywhere); dark_after=T kills
     the pilot from epoch T on (mid-run drop below the SNR floor);
     dark_until=U makes that a dark WINDOW [T, U) after which the pilot
-    returns (re-acquisition recovery tests)."""
+    returns (re-acquisition recovery tests). amp0/cn0 set the pilot
+    amplitude and carrier-to-noise density — small amp0 models the
+    starved-pilot/interferer line (strong in the FFT statistic,
+    noise-scale in absolute z-units)."""
     rate, fs = pp.EPOCH_HZ, pp.FS
     blk = int(fs / rate)
-    amp0 = 10.0
-    var = amp0 * amp0 * fs / 10 ** (CN0_DBHZ / 10)   # E|n|^2 for target C/N0
+    var = amp0 * amp0 * fs / 10 ** (cn0 / 10)   # E|n|^2 for target C/N0
     rng = np.random.default_rng(seed)
     n0 = 0
     for _ in range(int(dur_s * rate)):
@@ -389,11 +392,48 @@ def scenario_seeded_dark_recovery():
     return not fails
 
 
+def scenario_noise_scale_seed():
+    """(e) The 2026-08-28 19:31 live incident, replayed: a line that
+    PASSES the SNR floor but has noise-scale absolute amplitude (the
+    starved pilot at C/N0 ~20 dB-Hz, amp ~0.05 z — measured live on the
+    One at 19:38: 0.053 z, 20.2 dB-Hz). The SNR gate alone seeds it and
+    the relative anchor (0.15 x 0.05 = 0.0075) passes it; only the
+    absolute ACQ_AMP_FLOOR refuses the seed, and the tracker must then
+    never lock or publish."""
+    fails = []
+    dur = 20.0
+    blocks = list(synth_blocks(dur_s=dur, seed=31, fade=False,
+                               wander_a=0.0, amp0=0.05, cn0=20.0))
+    f, snr, amp = est_snr(blocks)
+    _check(fails, "starved line passes the SNR floor",
+           snr >= pp.SNR_FLOOR_DB,
+           f"SNR {snr:.1f} dB >= {pp.SNR_FLOOR_DB:.0f} dB — the SNR gate "
+           f"alone would seed this (live: 25 dB)")
+    _check(fails, "but fails the absolute amplitude floor",
+           amp < pp.ACQ_AMP_FLOOR,
+           f"amp {amp:.3f} z < floor {pp.ACQ_AMP_FLOOR} z — seed refused")
+    tr = pp.Tracker(f, acq_snr_db=snr, acq_amp=amp)
+    _check(fails, "seed refused at tracker level", not tr.acq_ok,
+           f"acq_ok False (the relative anchor alone would pass: "
+           f"{pp.LOCK_AMP_FRAC:.2f}x{amp:.3f} = {pp.LOCK_AMP_FRAC*amp:.4f} z)")
+    eps = [tr.process(iq, t) for iq, t, _ in blocks]
+    _check(fails, "noise-scale seed never locks",
+           not any(e["locked"] for e in eps),
+           f"0 of {len(eps)} epochs locked")
+    _check(fails, "noise-scale seed publishes no values",
+           all(e["disp_mm"] is None and e["ppm"] is None
+               and e["freq_off_hz"] is None for e in eps),
+           "every epoch is the None dark-heartbeat shape")
+    print("scenario SNR-floor (e) noise-scale seed:",
+          "FAIL" if fails else "ALL PASS")
+    return not fails
+
+
 def run_snr_floor():
     print("SNR-floor scenarios (2026-08-28 audit: noise locks fabricated "
           "clock rows)")
     ok = [scenario_noise_only(), scenario_real_pilot(), scenario_midrun_drop(),
-          scenario_seeded_dark_recovery()]
+          scenario_seeded_dark_recovery(), scenario_noise_scale_seed()]
     print("SNR-FLOOR VALIDATION:", "ALL PASS" if all(ok) else "FAIL")
     return all(ok)
 
@@ -415,6 +455,10 @@ def test_midrun_drop_unseeds_publication():
 
 def test_seeded_dark_reacq_and_recovery():
     assert scenario_seeded_dark_recovery()
+
+
+def test_noise_scale_seed_never_locks():
+    assert scenario_noise_scale_seed()
 
 
 # ---------------- recorded-capture mode ----------------

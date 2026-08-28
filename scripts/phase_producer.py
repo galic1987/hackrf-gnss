@@ -53,10 +53,11 @@ the producer refuses to seed — sub-floor means the pilot is dark and the
 FFT window max is a noise peak. Dark epochs keep the lock:false
 None-heartbeat; no phase/history/residual value is published unless the
 tracker is locked on an above-floor acquisition. The LOCK itself is
-anchored to the acquisition's measured pilot amplitude (LOCK_AMP_FRAC):
-a seed whose pilot dies before lock builds a noise-class amplitude
-median, stays dark, and reaches the floor-gated re-acquire — it can
-never noise-lock with a clean acquisition (2026-08-28 live incident).
+anchored to the acquisition's measured pilot amplitude twice: absolutely
+(ACQ_AMP_FLOOR — a noise-scale seed never locks even when its SNR
+passes, the 19:31 incident) and relatively (LOCK_AMP_FRAC — a seed whose
+pilot dies before lock builds a noise-class amplitude median, stays
+dark, and reaches the floor-gated re-acquire, 2026-08-28 incidents).
 
 Publishes ONLY its own keys to its OWN file,
 observations/state.phase.json (the Rust server deep-merges all
@@ -140,6 +141,19 @@ SNR_FLOOR_DB = 14.0
 # noise seeds dark forever and routes them through the 60 s dark ->
 # floor-gated re-acquire instead of locking.
 LOCK_AMP_FRAC = 0.15
+# Absolute acquisition amplitude floor, in tracker z-units (the
+# block-average coherent amplitude = the estimate's pilot_amp). The
+# relative anchor above scales to the acquisition, so a NOISE-SCALE seed
+# passes it (live 2026-08-28 19:31: SNR 25 dB line at -500031 Hz with amp
+# 0.05 -> threshold 0.0075 -> noise locked in 10 s). Measured live on the
+# One (19:38 capture, producer gains): the only line at the pilot
+# frequency is the pilot transmitter STARVED to amp 0.053 z / C/N0 20
+# dB-Hz (antenna path lost ~35-38 dB); noise z-median 0.068. Real-pilot
+# locks run amp median 2.5-3.7 z (C/N0 ~54-58 dB-Hz). 0.75 z sits 3.3x
+# below the weakest real lock, 11x above the noise median, 14x above the
+# starved line, and corresponds to C/N0 ~43 dB-Hz — the mm-class
+# tracking threshold. Below it: pilot dark, never seed.
+ACQ_AMP_FLOOR = 0.75
 
 _proc = None                      # current hackrf_transfer child
 
@@ -303,11 +317,13 @@ class Tracker:
     refuses to seed sub-floor; this gate keeps the same law inside the
     stream-IO-free path the offline harness drives.)
 
-    acq_amp is the acquisition's measured pilot amplitude. When given,
-    the amplitude median must stay pilot-class (>= LOCK_AMP_FRAC x
-    acq_amp) for any epoch to count as good — a seed whose pilot died
-    before lock can never noise-lock; it goes dark and reaches the
-    floor-gated re-acquire instead.
+    acq_amp is the acquisition's measured pilot amplitude, in the same
+    z-units as the block-average amp. It gates twice: absolutely — a
+    noise-scale seed (amp < ACQ_AMP_FLOOR) never locks even when the SNR
+    floor passed (the 19:31 incident), and relatively — the lock-window
+    amplitude median must stay >= LOCK_AMP_FRAC x acq_amp, so a seed
+    whose pilot died before lock goes dark and reaches the floor-gated
+    re-acquire instead of noise-locking.
     """
 
     def __init__(self, f_line, fs=FS, rate_hz=EPOCH_HZ, dec=DEC,
@@ -350,9 +366,14 @@ class Tracker:
         self.disp10 = deque()               # (t, disp_mm) for sigma, 10 s
         self.last_steer = 0.0
         self.acq_snr_db = acq_snr_db
-        # None = acquisition SNR unknown (offline capture harness): the
-        # amplitude path alone decides lock, the legacy behavior.
-        self.acq_ok = acq_snr_db is None or acq_snr_db >= SNR_FLOOR_DB
+        # None on either = unknown (offline capture harness): legacy
+        # amplitude-only behavior. The SNR floor alone is NOT enough: a
+        # starved/interferer line passes 14 dB with a noise-scale
+        # amplitude (live 2026-08-28 19:31: SNR 25 dB, amp 0.05 — locked
+        # on it in 10 s). The seed must ALSO be pilot-class in absolute
+        # z-units (ACQ_AMP_FLOOR).
+        self.acq_ok = ((acq_snr_db is None or acq_snr_db >= SNR_FLOOR_DB)
+                       and (acq_amp is None or acq_amp >= ACQ_AMP_FLOOR))
         self.acq_amp = acq_amp              # None -> no amplitude anchor
 
     def process(self, iq, t):
@@ -533,10 +554,12 @@ def main():
             # 2.8 s coherent capture; the FIFO keeps draining meanwhile).
             while True:
                 f_line, snr_db, acq_amp = estimate_freq(fd, buf, blk_bytes)
-                if snr_db >= SNR_FLOOR_DB:
+                if (snr_db >= SNR_FLOOR_DB
+                        and acq_amp >= ACQ_AMP_FLOOR):
                     break
-                log(f"pilot dark (SNR {snr_db:.1f} dB < floor "
-                    f"{SNR_FLOOR_DB:.0f} dB) — not seeding")
+                log(f"pilot dark (SNR {snr_db:.1f} dB, amp {acq_amp:.3f} z "
+                    f"— floors {SNR_FLOOR_DB:.0f} dB / {ACQ_AMP_FLOOR} z) "
+                    f"— not seeding")
                 if last_row is not None:
                     phase = {
                         "epoch": round(time.time(), 2), "rate_hz": rate,
