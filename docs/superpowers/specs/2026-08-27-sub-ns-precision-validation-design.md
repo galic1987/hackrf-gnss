@@ -103,6 +103,10 @@ multipath cancel exactly.
   observe-only on the Bodnar-referenced radio.
 - **Antenna freeze**: no re-seating once Leg 1b starts; every move changes the
   constant being calibrated.
+- **Bias-tee latch**: never hot-plug antennas on live ports. The bias-tee
+  overcurrent protection latches OFF on hot-plug transients and survives USB
+  `-R` reset — the 2026-08-27 13:21–18:44 outage. After ANY antenna event,
+  FULL power-cycle of the radio (unplug/replug), then verify LNA noise.
 - band_producer runs under the ownership guard; Pro-band snapshot rows stay STALE
   while the tracker owns the radio.
 
