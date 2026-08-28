@@ -21,7 +21,7 @@ on this station; where a figure is a target or a vendor claim, it says so.
 |---|---|---|
 | Tick quantization | 31.25 ns (verified on hardware: 2.84M sequence-validated anchors) | REAL |
 | Absolute epoch (UTC anchor) | NONE — 1PPS TS_SET pending; the trigger latch froze on its first edge (ledger) | UNCALIBRATED |
-| TDC (48-tap rev3c) | median 0.72 ns/bin (best 149 ps, worst 3.2 ns), DNL-uneven, 5k samples | CALIBRATED on-air 2026-08-27 (code-density); external swept-edge pending (latch gap) |
+| TDC (48-tap rev3c) | median 0.72 ns/bin (best 149 ps, worst 3.2 ns), DNL-uneven, 5k samples | **RETRACTED 2026-08-28** — was recorded as CALIBRATED (code-density); audit showed the run was the on-die ring-oscillator self-test, not an external edge: popcount is a wave-occupancy statistic aliased at T_ro ≈ 8.76 ns (cannot resolve single-edge phase), and the absolute scale is a hardcoded nominal constant, never measured. Raw data preserved in `observations/tdc_rescue_20260827/`. External swept-edge calibration still pending (latch gap) |
 | Carrier phase (ATSC ruler) | σ 13 mm/10 s best, ~90 mm/10 s median | measured; not a true P0b observable |
 | GNSS carrier (tracker) | integrated replica diagnostic, ~84–101 mm/10 s | diagnostic only |
 

@@ -1683,8 +1683,8 @@ function render(st) {
       " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
       "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
-      "the TDC adds sub-tick phase — code-density calibrated on-air 2026-08-27 (48-tap rev3c): median 0.72 ns/bin (best 149 ps, worst 3.2 ns), DNL-uneven, 5k samples; external swept-edge validation pending (trigger-latch gap). " +
-      "The whole chain is GPSDO-rooted since 2026-08-26: Bodnar LBE-1421 (GPS-locked 10 MHz) → Pro#1 CLKIN → Pro#2 → the One — and the drift-lock is measured live by the soft verification above (no longer 'unverified'; the era of ATSC-vs-WAAS disagreement being two clocks ended with the chain).";
+      "the TDC adds sub-tick phase — the 2026-08-27 bench run (48-tap rev3c) reported median 0.72 ns/bin (best 149 ps, worst 3.2 ns), 5k samples, but that was the on-die ring-oscillator self-test, not an external edge: a wave-occupancy statistic aliased at the RO period with a nominal, never-measured absolute scale — explicitly NOT a calibration (2026-08-28 retraction); external swept-edge validation still pending (trigger-latch gap; production slot contents unattested). " +
+      "The whole chain is GPSDO-rooted since 2026-08-26 and in star topology since 2026-08-27: Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → Pro#2 CLKIN, OUT1 (10 MHz) → the One directly (Pro#1 is dead and out of the station); the drift-lock is measured live by the soft verification above (a liveness check, not topology proof).";
   }
   if (st.atsc_spread_ppm !== undefined) {
     fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
@@ -2600,7 +2600,7 @@ function renderRfChain(st) {
     "SGPIO / CPLD", "Serial General-Purpose I/O is the high-speed bus carrying samples in; the CPLD is glue logic between the front-end and the FPGA. Pure wires — they add no timing error of their own."));
   nodes.push(journeyNode("FPGA iCE40UP5K",
     c.live_tick_hz ? "<b>" + (c.live_tick_hz / 1e6).toFixed(6) + "</b> MHz" : "—",
-    "CIC 4× decimation · nibble-embedded timestamps · carry-chain TDC ≈0.72 ns/bin median (calibrated)",
+    "CIC 4× decimation · nibble-embedded timestamps · carry-chain TDC ≈0.72 ns/bin median (ring-osc self-test, NOT calibrated — 2026-08-28 retraction)",
     "40-bit tick = 31.25 ns",
     "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — 31.25 ns-quantized timing recovered on hardware (2.84M anchors); the nibble/IQ association carries a few-sample skew under review, so these are bounded-uncertainty anchors, not zero-jitter. The CIC filter decimates, and the carry-chain TDC aims to subdivide one tick to ~0.5 ns (provisional self-test figure). The Hz shown is the live tick poll — PC-read jitter applies."));
   nodes.push(journeyNode("Cortex-M4", "control core",
@@ -2699,7 +2699,7 @@ function renderPhysChain(st) {
     "slot 0 timing image: 48-tap carry-chain TDC + 40-bit tick counter · slot 2 ext-precision RX: NCO mix + CIC 4× decimation, nibble timestamps in-stream",
     "40-bit tick = 31.25 ns",
     "FPGA — what fabric does, and why",
-    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (calibrated on-air 2026-08-27: median ≈0.72 ns/bin, best 149 ps, worst 3.2 ns — DNL-uneven, so no flat 0.5 ns slogan) that subdivides it; the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — 31.25 ns-quantized timing, 2.84M sequence-validated anchors on hardware; the nibble/IQ association skew (a few samples) is under review, so bounded-uncertainty, not zero-jitter. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register and CLKOUT."));
+    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (the ≈0.72 ns/bin median figure is a 2026-08-27 ring-oscillator self-test statistic — wave-occupancy, nominal scale, NOT a calibration; retracted 2026-08-28, external swept-edge pending) that subdivides it; the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — 31.25 ns-quantized timing, 2.84M sequence-validated anchors on hardware; the nibble/IQ association skew (a few samples) is under review, so bounded-uncertainty, not zero-jitter. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register and CLKOUT."));
 
   // 8. LPC4320
   nodes.push(journeyNode("LPC4320 MCU",
