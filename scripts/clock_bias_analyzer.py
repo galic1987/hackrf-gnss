@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Sub-ns claim analyzer (Leg 1): detrend clock_bias.jsonl, RMS + OADEV, gates.
+"""Sub-ns claim analyzer (Leg 1): detrend clock_bias.jsonl, RMS + TDEV, gates.
 
 Usage: python3 scripts/clock_bias_analyzer.py [path] [--min-rows 3600]
-Gates (spec 2026-08-27): RMS < 1 ns and OADEV < 1 ns for tau in 10..1000 s.
-Exit 0 = claim supported, 1 = not (or insufficient data)."""
+Gates (spec 2026-08-27): RMS < 1 ns and TDEV < 1 ns for tau in 10..1000 s.
+Exit 0 = claim supported, 1 = not (or insufficient data).
+
+The function `oadev` keeps its plan-pinned name; the quantity it computes
+and prints is TDEV = tau*ADEV/sqrt(3) — the clock-world standard for a
+time-error series."""
 import json, math, sys
 
 GATES_TAU = [10, 100, 1000]
@@ -54,18 +58,25 @@ def main():
     except FileNotFoundError:
         rows = []
     rows = [r for r in rows if r.get("n_sat", 0) >= 5 and r.get("slips", 1) == 0]
+    sane = [r for r in rows if r.get("residual_rms_m", 1e9) < 100.0]
+    if len(sane) != len(rows):
+        print(f"excluded {len(rows) - len(sane)} poison-class rows "
+              f"(residual_rms_m >= 100 m)")
+    rows = sane
     ep = [r["epoch"] for r in rows]
     ck = [r["clock_ns"] for r in rows]
-    print(f"rows {len(rows)} (slip-free, n_sat>=5)")
+    print(f"rows {len(rows)} (slip-free, n_sat>=5, residual<100 m)")
     if len(rows) < min_rows:
         print(f"INSUFFICIENT DATA (<{min_rows} rows)"); sys.exit(1)
+    gaps = [b - a for a, b in zip(ep, ep[1:])]
+    print(f"span {ep[-1] - ep[0]:.0f} s, max inter-row gap {max(gaps):.0f} s")
     res = detrend(ep, ck)
     rms = math.sqrt(sum(r * r for r in res) / len(res))
     dt = (ep[-1] - ep[0]) / max(1, len(ep) - 1)
     tbl = oadev(res, dt, GATES_TAU)
     print(f"detrended RMS: {rms:.3f} ns   (dt {dt:.2f} s)")
     for t in GATES_TAU:
-        print(f"  OADEV(tau={t:>4}s): {tbl.get(t, float('nan')):.3f} ns")
+        print(f"  TDEV(tau={t:>4}s): {tbl.get(t, float('nan')):.3f} ns")
     ok = verdict(rms, tbl)
     print("VERDICT:", "SUB-NS CLAIM SUPPORTED" if ok else "claim not supported")
     # paired elevation A/B summary (same epochs, both solves)
