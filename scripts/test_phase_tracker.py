@@ -71,11 +71,13 @@ def wander_cycles(t, wander_a=WANDER_A):
 
 
 def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True,
-                 pilot=True, dark_after=None):
+                 pilot=True, dark_after=None, dark_until=None):
     """Yield (iq complex64 block, t_epoch, truth_mm at epoch center).
 
     pilot=False emits pure noise (no pilot anywhere); dark_after=T kills
-    the pilot from epoch T on (mid-run drop below the SNR floor)."""
+    the pilot from epoch T on (mid-run drop below the SNR floor);
+    dark_until=U makes that a dark WINDOW [T, U) after which the pilot
+    returns (re-acquisition recovery tests)."""
     rate, fs = pp.EPOCH_HZ, pp.FS
     blk = int(fs / rate)
     amp0 = 10.0
@@ -90,7 +92,8 @@ def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True,
                  + 2 * np.pi * motion_mm(t) / pp.LAMBDA_MM)
         t_c = (n0 + blk / 2) / fs
         amp = amp0 * (0.1 if fade and FADE_T[0] <= t_c < FADE_T[1] else 1.0)
-        if not pilot or (dark_after is not None and t_c >= dark_after):
+        if not pilot or (dark_after is not None and t_c >= dark_after
+                         and (dark_until is None or t_c < dark_until)):
             amp = 0.0
         sig = amp * np.exp(1j * phase)
         noise = (rng.standard_normal(blk) + 1j * rng.standard_normal(blk)) \
@@ -231,8 +234,9 @@ def _check(fails, name, ok, detail):
 
 def est_snr(blocks, lo=-502e3, hi=-498e3):
     """The producer's acquisition statistic (max-bin/median over the
-    window) on the first ~0.7 s of a block stream — same math as
-    phase_producer.estimate_freq, stream-IO-free."""
+    window, plus the pilot coherent amplitude) on the first ~0.7 s of a
+    block stream — same math as phase_producer.estimate_freq,
+    stream-IO-free. Returns (f_line, snr_db, pilot_amp)."""
     iq = np.concatenate([b for b, _, _ in blocks[:42]])   # >= 1<<22 samples
     return find_line(iq, pp.FS, lo, hi)
 
@@ -244,11 +248,11 @@ def scenario_noise_only():
     fails = []
     dur = 20.0
     blocks = list(synth_blocks(dur_s=dur, seed=7, fade=False, pilot=False))
-    f, snr = est_snr(blocks)
+    f, snr, amp = est_snr(blocks)
     _check(fails, "noise acquisition below floor", snr < pp.SNR_FLOOR_DB,
            f"max-bin SNR {snr:.1f} dB < floor {pp.SNR_FLOOR_DB:.0f} dB "
            f"(peak at {f:+.1f} Hz is a noise bin, not the pilot)")
-    tr = pp.Tracker(f, acq_snr_db=snr)
+    tr = pp.Tracker(f, acq_snr_db=snr, acq_amp=amp)
     eps = [tr.process(iq, t) for iq, t, _ in blocks]
     _check(fails, "noise-only never locks",
            not any(e["locked"] for e in eps),
@@ -267,11 +271,11 @@ def scenario_real_pilot():
     fails = []
     dur = 12.0
     blocks = list(synth_blocks(dur_s=dur, seed=11, fade=False))
-    f, snr = est_snr(blocks)
+    f, snr, amp = est_snr(blocks)
     _check(fails, "pilot acquisition above floor", snr >= pp.SNR_FLOOR_DB,
            f"max-bin SNR {snr:.1f} dB >= floor {pp.SNR_FLOOR_DB:.0f} dB "
            f"(real acquisitions measure 15-22 dB)")
-    tr = pp.Tracker(f, acq_snr_db=snr)
+    tr = pp.Tracker(f, acq_snr_db=snr, acq_amp=amp)
     eps = [tr.process(iq, t) for iq, t, _ in blocks]
     ts = np.array([e["t"] for e in eps])
     lock_idx = next((i for i, e in enumerate(eps) if e["locked"]), None)
@@ -300,8 +304,8 @@ def scenario_midrun_drop():
     drop_t, dur = 15.0, 30.0
     blocks = list(synth_blocks(dur_s=dur, seed=23, fade=False,
                                dark_after=drop_t))
-    f, snr = est_snr(blocks)                     # pre-drop: real pilot
-    tr = pp.Tracker(f, acq_snr_db=snr)
+    f, snr, amp = est_snr(blocks)                # pre-drop: real pilot
+    tr = pp.Tracker(f, acq_snr_db=snr, acq_amp=amp)
     eps = [tr.process(iq, t) for iq, t, _ in blocks]
     t_lock = next((e["t"] for e in eps if e["locked"]), None)
     _check(fails, "locks before the drop",
@@ -320,7 +324,7 @@ def scenario_midrun_drop():
                and all(e["disp_mm"] is None and e["ppm"] is None
                        and e["freq_off_hz"] is None for e in after),
                f"{len(after)} post-loss epochs: unlocked, all None values")
-    f_dark, snr_dark = est_snr(blocks[int((drop_t + 1.0) * pp.EPOCH_HZ):])
+    f_dark, snr_dark, _ = est_snr(blocks[int((drop_t + 1.0) * pp.EPOCH_HZ):])
     _check(fails, "dark pilot re-estimates sub-floor",
            snr_dark < pp.SNR_FLOOR_DB,
            f"re-acquire would refuse to seed (SNR {snr_dark:.1f} dB < "
@@ -329,10 +333,67 @@ def scenario_midrun_drop():
     return not fails
 
 
+def scenario_seeded_dark_recovery():
+    """(d) The 2026-08-28 live incident: the acquisition PASSES the floor
+    (real pilot), then the pilot dies before the tracker's warmup
+    completes. The seeded tracker must NEVER noise-lock (the lock is
+    anchored to the acquisition's pilot amplitude), must publish nothing,
+    and must reach dark_reacq inside the 60 s dark horizon; the dark
+    pilot then re-estimates sub-floor (re-acquire refuses), and when the
+    pilot returns a fresh seed locks and publishes."""
+    fails = []
+    dark0, dark1, dur = 3.0, 63.0, 80.0
+    blocks = list(synth_blocks(dur_s=dur, seed=13, fade=False,
+                               dark_after=dark0, dark_until=dark1))
+    f, snr, amp = est_snr(blocks)                # pilot present: passes
+    _check(fails, "clean acquisition seeds", snr >= pp.SNR_FLOOR_DB,
+           f"SNR {snr:.1f} dB >= floor, pilot amp {amp:.2f}")
+    tr = pp.Tracker(f, acq_snr_db=snr, acq_amp=amp)
+    t0 = blocks[180][1]                          # tracking starts at dark0
+    eps = [tr.process(iq, t) for iq, t, _ in blocks[180:3960]]
+    _check(fails, "dead pilot never noise-locks",
+           not any(e["locked"] for e in eps),
+           f"0 of {len(eps)} noise epochs locked (amp median stays "
+           f"noise-class vs anchor {pp.LOCK_AMP_FRAC:.2f}x{amp:.2f})")
+    _check(fails, "dead pilot publishes no values",
+           all(e["disp_mm"] is None and e["ppm"] is None
+               and e["freq_off_hz"] is None for e in eps),
+           "every epoch is the None dark-heartbeat shape")
+    t_reacq = next((e["t"] for e in eps if e["dark_reacq"]), None)
+    expect = t0 + (tr.warmup_blocks + tr.dark_reacq_blocks) / tr.rate
+    _check(fails, "dark re-acquire reached in horizon",
+           t_reacq is not None and abs(t_reacq - expect) < 1.0,
+           f"dark_reacq at t={t_reacq and round(t_reacq, 2)} s "
+           f"(expected ~{expect:.1f} s = warmup + 60 s dark)")
+    _, snr_dark, _ = est_snr(blocks[1800:1842])  # mid-dark window
+    _check(fails, "dark pilot re-estimates sub-floor",
+           snr_dark < pp.SNR_FLOOR_DB,
+           f"re-acquire refuses to seed (SNR {snr_dark:.1f} dB < floor)")
+    # pilot returns at dark1: fresh acquisition, lock, values
+    back = blocks[int((dark1 + 1.0) * pp.EPOCH_HZ):]
+    f2, snr2, amp2 = est_snr(back)
+    tr2 = pp.Tracker(f2, acq_snr_db=snr2, acq_amp=amp2)
+    eps2 = [tr2.process(iq, t) for iq, t, _ in back[:600]]
+    t_lock2 = next((e["t"] for e in eps2 if e["locked"]), None)
+    _check(fails, "returned pilot re-seeds and locks",
+           snr2 >= pp.SNR_FLOOR_DB and t_lock2 is not None
+           and t_lock2 - back[0][1] < 5.0,
+           f"SNR {snr2:.1f} dB, lock {t_lock2 and round(t_lock2, 2)} s")
+    locked2 = [e for e in eps2 if e["locked"]]
+    _check(fails, "recovered lock publishes values",
+           bool(locked2) and all(e["disp_mm"] is not None
+                                 and e["ppm"] is not None for e in locked2),
+           f"{len(locked2)} locked epochs with disp/ppm")
+    print("scenario SNR-floor (d) seeded-dark + recovery:",
+          "FAIL" if fails else "ALL PASS")
+    return not fails
+
+
 def run_snr_floor():
     print("SNR-floor scenarios (2026-08-28 audit: noise locks fabricated "
           "clock rows)")
-    ok = [scenario_noise_only(), scenario_real_pilot(), scenario_midrun_drop()]
+    ok = [scenario_noise_only(), scenario_real_pilot(), scenario_midrun_drop(),
+          scenario_seeded_dark_recovery()]
     print("SNR-FLOOR VALIDATION:", "ALL PASS" if all(ok) else "FAIL")
     return all(ok)
 
@@ -352,6 +413,10 @@ def test_midrun_drop_unseeds_publication():
     assert scenario_midrun_drop()
 
 
+def test_seeded_dark_reacq_and_recovery():
+    assert scenario_seeded_dark_recovery()
+
+
 # ---------------- recorded-capture mode ----------------
 
 def find_line(iq, fs, lo, hi):
@@ -367,7 +432,8 @@ def find_line(iq, fs, lo, hi):
     frac = 0.5 * (y0 - y2) / denom if denom > 0 else 0.0
     f = float(freqs[i] + frac * (freqs[1] - freqs[0]))
     snr = float(10 * np.log10(y1 / np.median(spec)))
-    return f, snr
+    amp = 2.0 * float(np.sqrt(y1)) / n   # tone lands as A*sum(hanning)=A*n/2
+    return f, snr, amp
 
 
 def run_capture(path, fs_in, line_hz):
@@ -379,7 +445,7 @@ def run_capture(path, fs_in, line_hz):
     dur = len(iq) / fs_in
     print(f"capture: {len(iq)} samples = {dur:.1f} s at {fs_in/1e6:.1f} Msps")
 
-    f_meas, snr = find_line(iq, fs_in, line_hz - 2e3, line_hz + 2e3)
+    f_meas, snr, _ = find_line(iq, fs_in, line_hz - 2e3, line_hz + 2e3)
     print(f"pilot line at {f_meas:+.2f} Hz baseband "
           f"({f_meas - line_hz:+.2f} Hz vs expected), SNR {snr:.0f} dB")
 
@@ -392,7 +458,7 @@ def run_capture(path, fs_in, line_hz):
     t = np.arange(len(iq), dtype=np.float64) / pp.FS
     iq = iq * np.exp(-1j * 2 * np.pi * (f_meas + 500e3)
                      * t).astype(np.complex64)
-    f_line, _ = find_line(iq, pp.FS, -502e3, -498e3)
+    f_line, _, _ = find_line(iq, pp.FS, -502e3, -498e3)
     print(f"shifted to {f_line:+.2f} Hz (nominal -500 kHz slot)")
 
     # short captures (5 s) can't afford the live 2 s + 2 s windows;

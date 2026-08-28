@@ -52,7 +52,11 @@ estimate AND every re-acquire must measure max-bin/median >= the floor or
 the producer refuses to seed — sub-floor means the pilot is dark and the
 FFT window max is a noise peak. Dark epochs keep the lock:false
 None-heartbeat; no phase/history/residual value is published unless the
-tracker is locked on an above-floor acquisition.
+tracker is locked on an above-floor acquisition. The LOCK itself is
+anchored to the acquisition's measured pilot amplitude (LOCK_AMP_FRAC):
+a seed whose pilot dies before lock builds a noise-class amplitude
+median, stays dark, and reaches the floor-gated re-acquire — it can
+never noise-lock with a clean acquisition (2026-08-28 live incident).
 
 Publishes ONLY its own keys to its OWN file,
 observations/state.phase.json (the Rust server deep-merges all
@@ -122,6 +126,20 @@ AMP_LOST = 0.20                   # sustained below 20% of median -> lock lost
 # random-walk phase as clock drift. Below the floor we do not seed, and
 # no value is published unless locked on an above-floor acquisition.
 SNR_FLOOR_DB = 14.0
+# Lock amplitude anchor (2026-08-28 live incident): the SNR floor gates
+# the SEED, but the pilot can die between the estimate and the lock — the
+# amplitude state machine then builds its median on noise and noise-locks
+# with acq_ok=True (the fabrication hole, post-seed variant; live
+# 19:11:48 "LOCK — amp median 0.1" on a 22 dB acquisition). The
+# block-average amp is a COHERENT measure: on noise it is only
+# ~sqrt(pi/4)/sqrt(100000) of the per-sample noise (~0.1 in live units),
+# on the pilot it is the pilot amplitude itself (live real-lock medians
+# 2.5-3.7 — a 25-37x separation). Requiring the lock-window median to be
+# pilot-class (>= 15% of the acquisition's measured amplitude, ~9 sigma
+# above the noise median even for the weakest above-floor seed) keeps
+# noise seeds dark forever and routes them through the 60 s dark ->
+# floor-gated re-acquire instead of locking.
+LOCK_AMP_FRAC = 0.15
 
 _proc = None                      # current hackrf_transfer child
 
@@ -236,7 +254,12 @@ def estimate_freq(fd, buf, blk_bytes):
             frac = 0.5 * (y0 - y2) / denom if denom > 0 else 0.0
             f_line = float(freqs[i] + frac * (freqs[1] - freqs[0]))
             snr_db = float(10 * np.log10(y1 / np.median(spec)))
-            result.update(f=f_line, snr=snr_db)   # single atomic publish
+            # pilot coherent amplitude in sample units: a complex tone A
+            # lands as A * sum(hanning) = A * n/2 in its FFT bin (<= 1.5 dB
+            # scalloping underestimate off-bin). Anchors the tracker's
+            # pilot-class lock gate (LOCK_AMP_FRAC).
+            pilot_amp = 2.0 * float(np.sqrt(y1)) / n
+            result.update(f=f_line, snr=snr_db, amp=pilot_amp)   # atomic
         except Exception as e:
             result["err"] = repr(e)
 
@@ -247,11 +270,11 @@ def estimate_freq(fd, buf, blk_bytes):
         del buf[:blk_bytes]
     if "err" in result:
         raise RuntimeError(f"estimate FFT failed: {result['err']}")
-    f_line, snr_db = result["f"], result["snr"]
+    f_line, snr_db, pilot_amp = result["f"], result["snr"], result["amp"]
     log(f"initial estimate: pilot line at {f_line:.2f} Hz baseband "
         f"(offset {f_line + 500e3:+.2f} Hz = {(f_line + 500e3) / F_PILOT * 1e6:+.4f} ppm), "
-        f"SNR {snr_db:.0f} dB")
-    return f_line, snr_db
+        f"SNR {snr_db:.0f} dB, amp {pilot_amp:.2f}")
+    return f_line, snr_db, pilot_amp
 
 
 class Tracker:
@@ -279,11 +302,17 @@ class Tracker:
     every epoch is the dark None-heartbeat shape. (The live loop also
     refuses to seed sub-floor; this gate keeps the same law inside the
     stream-IO-free path the offline harness drives.)
+
+    acq_amp is the acquisition's measured pilot amplitude. When given,
+    the amplitude median must stay pilot-class (>= LOCK_AMP_FRAC x
+    acq_amp) for any epoch to count as good — a seed whose pilot died
+    before lock can never noise-lock; it goes dark and reaches the
+    floor-gated re-acquire instead.
     """
 
     def __init__(self, f_line, fs=FS, rate_hz=EPOCH_HZ, dec=DEC,
                  warmup_s=2.0, lock_s=2.0, lost_s=5.0, dark_s=60.0,
-                 acq_snr_db=None):
+                 acq_snr_db=None, acq_amp=None):
         blk = fs / rate_hz
         if blk != int(blk):
             raise ValueError(f"rate {rate_hz} Hz at FS {fs}: block "
@@ -324,6 +353,7 @@ class Tracker:
         # None = acquisition SNR unknown (offline capture harness): the
         # amplitude path alone decides lock, the legacy behavior.
         self.acq_ok = acq_snr_db is None or acq_snr_db >= SNR_FLOOR_DB
+        self.acq_amp = acq_amp              # None -> no amplitude anchor
 
     def process(self, iq, t):
         """One block of complex64 samples (len == self.block) at epoch time
@@ -362,6 +392,13 @@ class Tracker:
             self.amp_med = float(np.median(amps))
 
         good = self.amp_med is None or amp > AMP_DROP * self.amp_med
+        if (self.acq_amp is not None and self.amp_med is not None
+                and self.amp_med < LOCK_AMP_FRAC * self.acq_amp):
+            # amplitude median is noise-class, not pilot-class (the seed's
+            # pilot died before lock): force dark — no lock, and
+            # dark_blocks accumulates so the 60 s re-acquire through the
+            # SNR-floor-gated estimate actually fires
+            good = False
         if self.amp_med is not None and amp < AMP_LOST * self.amp_med:
             self.collapsed += 1
         else:
@@ -495,7 +532,7 @@ def main():
             # estimate on its normal cadence (~3.3 s: 0.5 s AGC discard +
             # 2.8 s coherent capture; the FIFO keeps draining meanwhile).
             while True:
-                f_line, snr_db = estimate_freq(fd, buf, blk_bytes)
+                f_line, snr_db, acq_amp = estimate_freq(fd, buf, blk_bytes)
                 if snr_db >= SNR_FLOOR_DB:
                     break
                 log(f"pilot dark (SNR {snr_db:.1f} dB < floor "
@@ -512,7 +549,8 @@ def main():
                         merge_state(phase, last_row, last_ppm)
                     except Exception as e:
                         log(f"dark heartbeat publish failed: {e}")
-            tracker = Tracker(f_line, rate_hz=rate, acq_snr_db=snr_db)
+            tracker = Tracker(f_line, rate_hz=rate, acq_snr_db=snr_db,
+                              acq_amp=acq_amp)
             t0 = time.time()                # wall clock at estimate end
             n_done = 0                      # samples tracked since t0
             ring = deque(maxlen=60 * rate)  # 60 s of (t, disp_mm)
