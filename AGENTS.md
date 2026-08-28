@@ -35,10 +35,15 @@ this file invented a "Pro#2 P2 CLKOUT → One" link that does not exist):
 Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → Pro#2 `…6450…` P1 CLKIN, and
 Bodnar OUT1 (**reconfigured to 10 MHz**, was 1PPS) → One `…922c…` P1 CLKIN,
 equal-length cables. Both radios hang directly off the GPSDO; Pro#2's P2
-CLKOUT SMA is FREE, and the One sees no HackRF upstream. Live proof: the
-One's ATSC pilot offset reads ≈ −0.054 ppm, matching the GPSDO-referenced
-era, with the free-running (−3), Pro-TCXO (+0.53) and broken-chain (−1.7)
-eras all visible in the phase history. Clock switches happen ONLY at RX/TX
+CLKOUT SMA is FREE, and the One sees no HackRF upstream. Hardware proof:
+`hackrf_clock -d …922c… -i` reads "clock signal detected" at the One's
+CLKIN (checked 2026-08-28 with the One free) — NOT the ATSC row: the
+phase_history ppm "eras" (−3 / +0.53 / −1.7 ppm) are noise-lock artifacts
+(78.1% of history rows contaminated; 2026-08-28 scan after the SNR-floor
+work), and the One's ATSC watch at ch35 is OFFLINE since the 2026-08-27
+antenna change put a GPS patch (L1-only) on the One — the producer is
+stopped pending an absolute-amplitude-floor fix; treat every pre-fix ATSC
+ppm reading as unverified. Clock switches happen ONLY at RX/TX
 begin (per radio) — connecting or reconfiguring a link does nothing until
 that radio's next stream start. The soft drift-lock verifier
 (series_producer, state.series.json `clkin_soft_verified`) returns True
