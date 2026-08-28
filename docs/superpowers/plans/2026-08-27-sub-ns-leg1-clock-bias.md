@@ -548,3 +548,72 @@ cd /Volumes/"Radiator 8TB"/gnss/hackrf_gnss && \
   loose (±50%) to avoid over-fitting a unit test to estimator scatter.
 - `solve_unweighted` addition is the only change to existing crate code;
   `solve` keeps its weighted default — no behavior change for live_fix.
+
+---
+
+## v2 amendment (2026-08-28, post-audit — supersedes v1 where they conflict)
+
+The 2026-08-27/28 v1 collections produced 100% poison-class rows (25/25 rows
+residual_rms_m 6.1–25 km; the earlier undefended run 1041/1041 at 25–520 km).
+Root causes verified from live data 2026-08-28 morning:
+
+1. **Carrier sign**: `carrier_cycles` integrates the replica NCO with the
+   OPPOSITE sign convention to range — measured on all 4 live GPS channels
+   (drho vs λ·Δcarr opposite sign, magnitudes within ~20%). The v1 Hatch
+   propagated the smoothed pseudorange the wrong way. v2: pass the negated
+   carrier to `Hatch::update` (and to the innovation prediction).
+2. **rho_m is a ~6 s staircase**, not 1 Hz — the tracker refreshes rho at
+   ~1/6 Hz per channel with per-channel phase. v1's frozen-rho gate therefore
+   skips 5 of 6 epochs as designed, but the 3-freeze eviction fired on
+   HEALTHY channels and destroyed smoothers. v2 semantics: a frozen rho is
+   "no new code measurement" — SKIP the update (never evict on freeze
+   count), and on skipped epochs use the filter's carrier prediction
+   (right-signed) as the sat's range for the solve. The smoother becomes the
+   1 Hz interpolator the staircase needs: code anchors on fresh epochs,
+   carrier carries the epoch between. A sat contributes only while its last
+   code update is < 12 s old (two staircase periods).
+3. **The 1 ns gate is unreachable with a free-position solve** — per-epoch
+   position noise (m-class × TDOP 7–20 observed) leaks into the clock
+   unknown. v2 solves CLOCK-ONLY with the position FIXED at the surveyed
+   site anchor (site.json): one unknown, residuals = clock + noise, outlier
+   rejection via the studentized statistic (aeae8ec pattern generalized to
+   the 1-unknown design). This is the claim enabler; live_fix keeps its
+   free-position solve for the dashboard.
+4. **Analyzer was mislabeled and under-gated**: the v1 "TDEV" print computed
+   τ·ADEV/√3 (ordinary second-difference ADEV); proper TDEV uses MODIFIED
+   Allan deviation (NIST SP 1065). v2: textbook MDEV-based TDEV with the
+   correct white-PM τ behavior pinned by test; gap segmentation (spans with
+   inter-row gaps > 5× median dt are excluded from τ evaluation, reported);
+   `gen` session id on every row (producer start + config epoch) so
+   restarts/config changes can't silently mix; "continuous hour" = explicit
+   span ≥ 3600 s AND max-gap ≤ 5 s AND rows ≥ 3400, not row count alone;
+   keep the residual_rms_m < 100 m poison-class exclusion; linear-detrend LF
+   concealment documented (LF structure is the GEO cross-check's job, spec
+   component 4).
+
+### Task 5 (v2): producer `examples/clock_bias.rs` + `src/gps/pvt.rs` clock-only solve
+
+- pvt.rs gains `solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64;3],
+  weighted: bool) -> Option<ClockFix>` (clock_km, residual_rms_m raw, n_sat,
+  leverage figure) with studentized rejection mirroring aeae8ec; existing
+  functions untouched.
+- Producer: negated carrier everywhere; staircase-aware skip/predict (no
+  freeze eviction); freshness < 12 s per sat; n≥5 gate on contributing sats;
+  paired weighted/unweighted clock-only solves; rows:
+  `{epoch, clock_ns, clock_ns_uw, residual_rms_m, residual_rms_m_uw, n_sat,
+  n_fresh, n_pred, slips, gen, source}`.
+- Keep from v1: gates (cn0≥30, lock_s≥20, rho/t_tx present), ephemeris path,
+  raw solve (no median normalization), 500 ms rising-epoch poll, reset-on-
+  (slip || lock regression || innovation>500 m) with slips counting resets.
+
+### Task 6 (v2): analyzer `scripts/clock_bias_analyzer.py` + tests
+
+- MDEV-TDEV, gap segmentation, gen-aware grouping (analyze latest gen by
+  default, --all-gens to pool), continuity gates, poison-class exclusion,
+  exit 0/1 unchanged in spirit. Test: synthetic white-PM series recovers the
+  correct TDEV τ-slope AND σ; gapped series is segmented, not silently
+  averaged.
+
+### Task 7 (v2): window — full `cargo test --lib`, build clock_bias + live_fix
+examples, `manifest_check.py` all four Pro#2 slots (tracker down), release-
+ledger Pro#2 attestation, restart + re-arm for the evening GPS window.
