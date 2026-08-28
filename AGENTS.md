@@ -13,9 +13,9 @@ HackRFs. Read this before touching anything that talks to the radios.
   contention that overflows the tracker's stream queue (the 2026-08-24
   churn: 115 ms FIFO overflows → full channel realigns).
 - **HackRF One** `…922c63dc21748847` — owned by `scripts/phase_producer.py`
-  (ATSC ch35 carrier-phase track). CLKIN-slaved to the Pro's CLKOUT.
-  CLKOUT ownership follows radio ownership: `live_radio` asserts it at
-  startup; any flash/reset must re-assert it (`hackrf_clock -o 1`).
+  (ATSC ch35 carrier-phase track). CLKIN fed DIRECTLY by Bodnar OUT1
+  (10 MHz) in the star topology — not by any HackRF; no CLKOUT assertion
+  on the Pro is needed for the One's reference.
 - **HackRF Pro #1** `…977c64de2b557213` — **DEAD 2026-08-27** (no power on
   any cable/charger incl. dumb charger and A-to-C, no DFU boot-ROM
   enumeration — J1/Q4 input-path hardware fault, repair/RMA pending). Do
@@ -28,28 +28,36 @@ HackRFs. Read this before touching anything that talks to the radios.
   2000000 -n 2000 -r /tmp/p.iq`), verify `hackrf_clock -d <serial> -i`,
   and re-check the chain.
 
-## Clock chain (since 2026-08-26; GPSDO-referenced)
+## Clock topology (since 2026-08-27; GPSDO-referenced STAR)
 
-Bodnar LBE-1421 GPSDO OUT2 (10 MHz, GPS-locked) → Pro#2 `…6450…` P1 CLKIN
-→ Pro#2 P2 CLKOUT → One `…922c…` P1 CLKIN. (Until 2026-08-27 the chain
-entered via Pro#1 `…977c…`; that unit is dead and out of the cascade.)
-All TCXOs bypassed while the chain lives. Clock switches
-happen ONLY at RX/TX begin (per radio) — connecting or flashing a link
-does nothing until that radio's next stream start. CLKOUT must be asserted
-(`hackrf_clock -o 1`) on both Pros after any reset. The soft drift-lock
-verifier (series_producer, state.series.json `clkin_soft_verified`) is the
-chain's live proof; False means evidence AGAINST the chain — investigate
-before trusting cross-radio comparisons. NOTE: the Pro's local
-clock-correction register acts on PLL-A (sample clocks) ONLY — CLKOUT and
-the One ride PLL-B (si5351c.c Praline map): local correction never
-propagates down the chain, and in GPSDO-referenced operation the shadow
-loop's intent is ~0 by construction.
+**Star, not a cascade** (2026-08-28 audit correction — an earlier revision of
+this file invented a "Pro#2 P2 CLKOUT → One" link that does not exist):
+Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → Pro#2 `…6450…` P1 CLKIN, and
+Bodnar OUT1 (**reconfigured to 10 MHz**, was 1PPS) → One `…922c…` P1 CLKIN,
+equal-length cables. Both radios hang directly off the GPSDO; Pro#2's P2
+CLKOUT SMA is FREE, and the One sees no HackRF upstream. Live proof: the
+One's ATSC pilot offset reads ≈ −0.054 ppm, matching the GPSDO-referenced
+era, with the free-running (−3), Pro-TCXO (+0.53) and broken-chain (−1.7)
+eras all visible in the phase history. Clock switches happen ONLY at RX/TX
+begin (per radio) — connecting or reconfiguring a link does nothing until
+that radio's next stream start. The soft drift-lock verifier
+(series_producer, state.series.json `clkin_soft_verified`) returns True
+under BOTH the old cascade and the star (2026-08-28 audit) — it cannot
+detect a rewire; treat it as a liveness check only, never as topology
+proof. NOTE: the Pro's local clock-correction register acts on PLL-A
+(sample clocks) ONLY — CLKOUT rides PLL-B (si5351c.c Praline map): local
+correction never propagates off-radio, and in GPSDO-referenced operation
+the shadow loop's intent is ~0 by construction.
 
-**Trigger plane ≠ clock plane.** Both Pro SMA ports are consumed by the
-cascade, so a `hackrf_clock -1/-2 trigger_in` re-route SEVERS a clock
-link. The Bodnar 1PPS (OUT1) has no home on the current SMA map — the TDC
-bench needs a separate trigger path (header pin) and exactly one trigger
-master; do not reconfigure P1/P2 to trigger modes while the chain is up.
+**Port budget (2 outputs, 3 wanted signals).** The star consumes BOTH Bodnar
+outputs for 10 MHz, so 1PPS is currently emitted nowhere. Before any PPS/
+TDC window, pick ONE: (a) 10 MHz distribution amp/splitter on OUT2 feeding
+both radios, OUT1 restored to 1PPS; (b) the Pro's P22 alternate CLKIN path
+to free a front-panel port; (c) pause the One for the window — OUT1 back
+to 1PPS → Pro#2 P2 (the One then free-runs on its TCXO and its downstream
+attestation for that window is void). Pro#2 P2 is genuinely free today:
+`hackrf_clock -2 trigger_in` on the Pro severs no clock link — but exactly
+one trigger master per experiment, and never mid-collection.
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
   `live_radio` first and SIGSTOPping `band_producer`; restart after, from
   current binaries (they carry queued fixes).
