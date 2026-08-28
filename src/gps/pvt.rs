@@ -164,6 +164,91 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
     })
 }
 
+/// Clock-only solve result (sub-ns Leg 1 v2) — position held fixed at the
+/// surveyed site anchor, the receiver clock is the single unknown.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockFix {
+    pub clock_km: f64,
+    /// RAW (unweighted) RMS of the final residuals, metres.
+    pub residual_rms_m: f64,
+    pub n_sat: usize,
+    /// max hat-matrix diagonal of the final set (1-unknown weighted design,
+    /// h_i = w_i/Σw) — how close the set came to the untestable h→1 limit.
+    pub max_leverage: f64,
+}
+
+/// Clock-only solve with the position FIXED at `anchor_ecef_km` — the sub-ns
+/// Leg 1 claim enabler (v2 amendment 2026-08-28): the free-position solve
+/// leaks m-class × TDOP (7–20 observed live) noise into the clock unknown,
+/// which puts the 1 ns gate out of reach. With the anchor fixed there is one
+/// unknown: y_i = pseudorange_i − |anchor − sat_i| (same `Meas` contract as
+/// `solve_w` — the pseudorange already carries the SV-clock correction), and
+/// the clock is the weighted mean of y_i with w_i = el_w(anchor, sat_i), or
+/// the plain mean when `weighted` is false (the paired A/B).
+///
+/// Outlier rejection mirrors aeae8ec's studentized pattern specialized to the
+/// 1-unknown design: leverage h_i = w_i/Σw (unweighted: 1/n), suspicion
+/// |r_i|/√(1−h_i) against the flat [`REJECT_THRESH_M`], drop the argmax and
+/// recompute, at most n−4 drops — an epoch that cannot be cleaned without
+/// going below 4 sats returns None (never solved sub-floor). `clock_free`
+/// rows carry no receiver-clock information (their design coefficient is 0)
+/// and are excluded before counting. n < 4 → None.
+pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool) -> Option<ClockFix> {
+    // (y, w) per row. y is anchor-fixed, so it is constant across the
+    // rejection loop — only the surviving set changes on a drop.
+    let mut rows: Vec<(f64, f64)> = meas
+        .iter()
+        .filter(|m| !m.clock_free)
+        .map(|m| {
+            let g = norm3([
+                anchor_ecef_km[0] - m.sat[0],
+                anchor_ecef_km[1] - m.sat[1],
+                anchor_ecef_km[2] - m.sat[2],
+            ]);
+            let w = if weighted { el_w(anchor_ecef_km, m.sat) } else { 1.0 };
+            (m.pseudorange - g, w)
+        })
+        .collect();
+    if rows.len() < 4 {
+        return None;
+    }
+    let max_drops = rows.len() - 4;
+    let mut drops = 0;
+    loop {
+        let sw: f64 = rows.iter().map(|r| r.1).sum();
+        let clock = rows.iter().map(|r| r.0 * r.1).sum::<f64>() / sw;
+        let mut worst = 0.0f64;
+        let mut worst_pos = 0usize;
+        for (pos, &(y, w)) in rows.iter().enumerate() {
+            let r_m = (y - clock).abs() * 1000.0;
+            // h → 1: the row carries no redundancy (the mean interpolates
+            // it) — untestable, never blamed (aeae8ec's h→1 exemption).
+            let den = 1.0 - w / sw;
+            let susp = if den > 1e-9 { r_m / den.sqrt() } else { 0.0 };
+            if susp > worst {
+                worst = susp;
+                worst_pos = pos;
+            }
+        }
+        if worst <= REJECT_THRESH_M {
+            let n = rows.len();
+            let ss: f64 = rows.iter().map(|r| (r.0 - clock).powi(2)).sum();
+            let max_leverage = rows.iter().map(|r| r.1 / sw).fold(0.0f64, f64::max);
+            return Some(ClockFix {
+                clock_km: clock,
+                residual_rms_m: (ss / n as f64).sqrt() * 1000.0,
+                n_sat: n,
+                max_leverage,
+            });
+        }
+        if drops == max_drops {
+            return None; // floor: an epoch uncleanable with >=4 sats is refused
+        }
+        rows.remove(worst_pos);
+        drops += 1;
+    }
+}
+
 /// Unweighted normal-matrix inverse (H^T H)^-1 of the measurement set at
 /// point `p` — pure geometry. DOPs are read off its diagonal, and the
 /// rejection loop's leverage (hat-matrix) correction uses the full matrix.
@@ -920,5 +1005,79 @@ mod tests {
             dist_m < 2000.0,
             "alt-hold fix {dist_m:.0} m from the 4-sat fix (publish gate)"
         );
+    }
+
+    // ---- clock-only anchored solve (Leg 1 v2) ----
+
+    /// Exact recovery: anchor fixed at the station, consistent pseudoranges,
+    /// 6 sats — the single clock unknown must come back to f64 exactness
+    /// under any consistent weighting (the fixture's y_i are exact in f64:
+    /// g + 50.0 km stays on the representable grid at these magnitudes).
+    #[test]
+    fn clock_only_recovers_the_known_clock_exactly() {
+        let clock = 50.0;
+        let m = ranges(clock);
+        for &weighted in &[true, false] {
+            let f = solve_clock_only(&m, STATION, weighted).expect("converges");
+            assert!(
+                (f.clock_km - clock).abs() < 1e-9,
+                "clock err {:.3e} km (weighted={weighted})",
+                (f.clock_km - clock).abs()
+            );
+            assert!(f.residual_rms_m < 1e-9, "rms {} m", f.residual_rms_m);
+            assert_eq!(f.n_sat, 6);
+        }
+        // the spec'd input floor
+        assert!(solve_clock_only(&m[..3], STATION, true).is_none());
+    }
+
+    /// RAIM on the 1-unknown design: a 5 km bias on the lowest-elevation
+    /// sat (the aeae8ec low-elevation pattern) must be rejected and the
+    /// recovered clock must return to metre class.
+    #[test]
+    fn clock_only_rejects_a_5km_biased_sat() {
+        let mut m = ranges(50.0);
+        let low = (0..m.len())
+            .min_by(|&a, &b| {
+                elev_rad(STATION, m[a].sat)
+                    .partial_cmp(&elev_rad(STATION, m[b].sat))
+                    .unwrap()
+            })
+            .unwrap();
+        m[low].pseudorange += 5.0;
+        let f = solve_clock_only(&m, STATION, true).expect("converges");
+        assert_eq!(f.n_sat, 5, "the biased sat must be rejected");
+        assert!(
+            (f.clock_km - 50.0).abs() < 1e-3,
+            "clock err {:.3} m after rejection",
+            (f.clock_km - 50.0).abs() * 1000.0
+        );
+    }
+
+    /// Both weightings are unbiased: with zero-mean ±10 m pseudo-noise on
+    /// the pseudoranges, the mean clock error over 200 realizations must be
+    /// far below the noise (a weight-application bug shows as an m-class
+    /// mean bias at this noise level; no realization comes near the
+    /// rejection gate, so both solves keep all 6 sats throughout).
+    #[test]
+    fn clock_only_weighted_and_unweighted_are_unbiased_on_white_noise() {
+        let trials = 200u64;
+        let (mut err_w, mut err_u) = (0.0, 0.0);
+        for k in 0..trials {
+            let mut m = ranges(50.0);
+            for (j, mm) in m.iter_mut().enumerate() {
+                let noise = ((k.wrapping_mul(2654435761) ^ (j as u64).wrapping_mul(40503)) % 2000)
+                    as f64
+                    / 100.0
+                    - 10.0;
+                mm.pseudorange += noise / 1000.0;
+            }
+            err_w += solve_clock_only(&m, STATION, true).unwrap().clock_km - 50.0;
+            err_u += solve_clock_only(&m, STATION, false).unwrap().clock_km - 50.0;
+        }
+        let mw = err_w / trials as f64 * 1000.0;
+        let mu = err_u / trials as f64 * 1000.0;
+        assert!(mw.abs() < 1.0, "weighted mean clock err {mw:.3} m over {trials} trials");
+        assert!(mu.abs() < 1.0, "unweighted mean clock err {mu:.3} m over {trials} trials");
     }
 }
