@@ -466,7 +466,15 @@ fn normal_inv5(meas: &[MeasSys], p: [f64; 3]) -> Option<[[f64; 5]; 5]> {
 /// threshold removes only catastrophic outliers; fractional-tooth suspects
 /// stay (they are real signal, just biased). The gated quantity is the
 /// studentized (leverage-corrected) residual of the unweighted policing
-/// solve, in metres — see [`solve_with_rejection`].
+/// solve, in metres — see [`solve_with_rejection`]. Consequence: the
+/// effective RAW-residual gate is 1000·√(1−h) per row — with mean leverage
+/// 4/n that is ~450 m at 5 sats rising to ~710 m at 8 (worse on the
+/// max-leverage row), so a benign few-hundred-metre residual on a
+/// high-leverage channel can be dropped where a raw gate would keep it.
+/// That direction is safe (noise studentizes to tens of metres and never
+/// false-drops; the argmax proof drops only the most-biased row), but the
+/// "few hundred metres stay" sentence above is leverage-qualified
+/// accordingly (2026-08-28 review).
 pub const REJECT_THRESH_M: f64 = 1000.0;
 
 /// RAIM-style outlier rejection around `solve`: drop the worst measurement
