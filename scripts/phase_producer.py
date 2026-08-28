@@ -47,6 +47,13 @@ If the transfer dies (USB hiccup), the stream is reopened and the phase
 re-locked: unwrap reference reset, lock=false until 2 s of stable
 amplitude.
 
+Acquisition SNR floor (SNR_FLOOR_DB, 2026-08-28 audit): the initial
+estimate AND every re-acquire must measure max-bin/median >= the floor or
+the producer refuses to seed — sub-floor means the pilot is dark and the
+FFT window max is a noise peak. Dark epochs keep the lock:false
+None-heartbeat; no phase/history/residual value is published unless the
+tracker is locked on an above-floor acquisition.
+
 Publishes ONLY its own keys to its OWN file,
 observations/state.phase.json (the Rust server deep-merges all
 observations/state.*.json with the legacy sync_state.json at /api/sync
@@ -103,6 +110,18 @@ MY_BAND = "ATSC ch35"
 EST_SAMPLES = 1 << 24             # 2.8 s coherent FFT @ 6 Msps for initial freq
 AMP_DROP = 0.35                   # epoch low-flag: amp < 35% of running median
 AMP_LOST = 0.20                   # sustained below 20% of median -> lock lost
+# Acquisition SNR floor (2026-08-28 audit). estimate_freq's statistic is
+# max-bin/median over the 4 kHz pilot window (~1.3e3 effectively
+# independent Rayleigh power bins): with the pilot DARK the window max is
+# a pure noise peak — expected max/median ~ln(N)/ln2 ~ 10 dB, observed
+# 9-11 dB, p99 ~11.5 dB. Real pilot acquisitions measure 15-22 dB in the
+# same statistic (07:16 today: 22 dB, consistent with the C/N0 ~ 54 dB-Hz
+# above). 14 dB splits the two with >2 dB margin on both sides. Seeding
+# below it is what manufactured the fabricated "-1 ppm One fell off the
+# clock chain" finding: the tracker locked on a noise bin and published
+# random-walk phase as clock drift. Below the floor we do not seed, and
+# no value is published unless locked on an above-floor acquisition.
+SNR_FLOOR_DB = 14.0
 
 _proc = None                      # current hackrf_transfer child
 
@@ -254,10 +273,17 @@ class Tracker:
          nominal -500 kHz frame (20 Hz at 60 Hz/6 Msps, 0 at 20 Hz/8 Msps).
       2. decimate by DEC (segment means), fine-rotate at the residual
          f_res (~-305 Hz, steered) with a float64 phase accumulator.
+
+    acq_snr_db is the acquisition estimate's SNR. Below SNR_FLOOR_DB the
+    "line" is a noise peak (pilot dark): the tracker then never locks and
+    every epoch is the dark None-heartbeat shape. (The live loop also
+    refuses to seed sub-floor; this gate keeps the same law inside the
+    stream-IO-free path the offline harness drives.)
     """
 
     def __init__(self, f_line, fs=FS, rate_hz=EPOCH_HZ, dec=DEC,
-                 warmup_s=2.0, lock_s=2.0, lost_s=5.0, dark_s=60.0):
+                 warmup_s=2.0, lock_s=2.0, lost_s=5.0, dark_s=60.0,
+                 acq_snr_db=None):
         blk = fs / rate_hz
         if blk != int(blk):
             raise ValueError(f"rate {rate_hz} Hz at FS {fs}: block "
@@ -294,11 +320,22 @@ class Tracker:
         self.phase10 = deque()              # (t, cycles) for slope, 10 s
         self.disp10 = deque()               # (t, disp_mm) for sigma, 10 s
         self.last_steer = 0.0
+        self.acq_snr_db = acq_snr_db
+        # None = acquisition SNR unknown (offline capture harness): the
+        # amplitude path alone decides lock, the legacy behavior.
+        self.acq_ok = acq_snr_db is None or acq_snr_db >= SNR_FLOOR_DB
 
     def process(self, iq, t):
         """One block of complex64 samples (len == self.block) at epoch time
         t (block center, seconds). Returns a per-epoch dict; disp_mm is
         None on dark/pre-lock epochs (caller heartbeats those)."""
+        if not self.acq_ok:
+            # seeded on a sub-floor acquisition (pilot dark): never lock,
+            # never emit a value — permanent dark/pre-lock epoch
+            return {"t": t, "amp": 0.0, "good": False, "locked": False,
+                    "event": None, "dark_reacq": False,
+                    "disp_mm": None, "sigma_mm": None,
+                    "freq_off_hz": None, "ppm": None}
         mixed = iq * self.lut                       # pilot -> ~f_res
         seg = mixed.reshape(self.nseg, self.dec).mean(axis=1)
         ang = (self.phi0f + self.fine_step * self.seg_ar) % (2 * np.pi)
@@ -449,14 +486,37 @@ def main():
         try:
             proc, fd = open_stream()
             buf = bytearray()
-            f_line, snr_db = estimate_freq(fd, buf, blk_bytes)
-            tracker = Tracker(f_line, rate_hz=rate)
+            last_row = None                 # last published drift row (heartbeat)
+            last_ppm = 0.0
+            # Acquisition floor — this estimate runs at startup AND on
+            # every re-acquire (stream died / pilot dark 60 s), so one
+            # gate covers both. Sub-floor = pilot dark, the window max is
+            # a noise peak: never seed tracking, heartbeat dark, retry the
+            # estimate on its normal cadence (~3.3 s: 0.5 s AGC discard +
+            # 2.8 s coherent capture; the FIFO keeps draining meanwhile).
+            while True:
+                f_line, snr_db = estimate_freq(fd, buf, blk_bytes)
+                if snr_db >= SNR_FLOOR_DB:
+                    break
+                log(f"pilot dark (SNR {snr_db:.1f} dB < floor "
+                    f"{SNR_FLOOR_DB:.0f} dB) — not seeding")
+                if last_row is not None:
+                    phase = {
+                        "epoch": round(time.time(), 2), "rate_hz": rate,
+                        "lambda_mm": round(LAMBDA_MM, 1),
+                        "disp_mm": None, "sigma_mm": None,
+                        "freq_off_hz": None, "lock": False,
+                        "series": [],
+                    }
+                    try:
+                        merge_state(phase, last_row, last_ppm)
+                    except Exception as e:
+                        log(f"dark heartbeat publish failed: {e}")
+            tracker = Tracker(f_line, rate_hz=rate, acq_snr_db=snr_db)
             t0 = time.time()                # wall clock at estimate end
             n_done = 0                      # samples tracked since t0
             ring = deque(maxlen=60 * rate)  # 60 s of (t, disp_mm)
             last_pub = 0.0
-            last_row = None                 # last published drift row (heartbeat)
-            last_ppm = 0.0
 
             while True:
                 if proc.poll() is not None:
@@ -476,7 +536,13 @@ def main():
                 elif ep["event"] == "lock":
                     log(f"LOCK — amp median {tracker.amp_med:.1f}, phase ref reset")
 
-                if ep["disp_mm"] is None:
+                # Publication law (2026-08-28 audit): values — the state
+                # phase/series block, the ATSC sources row, residual_ppm,
+                # and history rows — flow ONLY when locked on an
+                # above-floor acquisition. Dark/unlocked/sub-floor epochs
+                # take the None heartbeat below; nothing fabricated.
+                if ep["disp_mm"] is None or not (ep["locked"]
+                                                 and tracker.acq_ok):
                     # heartbeat while dark: a monitor that goes silent
                     # exactly when the signal is lost displays its last
                     # "LOCKED" epoch forever. Publish lock:false with a

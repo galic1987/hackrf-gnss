@@ -15,7 +15,11 @@ then asserts:
   3. recovered displacement tracks the injected motion with ~1 mm-class
      per-epoch sigma (robust 2nd-difference statistic),
   4. the frequency steer converges to the injected residual offset,
-  5. lock survives the fade and the track resumes afterwards.
+  5. lock survives the fade and the track resumes afterwards,
+  6. SNR floor (2026-08-28 audit): noise-only input never locks or
+     publishes, a real-level pilot locks and publishes, and a pilot
+     dropping below the floor mid-run unseeds publication within the
+     lost-blocks horizon.
 
 Capture mode: --capture PATH --fs-in HZ --line-hz HZ runs the tracker on
 a recorded int8 I/Q file (any sample rate; resampled to 6 Msps, line
@@ -66,8 +70,12 @@ def wander_cycles(t, wander_a=WANDER_A):
     return wander_a * WANDER_T / (2 * np.pi) * (1 - np.cos(2 * np.pi * t / WANDER_T))
 
 
-def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True):
-    """Yield (iq complex64 block, t_epoch, truth_mm at epoch center)."""
+def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True,
+                 pilot=True, dark_after=None):
+    """Yield (iq complex64 block, t_epoch, truth_mm at epoch center).
+
+    pilot=False emits pure noise (no pilot anywhere); dark_after=T kills
+    the pilot from epoch T on (mid-run drop below the SNR floor)."""
     rate, fs = pp.EPOCH_HZ, pp.FS
     blk = int(fs / rate)
     amp0 = 10.0
@@ -82,6 +90,8 @@ def synth_blocks(dur_s=DUR_S, seed=35, wander_a=WANDER_A, fade=True):
                  + 2 * np.pi * motion_mm(t) / pp.LAMBDA_MM)
         t_c = (n0 + blk / 2) / fs
         amp = amp0 * (0.1 if fade and FADE_T[0] <= t_c < FADE_T[1] else 1.0)
+        if not pilot or (dark_after is not None and t_c >= dark_after):
+            amp = 0.0
         sig = amp * np.exp(1j * phase)
         noise = (rng.standard_normal(blk) + 1j * rng.standard_normal(blk)) \
             * np.sqrt(var / 2)
@@ -203,6 +213,145 @@ def run_synthetic():
     return not fails
 
 
+# ---------------- SNR-floor scenarios (2026-08-28 audit fix) ----------------
+# The audit found the producer fabricated clock rows with the pilot dark:
+# the initial-estimate FFT's max bin in its 4 kHz window is then a NOISE
+# PEAK (~9-11 dB over median), there was no SNR floor, and the tracker
+# locked on noise (the "-1 ppm One fell off the chain" finding was
+# manufactured this way). The fix: acquisitions below pp.SNR_FLOOR_DB
+# never seed tracking, and values publish only when locked on an
+# above-floor acquisition. These scenarios drive the SAME Tracker the
+# live loop runs.
+
+def _check(fails, name, ok, detail):
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
+    if not ok:
+        fails.append(name)
+
+
+def est_snr(blocks, lo=-502e3, hi=-498e3):
+    """The producer's acquisition statistic (max-bin/median over the
+    window) on the first ~0.7 s of a block stream — same math as
+    phase_producer.estimate_freq, stream-IO-free."""
+    iq = np.concatenate([b for b, _, _ in blocks[:42]])   # >= 1<<22 samples
+    return find_line(iq, pp.FS, lo, hi)
+
+
+def scenario_noise_only():
+    """(a) No pilot anywhere: the acquisition statistic must read
+    sub-floor, and a tracker gated on it must never lock or emit a
+    value-carrying epoch."""
+    fails = []
+    dur = 20.0
+    blocks = list(synth_blocks(dur_s=dur, seed=7, fade=False, pilot=False))
+    f, snr = est_snr(blocks)
+    _check(fails, "noise acquisition below floor", snr < pp.SNR_FLOOR_DB,
+           f"max-bin SNR {snr:.1f} dB < floor {pp.SNR_FLOOR_DB:.0f} dB "
+           f"(peak at {f:+.1f} Hz is a noise bin, not the pilot)")
+    tr = pp.Tracker(f, acq_snr_db=snr)
+    eps = [tr.process(iq, t) for iq, t, _ in blocks]
+    _check(fails, "noise-only never locks",
+           not any(e["locked"] for e in eps),
+           f"0 of {len(eps)} epochs locked")
+    _check(fails, "noise-only publishes no values",
+           all(e["disp_mm"] is None and e["freq_off_hz"] is None
+               and e["ppm"] is None and e["sigma_mm"] is None for e in eps),
+           "every epoch is the None dark-heartbeat shape")
+    print("scenario SNR-floor (a) noise-only:", "FAIL" if fails else "ALL PASS")
+    return not fails
+
+
+def scenario_real_pilot():
+    """(b) A pilot at the real level: acquisition clears the floor, the
+    tracker locks, and locked epochs carry values."""
+    fails = []
+    dur = 12.0
+    blocks = list(synth_blocks(dur_s=dur, seed=11, fade=False))
+    f, snr = est_snr(blocks)
+    _check(fails, "pilot acquisition above floor", snr >= pp.SNR_FLOOR_DB,
+           f"max-bin SNR {snr:.1f} dB >= floor {pp.SNR_FLOOR_DB:.0f} dB "
+           f"(real acquisitions measure 15-22 dB)")
+    tr = pp.Tracker(f, acq_snr_db=snr)
+    eps = [tr.process(iq, t) for iq, t, _ in blocks]
+    ts = np.array([e["t"] for e in eps])
+    lock_idx = next((i for i, e in enumerate(eps) if e["locked"]), None)
+    t_lock = ts[lock_idx] if lock_idx is not None else None
+    _check(fails, "real-level pilot locks", t_lock is not None and t_lock < 5.0,
+           f"t_lock = {t_lock and round(t_lock, 2)} s")
+    locked = [e for e in eps if e["locked"]]
+    _check(fails, "locked epochs publish values",
+           bool(locked) and all(e["disp_mm"] is not None
+                                and e["freq_off_hz"] is not None
+                                and e["ppm"] is not None for e in locked)
+           and any(e["sigma_mm"] is not None for e in locked),
+           f"{len(locked)} locked epochs, all with disp/freq/ppm, "
+           f"sigma live after the 100-epoch warmup")
+    print("scenario SNR-floor (b) real-level pilot:",
+              "FAIL" if fails else "ALL PASS")
+    return not fails
+
+
+def scenario_midrun_drop():
+    """(c) Pilot drops below the floor mid-run: the existing amplitude
+    path must drop the lock inside the lost-blocks horizon (5 s) and
+    values must stop; the dead pilot re-estimates sub-floor, so a
+    re-acquire would refuse to re-seed."""
+    fails = []
+    drop_t, dur = 15.0, 30.0
+    blocks = list(synth_blocks(dur_s=dur, seed=23, fade=False,
+                               dark_after=drop_t))
+    f, snr = est_snr(blocks)                     # pre-drop: real pilot
+    tr = pp.Tracker(f, acq_snr_db=snr)
+    eps = [tr.process(iq, t) for iq, t, _ in blocks]
+    t_lock = next((e["t"] for e in eps if e["locked"]), None)
+    _check(fails, "locks before the drop",
+           t_lock is not None and t_lock < 5.0,
+           f"t_lock = {t_lock and round(t_lock, 2)} s")
+    t_lost = next((e["t"] for e in eps if e["event"] == "lost"), None)
+    horizon = tr.lost_blocks / tr.rate
+    _check(fails, "lock lost within the lost-blocks horizon",
+           t_lost is not None and drop_t < t_lost <= drop_t + horizon + 0.5,
+           f"drop at {drop_t:.0f} s, lost at "
+           f"{t_lost and round(t_lost, 2)} s (horizon {horizon:.0f} s)")
+    if t_lost is not None:
+        after = [e for e in eps if e["t"] >= t_lost]
+        _check(fails, "publication unseeds after the drop",
+               after and not any(e["locked"] for e in after)
+               and all(e["disp_mm"] is None and e["ppm"] is None
+                       and e["freq_off_hz"] is None for e in after),
+               f"{len(after)} post-loss epochs: unlocked, all None values")
+    f_dark, snr_dark = est_snr(blocks[int((drop_t + 1.0) * pp.EPOCH_HZ):])
+    _check(fails, "dark pilot re-estimates sub-floor",
+           snr_dark < pp.SNR_FLOOR_DB,
+           f"re-acquire would refuse to seed (SNR {snr_dark:.1f} dB < "
+           f"floor {pp.SNR_FLOOR_DB:.0f} dB, peak at {f_dark:+.1f} Hz)")
+    print("scenario SNR-floor (c) mid-run drop:", "FAIL" if fails else "ALL PASS")
+    return not fails
+
+
+def run_snr_floor():
+    print("SNR-floor scenarios (2026-08-28 audit: noise locks fabricated "
+          "clock rows)")
+    ok = [scenario_noise_only(), scenario_real_pilot(), scenario_midrun_drop()]
+    print("SNR-FLOOR VALIDATION:", "ALL PASS" if all(ok) else "FAIL")
+    return all(ok)
+
+
+# pytest entry points (the synthetic/capture suites stay script-driven;
+# the SNR-floor scenarios are the regression net for the 2026-08-28 fix)
+
+def test_noise_only_never_seeds():
+    assert scenario_noise_only()
+
+
+def test_real_pilot_locks_and_publishes():
+    assert scenario_real_pilot()
+
+
+def test_midrun_drop_unseeds_publication():
+    assert scenario_midrun_drop()
+
+
 # ---------------- recorded-capture mode ----------------
 
 def find_line(iq, fs, lo, hi):
@@ -285,8 +434,11 @@ def main():
     ap.add_argument("--line-hz", type=float, default=809.44e3,
                     help="expected pilot line freq in capture baseband")
     args = ap.parse_args()
-    ok = (run_capture(args.capture, args.fs_in, args.line_hz)
-          if args.capture else run_synthetic())
+    if args.capture:
+        ok = run_capture(args.capture, args.fs_in, args.line_hz)
+    else:
+        ok = run_synthetic()
+        ok = run_snr_floor() and ok
     sys.exit(0 if ok else 1)
 
 
