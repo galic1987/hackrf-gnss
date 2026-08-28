@@ -40,10 +40,18 @@ CLKOUT SMA is FREE, and the One sees no HackRF upstream. Hardware proof:
 CLKIN (checked 2026-08-28 with the One free) — NOT the ATSC row: the
 phase_history ppm "eras" (−3 / +0.53 / −1.7 ppm) are noise-lock artifacts
 (78.1% of history rows contaminated; 2026-08-28 scan after the SNR-floor
-work), and the One's ATSC watch at ch35 is OFFLINE since the 2026-08-27
-antenna change put a GPS patch (L1-only) on the One — the producer is
-stopped pending an absolute-amplitude-floor fix; treat every pre-fix ATSC
-ppm reading as unverified. Clock switches happen ONLY at RX/TX
+work), and the One's ATSC watch at ch35 has been dark since the
+2026-08-27 re-cable — measured 2026-08-28 evening (producer's exact
+tune/gains): the pilot arrives STARVED ~35–38 dB (z-amp 0.053, C/N0
+20.2 dB-Hz vs the healthy 54–58 dB-Hz), frequency-stable at the exact
+pilot frequency, nothing pilot-class within ±1.5 MHz; L1 captures show
+no active-patch LNA hump either, so the One's whole RF path is degraded
+and the physical cause is UNCONFIRMED (passive patch / disconnected
+feed / dead amp — needs a physical look, not a software one). The fixed
+producer (f760504, absolute 0.75 z acquisition floor) runs and reports
+honest "pilot dark — not seeding" retries; every ATSC row since
+~2026-08-27 18:25 is starved-line era and quarantined; treat every
+pre-fix ATSC ppm reading as unverified. Clock switches happen ONLY at RX/TX
 begin (per radio) — connecting or reconfiguring a link does nothing until
 that radio's next stream start. The soft drift-lock verifier
 (series_producer, state.series.json `clkin_soft_verified`) returns True
