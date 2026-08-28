@@ -59,8 +59,14 @@ attestation for that window is void). Pro#2 P2 is genuinely free today:
 `hackrf_clock -2 trigger_in` on the Pro severs no clock link — but exactly
 one trigger master per experiment, and never mid-collection.
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
-  `live_radio` first and SIGSTOPping `band_producer`; restart after, from
-  current binaries (they carry queued fixes).
+  `live_radio` first. The Pro-free window that opens is `band_producer`'s
+  ONLY snapshot opportunity (`pro_owned()` fails closed while the tracker
+  is up), so never SIGSTOP it through the window — that is why band rows
+  never refreshed. Order: stop the tracker → SIGCONT `band_producer` and
+  give it the window's duration (its rows refresh nowhere else) → SIGSTOP
+  `band_producer` → board reset → restart the tracker → SIGCONT
+  `band_producer`. Restart from current binaries (they carry queued
+  fixes).
 - **Tracker restarts are only reliable after a board reset** (2026-08-24,
   three trials): SIGTERM or SIGKILL of `live_radio` can leave the Pro's
   USB streaming state wedged — the next `live_radio` then seeds deaf

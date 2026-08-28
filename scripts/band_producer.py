@@ -176,7 +176,9 @@ def measure_waas():
         out = run_acq([SBAS, "/tmp/band_waas.f32", "8000000", "4000"], timeout=240)
     except Exception:
         return None, health
-    if out is None:
+    if not out:
+        # acq binary failed (None) or printed nothing: the no-hits value,
+        # never touch .splitlines() on it (the 2026-08-27 outage traceback)
         return None, health
     hits = []
     for line in out.splitlines():
@@ -274,14 +276,17 @@ def measure_glo_g2():
     if not snap(G2_HZ, 5.0, G2_SNAP):
         return None
     out = run_acq([GLO2, G2_SNAP, "8000000", "1246000000", "5"])
-    if not out:
+    if out is None:
         return None
     hits = re.findall(r"chan\s+([+-]?\d+)\s+\(([\d.]+) MHz\):\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== SATELLITE", out)
     sats = []
     for k, mhz, m, d in hits:
         tag = f"k={int(k):+d} ({float(mhz):.1f} MHz)"
         sats.append(tag if float(m) > 3.5 else "~" + tag)
-    return sats or None
+    # [] = snapshot succeeded, zero acquisitions (band up but deaf) — NOT
+    # the None failure above; the slot publishes the former, silences the
+    # latter. Callers must test `is not None`, [] is falsy.
+    return sats
 
 
 def measure_gps():
@@ -312,7 +317,10 @@ def measure_glonass():
     except Exception:
         return None
     hits = re.findall(r"chan\s+([+-]?\d+)\s+\(([\d.]+) MHz\):\s+metric\s+([\d.]+)\s+dopp\s+([+-]?\d+)\s+<== SATELLITE", out)
-    return [(int(k), float(mhz), float(m), float(d)) for k, mhz, m, d in hits] or None
+    # [] = snapshot succeeded, zero acquisitions (band up but deaf) — NOT
+    # the None failures above; the slot publishes the former, silences the
+    # latter. Callers must test `is not None`, [] is falsy.
+    return [(int(k), float(mhz), float(m), float(d)) for k, mhz, m, d in hits]
 
 
 def measure_beidou():
@@ -421,11 +429,17 @@ def main():
                 hist["gal_sats"] = len(gal)
         elif slot == "glo_g1":
             glo = measure_glonass()
-            if glo:
-                rows.append({"band": "GLONASS G1", "name": "FDMA channel search · 1602 MHz snapshot",
-                             "kind": "Presence", "value": None, "sigma": None, "epoch": epoch,
-                             "sats": [f"k={k:+d} ({m:.1f} MHz)" for k, mhz, m, d in glo],
-                             "anchor": "Pro snapshot @ 1602"})
+            # is not None: a zero-hit snapshot ([]) succeeded — publish the
+            # deaf band instead of vanishing it (the "why no GLONASS" bug);
+            # None = snapshot failed, keep the row silent.
+            if glo is not None:
+                row = {"band": "GLONASS G1", "name": "FDMA channel search · 1602 MHz snapshot",
+                       "kind": "Presence", "value": None, "sigma": None, "epoch": epoch,
+                       "sats": [f"k={k:+d} ({m:.1f} MHz)" for k, mhz, m, d in glo],
+                       "anchor": "Pro snapshot @ 1602"}
+                if not glo:
+                    row["note"] = "no acquisitions this snapshot"
+                rows.append(row)
                 hist["glo_chans"] = len(glo)
         elif slot == "beidou_b1i":
             bds = measure_beidou()
@@ -469,10 +483,15 @@ def main():
                 hist["e5b_sats"] = len(sats)
         elif slot == "glo_g2":
             sats = measure_glo_g2()
-            if sats:
-                rows.append({"band": "GLONASS G2", "name": "L2OF FDMA channel search · 1246 MHz snapshot",
-                             "kind": "Presence", "value": None, "sigma": None, "epoch": epoch,
-                             "sats": sats, "anchor": "Pro snapshot @ 1246"})
+            # is not None: same visibility-of-absence rule as glo_g1 —
+            # [] publishes a deaf band, None stays silent.
+            if sats is not None:
+                row = {"band": "GLONASS G2", "name": "L2OF FDMA channel search · 1246 MHz snapshot",
+                       "kind": "Presence", "value": None, "sigma": None, "epoch": epoch,
+                       "sats": sats, "anchor": "Pro snapshot @ 1246"}
+                if not sats:
+                    row["note"] = "no acquisitions this snapshot"
+                rows.append(row)
                 hist["g2_chans"] = len(sats)
         elif slot == "l2c":
             sats = measure_upper(L2_HZ, 6.0, L2C_SNAP,
