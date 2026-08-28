@@ -45,11 +45,20 @@ Components:
    is live): per-ms prompt correlator phase atan2(Q,I) with exact sample epoch,
    per-channel slip/generation counters, hard phase invalidation on every input
    gap (bundles the already-committed 664514a gap-slip work into one deployed
-   generation).
-2. **Clock-bias solver** (`examples/live_fix.rs`): Hatch carrier-smoothing of
-   pseudoranges (~100 s window, reset on slip/generation change) feeding the
-   existing PVT solve. Publishes `observations/clock_bias.jsonl`:
-   `{epoch, b_ns, sigma_ns, n_sats, gdop, slips, generation}`.
+   generation). **STATUS: still pending — and the 2026-08-27 first-run poisoning
+   proved it load-bearing**: the published `slip` flag never fired across live
+   relocks (lock_s 5188→0→relock cycles), and a struggling channel republished
+   frozen `rho_m` verbatim for 30–90 s. Until this lands, downstream consumers
+   must defend themselves (see component 2's defenses).
+2. **Clock-bias solver** (`examples/clock_bias.rs`, built 2026-08-27/28): Hatch
+   carrier-smoothing of GPS pseudoranges (100 s window) feeding the existing PVT
+   solve (weighted + `solve_unweighted` paired A/B per epoch), n≥5 redundancy
+   gate. Defenses after the first-run poisoning: smoother reset on lock_s
+   regression OR >500 m innovation (the `slip` flag alone is insufficient),
+   frozen-rho skip with 3-freeze eviction, 10 s per-sat freshness gate; every
+   reset epoch counts as `slips` and is excluded from the claim. Publishes
+   `observations/clock_bias.jsonl`: `{epoch, clock_ns, clock_ns_uw, tdop,
+   n_sat, gdop, residual_rms_m, residual_rms_m_uw, n_smoothed, slips, source}`.
 3. **Analyzer** (`scripts/clock_bias_analyzer.py`): detrend b(t) (Bodnar's slow
    GPS-steering is common-mode), then RMS + ADEV(τ=1–1000 s). Physics: over these
    τ the Bodnar OCXO is ~1e-11, so residual structure in b(t) = our measurement
@@ -92,6 +101,32 @@ multipath cancel exactly.
   (1 toggle/PPS, no dup/miss, thermometer-ish; all-ones = phase outside 48-tap
   coverage → cable-delay sweep), then 3,600-pulse jitter run (1 h).
 - Do NOT use `--tdc-read` for PPS (forces ring-osc selftest 0x30=0x03).
+
+## Phase 3 — triangle interferometry (vision, NOT scheduled)
+
+User's goal: three antennas arranged around the space (~180° triangle closure),
+absolute-time measurements on Pro and One simultaneously, testing clock
+coherence and closing the array geometry — a spatial analog of the validation
+triangle in Leg 1b.
+
+- **Prereqs (hard):** Leg 1b differential completed (group-delay calibration is
+  the term that otherwise blocks cross-radio absolute phase); Pro#1 back from
+  repair (third coherent RF path) OR sequential antenna moves on Pro#2 with
+  bodnar-referenced re-sync between positions; Bodnar out1 available as PPS
+  again (Leg 2 window conflict — one at a time).
+- **Geometry note:** the 2026-08-26 linear array analysis (3 × 3 cm S–N,
+  max baseline 6 cm < λ/2 ≈ 9.5 cm ⇒ zero integer ambiguity) does NOT carry
+  over to a triangle of useful aperture: baselines > λ/2 reintroduce cycle
+  ambiguity, so Phase 3 needs either LAMBDA-class integer resolution or
+  ambiguity-free initialization from a known <λ/2 start configuration that
+  is then expanded. Decide at planning time, not during the experiment.
+- **Observables:** per-baseline single-difference carrier phase per common PRN
+  (both radios Bodnar-referenced ⇒ clock cancels by construction), triangle
+  closure residual ΣΔΦ around the loop (must close to noise), and absolute
+  clock-bias b(t) per radio from the Leg 1 pipeline.
+- **Claim gates (draft):** closure residual consistent with the Leg 1 noise
+  floor; inter-radio b(t) agreement within the Leg 1b group-delay bound;
+  antenna-position solve recovers surveyed baselines to < 5 mm.
 
 ## Operational rules (hard)
 
