@@ -2,7 +2,8 @@
 //!
 //! Reads state.tracker.json once per second (the tracker owns the radio; we
 //! never touch it), Hatch-smooths each GPS satellite's pseudorange against its
-//! published carrier (reset on slip), solves PVT weighted AND unweighted
+//! published carrier (reset on slip, lock_s regression, or >500 m innovation;
+//! frozen/stale sats skipped), solves PVT weighted AND unweighted
 //! (paired elevation-weighting A/B), and appends one row to
 //! observations/clock_bias.jsonl. Rows:
 //! {epoch, clock_ns, clock_ns_uw, tdop, n_sat, gdop, residual_rms_m,
@@ -23,6 +24,23 @@ const LAM_L1: f64 = 299_792_458.0 / 1_575_420_000.0;
 const WINDOW_S: f64 = 100.0;
 /// BRDC refresh cadence (position_producer refetches the file hourly).
 const EPH_REFRESH_S: f64 = 900.0;
+
+/// Per-PRN state from the last epoch the sat was actually processed — the
+/// discontinuity defenses (frozen rho, lock regression, Hatch innovation).
+/// First run showed the per-sat slip flag never fires across relocks and
+/// struggling channels republish a frozen rho verbatim.
+struct PrevSat {
+    lock_s: f64,
+    rho_m: f64,
+    carr: f64,
+    smoothed: f64,
+    /// file epoch at which this PRN was last processed (innovation gate runs
+    /// only when the sat was seen last epoch — a returning sat's stale state
+    /// must not inject a false innovation)
+    file_epoch: f64,
+    /// consecutive epochs with bit-identical rho; 3 evicts the smoother
+    freezes: u32,
+}
 
 fn unix_now() -> f64 {
     std::time::SystemTime::now()
@@ -119,6 +137,7 @@ fn main() {
     // live_fix's site_m, built from the canonical anchor here
     let site_m = site_guess().map(|x| x * 1000.0);
     let mut smoothers: HashMap<u8, Hatch> = HashMap::new();
+    let mut prev: HashMap<u8, PrevSat> = HashMap::new();
     let mut last_epoch = 0.0_f64;
     loop {
         thread::sleep(Duration::from_millis(500));
@@ -126,6 +145,7 @@ fn main() {
         let st: Value = match serde_json::from_str(&txt) { Ok(v) => v, Err(_) => continue };
         let epoch = st["epoch"].as_f64().unwrap_or(0.0);
         if epoch <= last_epoch { continue; }
+        let prev_file_epoch = last_epoch; // last processed file epoch (0.0 before the first)
         last_epoch = epoch;
         let sats = match st["tracker"]["sats"].as_array() { Some(s) => s, None => continue };
 
@@ -140,16 +160,50 @@ fn main() {
         for s in sats {
             if s["sys"].as_str() != Some("gps") { continue; }
             if s["cn0_proxy"].as_f64().unwrap_or(0.0) < 30.0 { continue; }
-            if s["lock_s"].as_f64().unwrap_or(0.0) < 20.0 { continue; }
+            let lock_s = s["lock_s"].as_f64().unwrap_or(0.0);
+            if lock_s < 20.0 { continue; }
             let (rho, t_tx) = match (s["rho_m"].as_f64(), s["t_tx"].as_f64()) {
                 (Some(a), Some(b)) => (a, b), _ => continue };
             let prn = s["prn"].as_u64().unwrap_or(0) as u8;
-            let slip = s["slip"].as_bool().unwrap_or(false);
-            if slip { slips += 1; }
             let carr = s["carrier_cycles"].as_f64().unwrap_or(0.0);
+            // Gate 1 — per-sat freshness: a struggling channel republishes
+            // state under a stale per-sat epoch; never feed it downstream.
+            if s["epoch"].as_f64().is_some_and(|se| epoch - se > 10.0) { continue; }
+            // Gate 2 — frozen rho: the tracker republishes a dead channel's
+            // rho verbatim (observed exact 0.0 m diffs over 30–90 s —
+            // unphysical for a moving SV). Skip without touching the
+            // smoother; after 3 consecutive freezes evict the smoother so
+            // the channel restarts clean when it recovers.
+            if let Some(p) = prev.get_mut(&prn) {
+                if rho.to_bits() == p.rho_m.to_bits() {
+                    p.freezes += 1;
+                    if p.freezes >= 3 {
+                        smoothers.remove(&prn);
+                        p.freezes = 0;
+                    }
+                    continue;
+                }
+            }
+            // Reset flag: tracker slip OR lock_s regression (a relock — the
+            // per-sat slip flag does not fire across relocks, while
+            // carrier_cycles restarts its integration origin) OR a >500 m
+            // Hatch innovation (code noise is ~10–30 m, so 500 m is >10σ and
+            // only fires on a real discontinuity). A reset epoch counts as a
+            // slip so the analyzer keeps it out of the claim.
+            let slip = s["slip"].as_bool().unwrap_or(false);
+            let lock_regressed = prev.get(&prn).is_some_and(|p| lock_s < p.lock_s);
+            let innov_breach = prev.get(&prn).is_some_and(|p| {
+                p.file_epoch == prev_file_epoch
+                    && (rho - (p.smoothed + LAM_L1 * (carr - p.carr))).abs() > 500.0
+            });
+            let reset = slip || lock_regressed || innov_breach;
+            if reset { slips += 1; }
             let h = smoothers.entry(prn).or_insert_with(|| Hatch::new(WINDOW_S));
-            let rho_s = h.update(rho, carr, LAM_L1, slip);
+            let rho_s = h.update(rho, carr, LAM_L1, reset);
             n_smoothed += 1;
+            prev.insert(prn, PrevSat {
+                lock_s, rho_m: rho, carr, smoothed: rho_s, file_epoch: epoch, freezes: 0,
+            });
             // sat position + SV clock correction: live_fix.rs:574-585 and
             // :678-682 (sat_at_txtime_pub, dt_sv + daf0 term)
             meas.push(build_meas(prn, rho_s, t_tx, &ephs, site_m)); // Option<Meas>, filtered below
