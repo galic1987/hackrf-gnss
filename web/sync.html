@@ -374,7 +374,7 @@
             <td class="warn">SHADOW — never written while actuate is off (the 122/122 write-collapse retro retired live writes; P0c is closed as negative evidence, not "open"). Any future write is a capture-boundary operation pending the continuity experiment</td></tr>
         <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;9.4 m</td>
             <td class="ok">live &mdash; awaiting PPS source (ZED-F9T)</td></tr>
-        <tr><td>Carry-chain TDC (48-tap, rev3b)</td><td class="num">&asymp;0.5 ns provisional self-test estimate</td><td class="num">~15 cm</td>
+        <tr><td>Carry-chain TDC (48-tap)</td><td class="num">&asymp;0.5 ns provisional self-test estimate</td><td class="num">~15 cm</td>
             <td class="warn">PROVISIONAL &mdash; on-die RO stimulus with ~3.6 edges in flight breaks the single-edge popcount model; external trigger input not yet wired in gateware (Task-6 hook). External single-edge calibration with atomic coarse+fine capture = P2a</td></tr>
         <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps (projection)</td><td class="num">~1&ndash;1.5 cm</td>
             <td class="dim">unvalidated projection &mdash; needs ZED-F9T PPS on the trigger pin AND the P2a external calibration first</td></tr>
@@ -1683,7 +1683,7 @@ function render(st) {
       " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
       "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
-      "the TDC adds sub-tick phase — the 2026-08-27 bench run (48-tap rev3c) reported median 0.72 ns/bin (best 149 ps, worst 3.2 ns), 5k samples, but that was the on-die ring-oscillator self-test, not an external edge: a wave-occupancy statistic aliased at the RO period with a nominal, never-measured absolute scale — explicitly NOT a calibration (2026-08-28 retraction); external swept-edge validation still pending (trigger-latch gap; production slot contents unattested). " +
+      "the TDC adds sub-tick phase — the 2026-08-27 bench run (48-tap rev3c) reported median 0.72 ns/bin (best 149 ps, worst 3.2 ns), 5k samples, but that was the on-die ring-oscillator self-test, not an external edge: a wave-occupancy statistic aliased at the RO period with a nominal, never-measured absolute scale — explicitly NOT a calibration (2026-08-28 retraction); external swept-edge validation still pending (trigger-latch gap; production slots run attested release 0x469 on all four, 2026-08-28 — but the TDC slot's external-edge path is unmeasured). " +
       "The whole chain is GPSDO-rooted since 2026-08-26 and in star topology since 2026-08-27: Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → Pro#2 CLKIN, OUT1 (10 MHz) → the One directly (Pro#1 is dead and out of the station); the drift-lock is measured live by the soft verification above (a liveness check, not topology proof).";
   }
   if (st.atsc_spread_ppm !== undefined) {

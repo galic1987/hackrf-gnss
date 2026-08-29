@@ -339,6 +339,17 @@ def main():
                     "m_per_s": round(pc_ppm * 1e-6 * 299792458.0, 2)}
                 add("PC clock", now, pc_ppm)
         # ONLY this producer's keys — the server merges the rest
+        # Round-14 retention: prune DEAD bands too — add() only prunes on
+        # append, so a band whose producer went dark kept its last points
+        # forever (>5 h old ATSC points sat in the 1-h series, non-voting
+        # but stale-visible). Sweep every label at publish time.
+        cutoff = time.time() - WINDOW
+        for label in list(series):
+            pts = series[label]
+            while pts and pts[0][0] < cutoff:
+                pts.pop(0)
+            if not pts:
+                del series[label]
         out = {
             "epoch": now,
             "ttl_s": 120,
