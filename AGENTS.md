@@ -46,7 +46,12 @@ CLKOUT SMA is FREE, and the One sees no HackRF upstream. Hardware proof:
 CLKIN (checked 2026-08-28 with the One free) — NOT the ATSC row: the
 phase_history ppm "eras" (−3 / +0.53 / −1.7 ppm) are noise-lock artifacts
 (78.1% of history rows contaminated; 2026-08-28 scan after the SNR-floor
-work), and the One's ATSC watch at ch35 has been dark since the
+work — a 2026-08-29 re-scan with other classifiers could not reproduce the
+78.1%, see phase_history.QUARANTINE-README.txt; the quarantine stands on
+the verified unaudited pre-tombstone lock basis). The history file itself
+is QUARANTINED since 2026-08-29 10:35 EDT (renamed
+phase_history.jsonl.quarantine-noiselock-20260829; the writer creates a
+fresh file of post-floor rows only), and the One's ATSC watch at ch35 has been dark since the
 2026-08-27 re-cable — measured 2026-08-28 evening (producer's exact
 tune/gains): the pilot arrives STARVED ~35–38 dB (z-amp 0.053, C/N0
 20.2 dB-Hz vs the healthy 54–58 dB-Hz), frequency-stable at the exact
