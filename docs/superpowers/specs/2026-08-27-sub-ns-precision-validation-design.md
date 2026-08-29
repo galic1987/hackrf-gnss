@@ -101,12 +101,19 @@ multipath cancel exactly.
 ## Leg 2 — TDC PPS validation (optional, user-triggered window)
 
 - Prereq: out1 back to PPS (One pauses or moves to Pro#2 CLKOUT for the window).
-- Flash Pro#2 with the 0x36 debug build (pin-swap fix + TRIGGER.IN diagnostic
-  register; already built, blob sha 332225ae…, factory 2026.01.3 image staged for
-  rollback, DFU recovery rehearsed 2026-08-27).
-- First read 0x36 bit0: 1 Hz toggling = PPS reaches FPGA pin 47; static =
-  bench/board split (loopback test). Then 0x30=0, poll 0x31, connectivity gates
-  (1 toggle/PPS, no dup/miss, thermometer-ish; all-ones = phase outside 48-tap
+- **SUPERSEDED 2026-08-28 — DO NOT FLASH the 0x36 debug build (blob sha
+  332225ae…).** Its pin swap is backwards: official gateware maps FPGA clock to
+  pin 47 and TRIGGER.IN to pin 48; this build swaps them, so the 0x36 register
+  labels both signals backwards and the TDC would see the 40 MHz clock as its
+  trigger. The blob and every firmware image embedding it (including the former
+  /private/tmp/hackrf-fw tree, moved 2026-08-28) are quarantined in
+  mac-archive/hackrf/quarantine-0xE91-20260828/. Any replacement diagnostic
+  image MUST retain the official mapping (clock 47, trigger 48) and be built
+  from a clean, attested tree.
+- Corrected procedure once a valid diagnostic image exists: first read 0x36
+  bit0: 1 Hz toggling = PPS reaches the FPGA trigger pin; static = bench/board
+  split (loopback test). Then 0x30=0, poll 0x31, connectivity gates (1
+  toggle/PPS, no dup/miss, thermometer-ish; all-ones = phase outside 48-tap
   coverage → cable-delay sweep), then 3,600-pulse jitter run (1 h).
 - Do NOT use `--tdc-read` for PPS (forces ring-osc selftest 0x30=0x03).
 

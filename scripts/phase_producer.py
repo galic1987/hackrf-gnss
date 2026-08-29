@@ -560,18 +560,27 @@ def main():
                 log(f"pilot dark (SNR {snr_db:.1f} dB, amp {acq_amp:.3f} z "
                     f"— floors {SNR_FLOOR_DB:.0f} dB / {ACQ_AMP_FLOOR} z) "
                     f"— not seeding")
-                if last_row is not None:
-                    phase = {
-                        "epoch": round(time.time(), 2), "rate_hz": rate,
-                        "lambda_mm": round(LAMBDA_MM, 1),
-                        "disp_mm": None, "sigma_mm": None,
-                        "freq_off_hz": None, "lock": False,
-                        "series": [],
-                    }
-                    try:
+                phase = {
+                    "epoch": round(time.time(), 2), "rate_hz": rate,
+                    "lambda_mm": round(LAMBDA_MM, 1),
+                    "disp_mm": None, "sigma_mm": None,
+                    "freq_off_hz": None, "lock": False,
+                    "series": [],
+                }
+                try:
+                    if last_row is not None:
                         merge_state(phase, last_row, last_ppm)
-                    except Exception as e:
-                        log(f"dark heartbeat publish failed: {e}")
+                    else:
+                        # Cold-start tombstone: publish unconditionally so a
+                        # stale file (e.g. a pre-quarantine lock:true row
+                        # advertising the discarded cascade) is overwritten
+                        # at once — bare lock:false, no source/clock values.
+                        tmp = STATE + ".phase.tmp"
+                        json.dump({"phase": phase, "epoch": phase["epoch"]},
+                                  open(tmp, "w"), indent=1)
+                        os.replace(tmp, STATE)
+                except Exception as e:
+                    log(f"dark heartbeat publish failed: {e}")
             tracker = Tracker(f_line, rate_hz=rate, acq_snr_db=snr_db,
                               acq_amp=acq_amp)
             t0 = time.time()                # wall clock at estimate end
