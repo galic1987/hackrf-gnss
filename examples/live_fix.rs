@@ -42,14 +42,22 @@ const ALT_SITE_BAND_KM: f64 = 3.0;
 /// hop was inside ALT_ANCHOR_BAND_KM, the anchor recentred, the walk
 /// continued) and nothing bounded horizontal distance at all. HOR_SITE_BAND
 /// is vs the CANONICAL site anchor (site.json never recentres — no ratchet);
-/// JUMP_MAX_MPS is the temporal gate: a bolted-down antenna cannot move, so
-/// consecutive trusted fixes faster than this are multipath failure, not
-/// motion (honest wander at the 60 s+ cadence is < 1 m/s; the observed hops
-/// were 1.4-5.8 m/s). Stationary is the default profile (this station is a
+/// it is the hard anti-walk wall. JUMP_MAX_MPS is defense-in-depth against
+/// teleport-class events, and round-18 RE-DERIVED it from this station's own
+/// data: the honest consecutive-trusted-fix 3D jump distribution is
+/// p50 1.67 / p90 4.85 / p99 8.61 m/s (676 trusted fixes, 2026-08-29) — the
+/// original 1.0 m/s rejected ~69% of REAL fixes, then silently disabled
+/// itself once the trusted predecessor aged past 900 s. 10.0 m/s sits at the
+/// measured p99.9 class: honest multipath wander passes, a 100 m/min-class
+/// teleport does not. GDOP_MAX bounds geometry itself: healthy trusted fixes
+/// here are p99 GDOP 17, max 37; a four-figure GDOP (observed live: 1851.9
+/// PASSING) is a degenerate constellation, not a fix.
+/// Stationary is the default profile (this station is a
 /// fixed mast); HACKRF_GNSS_MOBILE=1 opts out for car-grade use and restores
 /// the pre-round-14 behavior (both gates simply not computed).
 const HOR_SITE_BAND_M: f64 = 500.0;
-const JUMP_MAX_MPS: f64 = 1.0;
+const JUMP_MAX_MPS: f64 = 10.0;
+const GDOP_MAX: f64 = 50.0;
 
 /// Horizontal distance (equirectangular — exact enough at the <= km scale).
 fn hor_dist_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -78,7 +86,7 @@ fn alt_sane(alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> bool {
 const RMS_PLAUSIBILITY_M: f64 = 50.0; // beyond this the solve measures outliers
 const ISX_SANE_KM: f64 = 50.0; // GPS-BDS clock offset is ~10 km class
 
-fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64, site_alt_km: f64, hor_site_m: Option<f64>, jump_mps: Option<f64>) -> (bool, bool, bool) {
+fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64, site_alt_km: f64, hor_site_m: Option<f64>, jump_mps: Option<f64>, gdop: Option<f64>) -> (bool, bool, bool) {
     let geometry_redundant = n_sat >= redundant_at;
     let plausibility_pass = rms_m.is_finite()
         && rms_m < RMS_PLAUSIBILITY_M
@@ -87,8 +95,12 @@ fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f6
         // round-14 (stationary profile; None = not enforced): horizontal
         // walk bound vs the canonical site — no ratchet, site never moves
         && hor_site_m.map_or(true, |h| h.is_finite() && h <= HOR_SITE_BAND_M)
-        // round-14: temporal jump gate — the anchor-ratchet killer
-        && jump_mps.map_or(true, |v| v.is_finite() && v <= JUMP_MAX_MPS);
+        // round-14/18: temporal jump gate, re-derived from the station's
+        // own honest jump distribution (p99.9 class) — defense-in-depth,
+        // the site band is the wall
+        && jump_mps.map_or(true, |v| v.is_finite() && v <= JUMP_MAX_MPS)
+        // round-18: degenerate-geometry ceiling (a 1851.9 GDOP passed live)
+        && gdop.map_or(true, |x| x.is_finite() && x <= GDOP_MAX);
     (geometry_redundant, plausibility_pass, geometry_redundant && plausibility_pass)
 }
 
@@ -403,6 +415,7 @@ fn main() {
     // constant would bias every light-time anchor after a move. Falls back
     // to the canonical site.json anchor only on cold start.
     let mut dyn_epoch = 0.0_f64; // epoch of the previous trusted fix (round-14 jump gate)
+    let mut prev_trusted_stale = false; // trusted predecessor exists but aged out (round-18: was silent)
     let dyn_lla: [f64; 3] = std::fs::read_to_string(OUT)
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -427,6 +440,9 @@ fn main() {
                     pos["alt_km"].as_f64()? * 1000.0,
                 ])
             } else {
+                if trusted && !fresh {
+                    prev_trusted_stale = true;
+                }
                 None
             }
         })
@@ -450,6 +466,18 @@ fn main() {
             None
         };
         (Some(hor), jump)
+    };
+    // Round-18: the jump gate's availability is PUBLISHED, not silent — the
+    // old code quietly stopped enforcing once the trusted predecessor aged
+    // past 900 s, and nobody could tell from the outside.
+    let jump_gate_status: &str = if !stationary {
+        "mobile profile (not computed)"
+    } else if dyn_epoch > 0.0 {
+        "active"
+    } else if prev_trusted_stale {
+        "DISABLED: trusted predecessor stale >900 s"
+    } else {
+        "disabled: no trusted predecessor (cold start)"
     };
     // Absolute site backstop for the altitude ratchet (see alt_sane): the
     // anchor band above recentres on every published fix; the site band
@@ -864,7 +892,7 @@ fn main() {
             // code-phase tooth slip being absorbed exactly this way).
             let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (_, integ0, _) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps, Some(f.gdop));
             let integ = integ0 && f.n_bds >= 2;
             if !integ {
                 bds_quarantined = Some(format!(
@@ -884,7 +912,7 @@ fn main() {
             };
             let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps, Some(f.gdop));
             println!(
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -898,6 +926,7 @@ fn main() {
                 "clock_km": f.clock_gps_km, "isx_km": f.isx_km,
                 "residual_rms_m": f.residual_rms_m,
                 "gdop": f.gdop, "n_sat": f.n_sat, "mode": "3D(mixed GPS+BDS)",
+                "jump_gate": jump_gate_status,
                 "gate": gate,
                 "geometry_redundant": geo_red, "plausibility_pass": integ,
                 "trusted_for_history": trusted,
@@ -989,15 +1018,25 @@ fn main() {
                             fi.lat, fi.lon, fi.alt_km * 1000.0, fi.residual_rms_m, fi.gdop, gate,
                             loo_note.as_deref().unwrap_or("")
                         );
-                        // a LOO-excluded subset solve is diagnostic, never
-                        // trusted for history (round 6)
-                        let integ = fi.residual_rms_m < RMS_PLAUSIBILITY_M
-                            && alt_sane(fi.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
+                        // round-18: the LOO branch used to compute its own
+                        // inline plausibility (rms + alt only) and bypassed
+                        // BOTH round-14 gates — it published candidates
+                        // 976.68 km from the anchor. One law for every path:
+                        // the same trust_fields as every other branch
+                        // (horizontal site band, jump gate, GDOP ceiling).
+                        // A LOO-excluded subset solve is still diagnostic,
+                        // never trusted for history (round 6).
+                        let (hor_m, jump_mps) = trust_dyn(fi.lat, fi.lon, fi.alt_km * 1000.0);
+                        let (_, integ, _) = trust_fields(
+                            fi.n_sat, 6, fi.residual_rms_m, None, fi.alt_km,
+                            dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps,
+                            Some(fi.gdop));
                         let fix_json = serde_json::json!({
                             "lat": fi.lat, "lon": fi.lon, "alt_km": fi.alt_km,
                             "clock_km": fi.clock_km, "residual_rms_m": fi.residual_rms_m,
                             "gdop": fi.gdop, "n_sat": fi.n_sat,
                             "mode": "2D(alt-hold)",
+                            "jump_gate": jump_gate_status,
                             "gate": gate,
                             "geometry_redundant": false,
                             "plausibility_pass": integ,
@@ -1085,7 +1124,7 @@ fn main() {
             };
             let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps, Some(f.gdop));
             println!(
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -1101,6 +1140,7 @@ fn main() {
                 "lat": f.lat, "lon": f.lon, "alt_km": f.alt_km,
                 "clock_km": f.clock_km, "residual_rms_m": f.residual_rms_m,
                 "gdop": f.gdop, "n_sat": f.n_sat, "mode": mode,
+                "jump_gate": jump_gate_status,
                 "gate": gate,
                 "geometry_redundant": geo_red, "plausibility_pass": integ,
                 "trusted_for_history": trusted,
@@ -1151,12 +1191,13 @@ fn main() {
             };
             let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps, Some(f.gdop));
             let used: Vec<(u8, u8)> = obs.iter().map(|o| (0u8, o.prn)).collect();
             let fix_json = serde_json::json!({
                 "lat": f.lat,
                 "lon": f.lon,
                 "alt_km": f.alt_km,
+                "jump_gate": jump_gate_status,
                 "clock_km": f.clock_km,
                 "residual_rms_m": f.residual_rms_m,
                 "gdop": f.gdop,
@@ -1197,36 +1238,43 @@ mod tests {
     #[test]
     fn trust_fields_separates_geometry_from_validity() {
         // clean redundant solve: trusted
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, None, None), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, None, None, None), (true, true, true));
         // redundant geometry but 105 m rms (observed live): not valid
-        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02, 0.02, 0.02, None, None), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02, 0.02, 0.02, None, None, None), (true, false, false));
         // absurd intersystem bias (10,369 km observed): not valid
-        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02, 0.02, 0.02, None, None), (true, false, false));
+        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02, 0.02, 0.02, None, None, None), (true, false, false));
         // exact solve: never trusted, even when clean
-        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02, 0.02, 0.02, None, None), (false, true, false));
+        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02, 0.02, 0.02, None, None, None), (false, true, false));
         // impossible altitude: not valid
-        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02, 0.02, None, None), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02, 0.02, None, None, None), (true, false, false));
         // round-10b: a 1.5 km vertical blunder against a 20 m anchor must
         // fail plausibility even with clean rms — the gate is anchor-bound
-        assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02, 0.02, None, None), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02, 0.02, None, None, None), (true, false, false));
         // and an in-band altitude (car on a hill, +300 m) passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02, 0.02, None, None), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02, 0.02, None, None, None), (true, true, true));
         // round-11: the anchor band alone is a ratchet — a solve 400 m above
         // an anchor that has already walked ~2.8 km from the site passes the
         // anchor band but must fail the absolute site backstop
-        assert_eq!(trust_fields(6, 5, 3.0, None, 3.2, 2.8, 0.02, None, None), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 3.2, 2.8, 0.02, None, None, None), (true, false, false));
         // ...while a walk that stays within 3 km of the site still passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 2.9, 2.6, 0.02, None, None), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 2.9, 2.6, 0.02, None, None, None), (true, true, true));
         // round-14: horizontal walk beyond 500 m from the canonical site
         // fails (the altitude bands ratchet; the site does not)...
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(600.0), None), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(600.0), None, None), (true, false, false));
         // ...while honest wander stays trusted
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(120.0), None), (true, true, true));
-        // round-14: the temporal jump gate — the observed 255-350 m/1-3 min
-        // hops (1.4-5.8 m/s) must fail even when every static band passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(3.0)), (true, false, false));
-        // ...and honest sub-1 m/s drift between consecutive fixes passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(0.5)), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(120.0), None, None), (true, true, true));
+        // round-18 jump gate, re-derived from the measured honest
+        // distribution (p50 1.67 / p99 8.61 m/s): the old 1.0 m/s rejected
+        // ~69% of REAL consecutive trusted fixes. Honest wander passes...
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(3.0), None), (true, true, true));
+        // ...and a teleport-class event (36 m/s = the measured honest max)
+        // still fails
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(36.0), None), (true, false, false));
+        // round-18 GDOP ceiling: a 1851.9 GDOP PASSED live 08:17 — a
+        // degenerate constellation is not a fix...
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(3.0), Some(1851.9)), (true, false, false));
+        // ...while healthy geometry (honest trusted p99 = 17) passes
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(3.0), Some(17.0)), (true, true, true));
     }
 
     /// Multi-GEO merge (review round 4): the freshest row wins; material

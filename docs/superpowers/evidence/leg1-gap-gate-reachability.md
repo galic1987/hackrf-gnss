@@ -38,6 +38,22 @@ station has two independent, separately-quantified blockers:
 2. **Continuity** (gap gate): arithmetically unreachable at the observed 2 %
    epoch-miss rate — a property of the gate × cadence, not of the clock.
 
+## 2026-08-29 addendum (round 18): blocker 1 was the GATE, not the observable
+
+Re-derived from all 20.8k v2 rows after the round-18 review: the best raw
+hour carried 3,214 quality rows (53.6/min — near-complete), and the flat
+100 m poison threshold cut it to 585 (18.2%) because healthy hours have a
+residual median of 137 m — the threshold sat below the p25 of good data.
+"Density shortfall" was a miscalibrated gate measuring itself. The poison
+threshold is now 500 m, set from the data's own distribution (quality
+residuals p50 148 / p95 300 / p99 410 m; 0.02% > 500 m; none > 1000 m);
+with it, longest clean segment 52 s → 443 s and poison-excluded rows
+~9,000 → 4. The underlying cause of the 137 m-class residuals is the
+measurement model (no iono/tropo/SBAS corrections; Hatch window vs
+code-carrier mismatch) — NOT the sky. Blocker 2 (continuity at the ~2 %
+epoch-miss rate, longest zero-miss run ~760 s = 21 % of the gate) stands
+exactly as measured and is now THE binding constraint.
+
 ## Paths (decision deferred — user away, no unilateral gate loosening)
 
 - Fix the miss rate: identify why ~2 % of 1 Hz clock_bias epochs never publish

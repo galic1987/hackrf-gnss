@@ -31,7 +31,21 @@ v2 (2026-08-28 amendment) fixes v1 defects:
 import json, math, sys
 
 GATES_TAU = [10, 100, 1000]
-POISON_RMS_M = 100.0     # residual_rms_m >= this is a poison-class row
+POISON_RMS_M = 500.0     # residual_rms_m >= this is a poison-class row.
+                         # Round-18, re-derived from the data's own
+                         # distribution (20.8k v2 rows, 2026-08-29): quality
+                         # rows (n_sat>=5, slips==0) have residual p50 148 /
+                         # p95 300 / p99 410 m; only 0.02% exceed 500 m and
+                         # NONE exceed 1000 m. The original flat 100 m sat
+                         # BELOW THE 25TH PERCENTILE of healthy data (107 m)
+                         # and cut the best clean hour 3214 -> 585 rows
+                         # (18.2%) — it was the binding constraint on the
+                         # overnight verdict, misdiagnosed as sky density.
+                         # 500 m keeps healthy hours whole while still
+                         # killing the km-class poison the gate exists for.
+                         # The real fix is the measurement model (no iono /
+                         # tropo / SBAS corrections in the clock_bias solve
+                         # yet) — see the verdict doc's corrected diagnosis.
 MIN_SPAN_S = 3600.0      # "continuous hour" span gate
 MIN_ROWS = 3400          # rows floor (--min-rows overrides this one only)
 MAX_GAP_S = 5.0          # max internal gap gate

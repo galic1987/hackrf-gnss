@@ -42,13 +42,17 @@ holes into a claim.
 
 ## The day's real measurements
 
-- **Receiver-clock drift vs GPS (the instrument's first number)**:
-  least-squares slope **−0.038 ns/s over 5.20 h** (σ_slope ≈ 0.0014 ns/s)
-  = −0.00004 ppm — the Bodnar's GPS-steering measured through the receiver
-  chain. The free-running TCXO era would read ~+400 ns/s.
-  **Status: EXPLORATORY, not claim-grade** — it pools fragmented segments
-  (longest ~52 s) with 273 ns inter-segment steps and spans satellite-set
-  changes; indicative, not a measured drift.
+- **Receiver-clock drift vs GPS**: least-squares full-span slope
+  −0.038 ns/s over 5.20 h (OLS σ_slope ≈ 0.0014 ns/s).
+  **Status: RETRACTED (round 18, re-measured 2026-08-29).** Independent
+  hourly slopes scatter 0.075 ns/s (1.4826×MAD over hours with >1800
+  rows) — 54× the claimed uncertainty; alternative windowings put the
+  scatter up to ~0.6 ns/s (~400×). The OLS fit sigma on this fragmented,
+  sat-set-offset series was never meaningful, and the number is not
+  reproducible in any sub-window. The hourly slopes do share a sign
+  (−0.027…−0.242 ns/s) — suggestive of a real negative drift, but this
+  data cannot say how large. No drift value from Leg 1 v2 enters any
+  downstream claim.
 - **GEO cross-check** (phase_drift_producer): sbas131 −0.32 ns/s,
   sbas135 −0.98 ns/s — same sign, ~3× apart from each other (the known
   GEO-motion residual); the clock-bias path's −0.04 ns/s disagrees with both
@@ -118,13 +122,29 @@ INSUFFICIENT DATA (exit 1) on all three attempts
 2–25 s solve misses — the producer emits only on cleanly-converged seconds,
 and on the night's sat-sets that is roughly one second in five at best.
 
-**Density argument.** Raw flow improved through the night (evening ~4
-rows/min → ~32 rows/min after 02:00 as the sky ripened), but the poison gate
-held at ~79% on churned sets: kept flow peaked at ~5.6 rows/min. The
-continuity gate needs 3,400 kept rows in one uninterrupted hour (56.7
-kept/min) — an order of magnitude beyond the night's best. The binding
-constraint is observable density on the current sat-set/anchor geometry, not
-the gates and not the analyzer.
+**Density argument — CORRECTED 2026-08-29 (round 18): the original text
+blamed "observable density on the current sat-set/anchor geometry" and
+prescribed a richer/tilted antenna. Re-derived from all 20.8k v2 rows, that
+diagnosis is REFUTED by the data itself.** The best raw hour carried 3,214
+quality-passing rows (5–7 sats, zero slips) — 53.6 rows/min against the
+56.7/min the gate needs; the sky delivered a near-complete clean hour. What
+removed it was the flat 100 m poison gate: healthy hours have a residual
+MEDIAN of 137 m (p25 = 107 m) — the threshold sat below the 25th percentile
+of good data and cut that hour to 585 rows (18.2%). The binding constraint
+was **solve residual quality**, not sky: the clock_bias solve applies no
+ionosphere, no troposphere and no SBAS corrections, and its Hatch filter
+runs a 100 s window against a 4–8 m/s code-carrier rate mismatch. Tilting
+or replacing the antenna would not have moved it. Gate re-derived from the
+data's own distribution (quality residuals p50 148 / p95 300 / p99 410 m;
+0.02% beyond 500 m; none beyond 1000 m): the poison threshold is now 500 m.
+With it, the longest clean segment improves 52 s → 443 s and the excluded
+count collapses ~9,000 → 4 rows. The NEW binding constraint is the
+continuity gate against the producer's own emission duty cycle: the longest
+zero-missed-epoch run anywhere in the data is ~760 s — 21% of the 3,600 s
+gate — so the path forward is (a) diagnosing why ~2% of 1 Hz epochs never
+emit, and/or (b) explicit uniform-grid resampling with a documented
+interpolation rule, per the standing analyzer recommendation. The
+antenna/tilt prescription for Leg 1 is **withdrawn**.
 
 **GEO cross-check (03:40, state.phase_drift.json, scatter-calibrated
 sigmas):** sbas131 +0.00061 ppm (scatter σ 1.9e-4), sbas135 −0.00151 ppm
@@ -147,6 +167,11 @@ ppm), and the consensus sigma now reports the honest 2.1e-4 class.
 gates, honest segmentation) but NOT claim-grade end-to-end (generation
 provenance spans tracker restarts; GEO uncertainty was miswired until the
 2026-08-29 fix); the sub-ns claim remains NOT SUPPORTED — no
-qualifying hour has ever existed in this data. The path is unchanged: spec
-component 1 (prompt carrier-phase residual with sample-exact epochs) for the
-100×-class observable, and a richer/tilted antenna for sat-set density.
+qualifying hour has ever existed in this data. The corrected path
+(round 18): (1) the measurement model — ionosphere/troposphere/SBAS
+corrections in the clock_bias solve and the Hatch window/mismatch review —
+is what the residuals actually need; (2) diagnose the ~2% epoch-miss rate
+that caps clean segments at ~760 s, or move the analyzer to explicit
+uniform-grid resampling; (3) spec component 1 (prompt carrier-phase
+residual with sample-exact epochs) for the 100×-class observable. Antenna
+work is OFF the Leg 1 critical path.
