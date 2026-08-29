@@ -36,6 +36,7 @@ use std::{fs, thread, time::Duration};
 
 const STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
 const OUT: &str = "/Volumes/Radiator 8TB/gnss/observations/clock_bias.jsonl";
+const STATE_CB: &str = "/Volumes/Radiator 8TB/gnss/observations/state.clock_bias.json";
 const RINEX: &str = "/Volumes/Radiator 8TB/gnss/observations/brdc_latest.rnx";
 const TRACKER_EPH: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
 const SITE_JSON: &str = "/Volumes/Radiator 8TB/gnss/observations/site.json";
@@ -291,6 +292,27 @@ fn main() {
             use std::io::Write;
             let mut f = fs::OpenOptions::new().create(true).append(true).open(OUT).unwrap();
             writeln!(f, "{}", row).unwrap();
+            // Atomic per-second state for /api/sync (tmp + rename, like
+            // every other producer): the panel reads the live clock bias
+            // without parsing the archive. Fail-closed by TTL: when no
+            // clean solve exists the file simply expires.
+            let st = json!({
+                "epoch": epoch,
+                "ttl_s": 10,
+                "clock_bias": {
+                    "clock_ns": row["clock_ns"],
+                    "clock_ns_uw": row["clock_ns_uw"],
+                    "residual_rms_m": row["residual_rms_m"],
+                    "n_sat": row["n_sat"],
+                    "n_fresh": row["n_fresh"],
+                    "n_pred": row["n_pred"],
+                    "slips": row["slips"],
+                    "gen": gen_id,
+                },
+            });
+            let tmp = format!("{}.tmp", STATE_CB);
+            fs::write(&tmp, st.to_string()).unwrap();
+            fs::rename(&tmp, STATE_CB).unwrap();
         }
     }
 }

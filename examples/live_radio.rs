@@ -164,9 +164,10 @@ fn main() {
         dev.set_amp_enable(false)?;
         dev.set_antenna_enable(true)?; // AA.250 dual-stage LNA needs bias
         // Star topology: both radios are CLKIN-slaved to the Bodnar GPSDO
-        // directly; this Pro's CLKOUT port is unconnected. Radio config (and
-        // any flash) can drop CLKOUT — re-assert it on every startup anyway.
-        dev.set_clkout_enable(true)?;
+        // directly and this Pro's CLKOUT port is unconnected — driving it
+        // powers the Si5351C CLK3 driver for nothing and leaks near-field
+        // clock RF next to the front end (integration review 2026-08-28).
+        dev.set_clkout_enable(false)?;
         Ok(())
     })();
     if let Err(e) = r {

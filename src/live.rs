@@ -425,6 +425,13 @@ pub struct Channel {
     /// Survives fades/gaps/reseeds; cleared only on a CRC-proven pairing
     /// break (sbas_reset).
     sbas_iono: std::collections::BTreeMap<(u8, u8), (u8, [(u16, u8); 15], f64)>,
+    /// Latest MT9 GEO navigation message applied on this channel, converted
+    /// to SI units (DO-229D A.4.5.1) with its apply stream-time. Published
+    /// on the per-second report so the phase-drift producer can subtract
+    /// the GEO line-of-sight range rate (P0b) without its own SBAS decoder.
+    /// Survives fades/gaps/reseeds; cleared only on a CRC-proven pairing
+    /// break (sbas_reset).
+    sbas_geonav: Option<GeoNavPub>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -525,6 +532,7 @@ impl Channel {
             sbas_lt: std::collections::BTreeMap::new(),
             sbas_igpmask: std::collections::BTreeMap::new(),
             sbas_iono: std::collections::BTreeMap::new(),
+            sbas_geonav: None,
         }
     }
 
@@ -1207,6 +1215,37 @@ impl Channel {
                 self.sbas_iono
                     .insert((*band, *block_id), (*iodi, *igps, t_s));
             }
+            // MT9 GEO navigation (DO-229D A.4.5.1): cache the latest, SI
+            // units, for publication on the per-second report — the
+            // phase-drift producer subtracts the GEO line-of-sight range
+            // rate (P0b) from it. Publication only; nothing ranges on it.
+            crate::sbas::Message::GeoNav {
+                iodn, t0_s, ura, xyz, vxyz, axyz, agf0, agf1,
+            } => {
+                self.sbas_geonav = Some(GeoNavPub {
+                    iodn: *iodn,
+                    t0_s: *t0_s,
+                    ura: *ura,
+                    pos_m: [
+                        xyz[0] as f64 * 0.08,
+                        xyz[1] as f64 * 0.08,
+                        xyz[2] as f64 * 0.4,
+                    ],
+                    vel_mps: [
+                        vxyz[0] as f64 * 0.000625,
+                        vxyz[1] as f64 * 0.000625,
+                        vxyz[2] as f64 * 0.004,
+                    ],
+                    acc_mps2: [
+                        axyz[0] as f64 * 0.0000125,
+                        axyz[1] as f64 * 0.0000125,
+                        axyz[2] as f64 * 0.0000625,
+                    ],
+                    agf0_s: *agf0 as f64 * 2f64.powi(-31),
+                    agf1_sps: *agf1 as f64 * 2f64.powi(-40),
+                    applied_t: t_s,
+                });
+            }
             _ => {}
         }
     }
@@ -1355,12 +1394,20 @@ impl Channel {
         // re-probes from a fresh origin (nav_ms content across the break is
         // discontinuous or redefined, so the old grid origin is meaningless)
         self.nav_abs_ms = 0;
+        // Same invariant as sbas_reset_decoder(keep_grid=false) (round-10):
+        // a re-anchored origin must not pair prompts from the DEAD
+        // generation's window — without this clear, the fresh generation
+        // decodes pre-break prompts with fresh absolute indices (review
+        // round-13). SBAS nav_ms is consumed only by sbas_tick, so the clear
+        // touches nothing else.
+        self.nav_ms.clear();
         self.sbas_prc.clear();
         self.sbas_dnu.clear();
         self.sbas_mask = None;
         self.sbas_lt.clear();
         self.sbas_igpmask.clear();
         self.sbas_iono.clear();
+        self.sbas_geonav = None;
     }
 
     /// Kill only the DECODER half of the SBAS state on a transient stream
@@ -1476,6 +1523,24 @@ pub struct SbasSummary {
     pub iono_delay: Vec<(u8, u8, u8, Vec<(u16, u8)>)>,
 }
 
+/// MT9 GEO navigation message in SI units (DO-229D A.4.5.1), published on
+/// the per-second report of the SBAS channel that decoded it. Position/
+/// velocity/acceleration are ECEF at t0 (propagate with the 2nd-order
+/// Taylor series, DO-229D A.4.5.1.1); agf0/agf1 are the GEO clock
+/// polynomial. applied_t is the stream-time of application (freshness).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GeoNavPub {
+    pub iodn: u8,
+    pub t0_s: u32,
+    pub ura: u8,
+    pub pos_m: [f64; 3],
+    pub vel_mps: [f64; 3],
+    pub acc_mps2: [f64; 3],
+    pub agf0_s: f64,
+    pub agf1_sps: f64,
+    pub applied_t: f64,
+}
+
 /// Per-PRN 1 Hz report — serialized to JSON by the front end.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SatReport {
@@ -1510,6 +1575,10 @@ pub struct SatReport {
     /// WAAS message decode summary (Sys::Sbas rows only; absent otherwise).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sbas_msgs: Option<SbasSummary>,
+    /// Latest MT9 GEO nav applied on this channel (Sys::Sbas rows only,
+    /// SI units — for the phase-drift producer's P0b LOS-rate subtraction).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sbas_geonav: Option<GeoNavPub>,
 }
 
 /// Acquisition runs on a WORKER THREAD, never on the consumer: any
@@ -2192,6 +2261,7 @@ impl Band {
                 slip,
                 epoch,
                 sbas_msgs,
+                sbas_geonav: ch.sbas_geonav.clone(),
             });
         }
         // re-acquire channels whose lock has been lost for REACQ_S, drop
