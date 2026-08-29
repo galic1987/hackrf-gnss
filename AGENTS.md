@@ -109,6 +109,16 @@ trigger input until its mode is explicitly changed for the TDC window).
   hackrf_spiflash -d 0000000000000000645061de252d6613 -R; sleep 6;
   nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log &`.
   Never `pkill -9` live_radio.
+  **The reset must IMMEDIATELY follow the kill — before ANY build/test**
+  (2026-08-29 incident): the 11:07 window deferred the reset until after
+  cargo build+test; the wedged Pro deepened from empty-serial to a full
+  bus disconnect ([Removed] @ 0x100000, 11:23) and no host-side recovery
+  (serial-addressed reset, unaddressed reset, libusb reset_device) could
+  reach it — only a physical replug or spontaneous re-enumeration can.
+  Correct window order that satisfies BOTH laws: pkill → **board reset
+  first** → band rotation → build/test (tracker still down) → start
+  tracker. A recovery watcher (`/tmp/pro_recovery_watcher.sh`) now runs
+  the deferred window steps automatically when the Pro re-enumerates.
 - **Host build load kills the tracker** (2026-08-25, measured live): cargo/
   nextpnr stalls >115 ms overflow the ~190 ms USB transfer queue → `big
   gap` → full channel realign. NEVER run cargo builds/tests while
