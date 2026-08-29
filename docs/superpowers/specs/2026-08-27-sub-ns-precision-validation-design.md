@@ -81,14 +81,20 @@ tracker-down maintenance window** (build law), shared with the Leg 2 window.
 
 Requires: 2-way GPS L1 active splitter, DC-pass on the Pro#2 port (user sourcing).
 AA.250 → splitter → Pro#2 (powers patch) + One. Same phase center: geometry and
-multipath cancel exactly.
+multipath cancel TO FIRST ORDER — splitter, cable, front-end and post-split
+reflections remain as residual differential terms.
 
 - One runs its own tracker instance (8-bit, L1-centered config path, no rebuild).
 - `scripts/single_difference.py`: ΔΦ per common PRN per epoch from both trackers'
-  channel states. Single difference cancels receiver clock AND satellite clock by
-  construction (both sample clocks driven by the same 10 MHz). Residual =
-  constant differential hardware group delay (calibrates the term that normally
-  blocks absolute claims) + coherence + noise.
+  channel states. The single difference cancels the SATELLITE clock (and, to
+  first order, geometry/multipath); it RETAINS (a) the inter-receiver epoch/
+  clock offset — a shared 10 MHz syntonizes frequency, it does not align clock
+  phase or sample zero — (b) the differential integer ambiguities, and (c) the
+  constant differential cable/analog group delay. The constant terms drop out
+  of the time variation, which is what makes the residual useful: differential
+  hardware group delay (calibrates the term that normally blocks absolute
+  claims) + coherence + noise. Where receiver-clock cancellation itself is
+  required, use satellite DOUBLE differences, not single ones.
 - Common-mode rotation across ALL satellites at once = relative clock wander
   (directly validates the Bodnar distribution); per-satellite structure =
   geometry/multipath. This is the coherence test — no TDC needed.
@@ -136,9 +142,10 @@ triangle in Leg 1b.
   ambiguity-free initialization from a known <λ/2 start configuration that
   is then expanded. Decide at planning time, not during the experiment.
 - **Observables:** per-baseline single-difference carrier phase per common PRN
-  (both radios Bodnar-referenced ⇒ clock cancels by construction), triangle
-  closure residual ΣΔΦ around the loop (must close to noise), and absolute
-  clock-bias b(t) per radio from the Leg 1 pipeline.
+  (both radios Bodnar-referenced ⇒ frequency-syntonized; the residual epoch/
+  phase offset is measured, not assumed zero), triangle closure residual ΣΔΦ
+  around the loop (must close to noise), and absolute clock-bias b(t) per
+  radio from the Leg 1 pipeline.
 - **Claim gates (draft):** closure residual consistent with the Leg 1 noise
   floor; inter-radio b(t) agreement within the Leg 1b group-delay bound;
   antenna-position solve recovers surveyed baselines to < 5 mm.

@@ -15,7 +15,13 @@ HackRFs. Read this before touching anything that talks to the radios.
 - **HackRF One** `…922c63dc21748847` — owned by `scripts/phase_producer.py`
   (ATSC ch35 carrier-phase track). CLKIN fed DIRECTLY by Bodnar OUT1
   (10 MHz) in the star topology — not by any HackRF; no CLKOUT assertion
-  on the Pro is needed for the One's reference.
+  on the Pro is needed for the One's reference. Classification
+  (2026-08-28 review): **clock-detected, RF-dark, GPS-unproven** — CLKIN
+  reads "clock signal detected"; the ATSC RF path arrives starved
+  (~35–38 dB down, cause unconfirmed — physical look owed); it has never
+  run a GPS tracker, so every L-band claim for it is unproven until the
+  AA.250-splitter test (one DC-pass leg, DC-block the One leg, zero-gain
+  baseline, separate USB controller) demonstrates real acquisitions.
 - **HackRF Pro #1** `…977c64de2b557213` — **DEAD 2026-08-27** (no power on
   any cable/charger incl. dumb charger and A-to-C, no DFU boot-ROM
   enumeration — J1/Q4 input-path hardware fault, repair/RMA pending). Do
@@ -71,6 +77,16 @@ to 1PPS → Pro#2 P2 (the One then free-runs on its TCXO and its downstream
 attestation for that window is void). Pro#2 P2 is genuinely free today:
 `hackrf_clock -2 trigger_in` on the Pro severs no clock link — but exactly
 one trigger master per experiment, and never mid-collection.
+
+**Physical labeling hold (2026-08-28 review, USER-PHYSICAL):** every repo
+document agrees OUT2→Pro, OUT1→One, but external-clock detection cannot
+identify WHICH physical Bodnar output feeds a radio, and one external
+report claimed a reversed mapping exists somewhere on paper. Until both
+cable ends are photographed and labeled (Bodnar output, mode, radio serial,
+port, cable length, timestamp), do NOT reconfigure OUT1 or OUT2 to PPS —
+the port-budget options above stay on hold. Also note `live_radio` still
+sets Pro#2 P2 as CLKOUT at startup (harmless unconnected, but not a ready
+trigger input until its mode is explicitly changed for the TDC window).
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
   `live_radio` first. The Pro-free window that opens is `band_producer`'s
   ONLY snapshot opportunity (`pro_owned()` fails closed while the tracker
