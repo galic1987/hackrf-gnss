@@ -106,7 +106,14 @@ reflections remain as residual differential terms.
 
 ## Leg 2 — TDC PPS validation (optional, user-triggered window)
 
-- Prereq: out1 back to PPS (One pauses or moves to Pro#2 CLKOUT for the window).
+- Prereq: ONE coherent port-budget choice from AGENTS.md ("Port budget") —
+  e.g. (a) 10 MHz distribution amp on out2 feeding both radios, out1
+  restored to PPS; or (c) pause the One, out1 → PPS → Pro#2 P2. The old
+  phrasing "One pauses OR MOVES TO Pro#2 CLKOUT" was electrically
+  inconsistent (round-14): Pro#2 P2 cannot be CLKOUT-to-the-One and the
+  TDC's trigger/PPS input at the same time. And per the AGENTS.md
+  labeling hold: NO output is reconfigured to PPS until both cable ends
+  are photographed and labeled.
 - **SUPERSEDED 2026-08-28 — DO NOT FLASH the 0x36 debug build (blob sha
   332225ae…).** Its pin swap is backwards: official gateware maps FPGA clock to
   pin 47 and TRIGGER.IN to pin 48; this build swaps them, so the 0x36 register
