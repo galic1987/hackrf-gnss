@@ -500,6 +500,38 @@ def main():
     _, a, r = g7.correct(unix_of(t0_s + 303), 0.0)
     check("p0b msg: advanced applied_t re-opens the gate", a, f"{a} {r}")
 
+    # swap validation: an oversized stitch (bogus vector) is REJECTED —
+    # the known-good vector is kept, the series is not poisoned, and a
+    # retry of the same vector stays rejected without double-counting
+    g8 = pd.GeoCorrector(site)
+    g8.update(geo1, unix_of(t0_s))
+    bad = mk_geo(t0_s + 128, [p + 5000.0 for p in prop(geo1, 128.0)],
+                 geo1["vel_mps"], geo1["acc_mps2"], iodn=99)
+    g8.update(bad, unix_of(t0_s + 1))
+    check("p0b swap: oversized stitch rejected, old vector kept",
+          g8.rejected_swaps == 1 and g8.geo is geo1,
+          f"rej={g8.rejected_swaps}")
+    g8.update(bad, unix_of(t0_s + 2))     # same vector retried: quiet
+    check("p0b swap: rejected vector not double-counted",
+          g8.rejected_swaps == 1, f"rej={g8.rejected_swaps}")
+    _, a, r = g8.correct(unix_of(t0_s + 3), 0.0)
+    check("p0b swap: correction still applies from the kept vector",
+          a, f"{a} {r}")
+    ok_geo = mk_geo(t0_s + 128, prop(geo1, 128.0),
+                    [geo1["vel_mps"][i] + geo1["acc_mps2"][i] * 128.0
+                     for i in range(3)], geo1["acc_mps2"], iodn=100)
+    g8.update(ok_geo, unix_of(t0_s + 4))
+    check("p0b swap: sane vector accepted after a rejection",
+          g8.geo is ok_geo and g8.rejected_swaps == 1,
+          f"rej={g8.rejected_swaps}")
+    # malformed swap candidate: rejected, old vector kept
+    g9 = pd.GeoCorrector(site)
+    g9.update(geo1, unix_of(t0_s))
+    g9.update({"iodn": 7, "t0_s": t0_s + 5}, unix_of(t0_s + 1))
+    check("p0b swap: malformed vector rejected, old kept",
+          g9.rejected_swaps == 1 and g9.geo is geo1,
+          f"rej={g9.rejected_swaps}")
+
     # GPS-day wrap: t0 at 86384 (16 s grid), evaluation 60 s past
     # midnight -> dt wraps to +76 s and the correction still applies
     gw = mk_geo(86384.0, [-19139594.24, -37569516.96, -2323.2],

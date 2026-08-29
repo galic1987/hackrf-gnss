@@ -159,6 +159,12 @@ GEO_MAX_URA = 7                # MT9 URA usability gate
 # long, the cached vector is no longer being maintained by fresh decodes:
 # fail closed. 300 s tolerates several missed MT9 broadcasts.
 GEO_MSG_FRESH_S = 300.0
+# Largest accepted ephemeris-swap stitch, cycles (~95 m combined orbit+clock
+# model difference). Operational MT9 refreshes are decimetre-class (a few
+# cycles); a larger jump means a bogus/incompatible vector, and stitching it
+# would poison the corrected series invisibly. The new vector is REJECTED
+# (the known-good one is kept) instead of being absorbed.
+GEO_STITCH_MAX_CYCLES = 500.0
 LAM_L1_M = C_MPS / L1_HZ       # L1 carrier wavelength (~0.1903 m)
 WGS84_A = 6378137.0            # semi-major axis, m
 WGS84_F = 1.0 / 298.257223563  # flattening
@@ -325,6 +331,8 @@ class GeoCorrector:
         self.last_dt = None         # propagation dt of the last applied sample
         self._last_applied_t = None  # last seen geonav["applied_t"] value
         self._msg_refresh_unix = None  # t_unix when applied_t last advanced
+        self.rejected_swaps = 0     # malformed/oversized swap rejections
+        self._rejected_id = None    # (iodn, t0_s) of the rejected vector
 
     def _term(self, geo, t_unix):
         """Correction term rho/lambda_L1 - f_L1*dt_geo (cycles) and the
@@ -360,14 +368,38 @@ class GeoCorrector:
         if (not slip and self.geo is not None
                 and (geonav.get("iodn") != self.geo.get("iodn")
                      or geonav.get("t0_s") != self.geo.get("t0_s"))):
-            # ephemeris swap mid-chain: stitch the corrected series
+            # ephemeris swap mid-chain: VALIDATE the new vector before it
+            # may replace the old one, then stitch the corrected series
             # step-free at t_swap — offset += old_term(t) - new_term(t)
+            rej_id = (geonav.get("iodn"), geonav.get("t0_s"))
+            if rej_id == self._rejected_id:
+                return      # already rejected this exact vector; stay quiet
             try:
                 old_term, _ = self._term(self.geo, t_unix)
                 new_term, _ = self._term(geonav, t_unix)
-                self.offset_cycles += old_term - new_term
             except (KeyError, TypeError, ValueError):
-                pass    # can't stitch a malformed vector — keep old offset
+                # malformed vector: reject it outright — keep the
+                # known-good vector rather than swapping in garbage
+                self.rejected_swaps += 1
+                self._rejected_id = rej_id
+                print(f"p0b: REJECTED malformed geonav swap "
+                      f"(iodn {self.geo.get('iodn')} -> "
+                      f"{geonav.get('iodn')})", flush=True)
+                return
+            jump = old_term - new_term
+            if abs(jump) > GEO_STITCH_MAX_CYCLES:
+                self.rejected_swaps += 1
+                self._rejected_id = rej_id
+                print(f"p0b: REJECTED geonav swap, stitch {jump:.1f} cycles "
+                      f"> {GEO_STITCH_MAX_CYCLES:.0f} "
+                      f"(iodn {self.geo.get('iodn')} -> "
+                      f"{geonav.get('iodn')})", flush=True)
+                return
+            self.offset_cycles += jump
+            self._rejected_id = None
+            print(f"p0b: stitched geonav swap, {jump:+.2f} cycles "
+                  f"(iodn {self.geo.get('iodn')} -> {geonav.get('iodn')})",
+                  flush=True)
         self.geo = geonav
 
     def correct(self, t_unix, cycles):
