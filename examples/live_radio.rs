@@ -153,14 +153,19 @@ fn main() {
     };
     let r = (|| -> rs_hackrf::error::Result<()> {
         dev.set_sample_rate(FS as u32)?;
+        // set_sample_rate auto-selects 75% of FS = 12 MHz; at FC=1568.25 the
+        // tracked signals sit at +/-7.15..7.17 MHz offset, at or beyond that
+        // filter's edge. 15 MHz is the smallest valid setting with both flat
+        // inside the passband; must follow set_sample_rate (it re-autosets).
+        dev.set_baseband_filter_bandwidth(15_000_000)?;
         dev.set_freq(FC)?;
         dev.set_lna_gain(40)?;
         dev.set_vga_gain(46)?;
         dev.set_amp_enable(false)?;
         dev.set_antenna_enable(true)?; // AA.250 dual-stage LNA needs bias
-        // CLKOUT ownership follows radio ownership: this process holds the
-        // Pro 24/7, and the One is CLKIN-slaved to its 10 MHz. Radio config
-        // (and any flash) can drop CLKOUT — re-assert it on every startup.
+        // Star topology: both radios are CLKIN-slaved to the Bodnar GPSDO
+        // directly; this Pro's CLKOUT port is unconnected. Radio config (and
+        // any flash) can drop CLKOUT — re-assert it on every startup anyway.
         dev.set_clkout_enable(true)?;
         Ok(())
     })();
