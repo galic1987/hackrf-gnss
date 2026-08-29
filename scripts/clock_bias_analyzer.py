@@ -31,7 +31,13 @@ POISON_RMS_M = 100.0     # residual_rms_m >= this is a poison-class row
 MIN_SPAN_S = 3600.0      # "continuous hour" span gate
 MIN_ROWS = 3400          # rows floor (--min-rows overrides this one only)
 MAX_GAP_S = 5.0          # max internal gap gate
-GAP_FACTOR = 5.0         # segmentation split: gap > GAP_FACTOR * median dt
+GAP_FACTOR = 2.0         # segmentation split: gap > GAP_FACTOR * median dt.
+                         # tdev() below assumes UNIFORM dt = median; a 5x hole
+                         # mis-weights its second differences ~25x. Splitting at
+                         # 2x bounds within-segment cadence deviation to one
+                         # missed sample, so the uniform approximation is
+                         # second-order (review 2026-08-28: median-interval
+                         # TDEV on irregular samples).
 DEFAULT_PATH = "/Volumes/Radiator 8TB/gnss/observations/clock_bias.jsonl"
 
 
@@ -53,7 +59,10 @@ def detrend(epochs, clock_ns):
 def tdev(residuals_ns, dt_s, taus):
     """Time deviation TDEV(tau) of a uniform time-error series, NIST SP 1065.
 
-    x_k = residuals_ns (ns), uniform spacing dt_s, tau = m*dt_s:
+    x_k = residuals_ns (ns), uniform spacing dt_s (the median interval;
+    segmentation has already split at every gap > 2x median, so within a
+    segment the cadence deviates from uniform by at most one missed sample),
+    tau = m*dt_s:
         ModAllanVar(m) = (1 / (2*tau^2*m^2*(n-3m+1)))
                          * sum_j [ sum_{i=j}^{j+m-1}
                            (x_{i+2m} - 2*x_{i+m} + x_i) ]^2
