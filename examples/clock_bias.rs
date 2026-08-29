@@ -37,6 +37,7 @@ use std::{fs, thread, time::Duration};
 const STATE: &str = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json";
 const OUT: &str = "/Volumes/Radiator 8TB/gnss/observations/clock_bias.jsonl";
 const STATE_CB: &str = "/Volumes/Radiator 8TB/gnss/observations/state.clock_bias.json";
+const TRACKER_BIN: &str = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/target/release/examples/live_radio";
 const RINEX: &str = "/Volumes/Radiator 8TB/gnss/observations/brdc_latest.rnx";
 const TRACKER_EPH: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
 const SITE_JSON: &str = "/Volumes/Radiator 8TB/gnss/observations/site.json";
@@ -170,8 +171,22 @@ fn main() {
     let site_m = site_guess().map(|x| x * 1000.0);
     let anchor_km = site_guess();
     // session id (v2 amendment): producer start epoch — restarts/config
-    // changes can't silently mix into one series
-    let gen_id = format!("v2-{}", unix_now() as u64);
+    // changes can't silently mix into one series. Round-14 provenance:
+    // include the tracker's BUILD identity (live_radio binary mtime) — the
+    // process-start-only gen let rows mix across tracker builds/configs
+    // (the 22:19 filter-change restart kept gen v2-1787924784 while the
+    // measurement chain changed). A tracker rebuild now shows in the gen at
+    // the next producer start. Restart-TIME gen rolls need a tracker-
+    // published start marker (queued with the tracker_producer window work).
+    let trk_build = fs::metadata(TRACKER_BIN)
+        .and_then(|m| m.modified())
+        .map(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        })
+        .unwrap_or(0);
+    let gen_id = format!("v2-{}-tb{}", unix_now() as u64, trk_build);
     let mut smoothers: HashMap<u8, Hatch> = HashMap::new();
     let mut prev: HashMap<u8, PrevSat> = HashMap::new();
     let mut last_epoch = 0.0_f64;
