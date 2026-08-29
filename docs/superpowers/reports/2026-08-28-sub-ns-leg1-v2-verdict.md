@@ -46,11 +46,14 @@ holes into a claim.
   least-squares slope **−0.038 ns/s over 5.20 h** (σ_slope ≈ 0.0014 ns/s)
   = −0.00004 ppm — the Bodnar's GPS-steering measured through the receiver
   chain. The free-running TCXO era would read ~+400 ns/s.
+  **Status: EXPLORATORY, not claim-grade** — it pools fragmented segments
+  (longest ~52 s) with 273 ns inter-segment steps and spans satellite-set
+  changes; indicative, not a measured drift.
 - **GEO cross-check** (phase_drift_producer): sbas131 −0.32 ns/s,
   sbas135 −0.98 ns/s — same sign, ~3× apart from each other (the known
   GEO-motion residual); the clock-bias path's −0.04 ns/s disagrees with both
-  beyond their fit sigmas — discrepancy assigned to the GEO path's unmodeled
-  motion, not to the new series.
+  beyond their fit sigmas — discrepancy **UNRESOLVED**: consistent with the
+  GEO path's unmodeled motion, not proven (see the P0b gate split below).
 - **Within-segment noise**: best 4.5 ns, median 25 ns (vs 273 ns global —
   the global figure is segment-to-segment sat-set bias jumps, the accepted
   cost of the raw-solve/no-median design). Within-seg noise ≈ code noise/√n
@@ -62,8 +65,14 @@ holes into a claim.
 
 ## Status of the claim
 
-**Sub-ns claim: NOT SUPPORTED by today's data** — the pipeline is validated,
-the observable is the limit. The path to the gates, in order:
+**Sub-ns claim: NOT SUPPORTED by today's data** — the pipeline is
+mechanically complete (sign fix, solver, gates, honest segmentation) but
+NOT claim-grade end-to-end: generation provenance spans tracker restarts,
+and until 2026-08-29 the GEO uncertainty path was miswired (rows emitted
+the raw OLS sigma instead of the calibrated max(OLS, cross-window
+scatter); fixed that morning with tests, provisional 5×-OLS inflation
+before 5 disjoint windows). The observable remains the limit. The path to
+the gates, in order:
 1. Spec component 1 (prompt carrier-phase residual with sample-exact epochs)
    — the 100×-class observable improvement.
 2. Tonight's continuous-hour attempt (n=6–8 also buys √1.6 code averaging).
@@ -121,14 +130,23 @@ the gates and not the analyzer.
 sigmas):** sbas131 +0.00061 ppm (scatter σ 1.9e-4), sbas135 −0.00151 ppm
 (scatter σ 3.5e-4) — the two GEO phase slopes disagree with each other and
 with the clock-bias series' −0.00004 ppm/day-class slope by orders of
-magnitude beyond their sigmas; the discrepancy stays assigned to the
-unremoved GEO-motion residual (the P0b MT9 LOS subtraction deploys in the
-next window bundle). The new disjoint-window scatter sigma confirmed live
+magnitude beyond their sigmas; the discrepancy stays **UNRESOLVED** —
+consistent with the unremoved GEO-motion residual but not proven. P0b is
+three gates, and only the first exists: gate 1, MT9 publication
+(`sbas_geonav` in tracker reports), deploys **publisher-only** in the
+window bundle — no consumer reads it yet; gate 2, a signed LOS-rate +
+GEO-clock-drift correction consumer (handling MT9 age, IODN/URA,
+propagation epoch, fail-closed), is not yet written; gate 3, live PRN
+131/135 convergence, is the acceptance test. No assignment of the
+discrepancy to orbital motion until gate 3 passes. The new disjoint-window
+scatter sigma confirmed live
 that per-window OLS sigmas were 6–20× too tight (sbas131: 8.9e-6 vs 1.8e-4
 ppm), and the consensus sigma now reports the honest 2.1e-4 class.
 
-**Standing:** the v2 pipeline is validated end-to-end (sign fix, solver,
-gates, honest segmentation); the sub-ns claim remains NOT SUPPORTED — no
+**Standing:** the v2 pipeline is mechanically complete (sign fix, solver,
+gates, honest segmentation) but NOT claim-grade end-to-end (generation
+provenance spans tracker restarts; GEO uncertainty was miswired until the
+2026-08-29 fix); the sub-ns claim remains NOT SUPPORTED — no
 qualifying hour has ever existed in this data. The path is unchanged: spec
 component 1 (prompt carrier-phase residual with sample-exact epochs) for the
 100×-class observable, and a richer/tilted antenna for sat-set density.

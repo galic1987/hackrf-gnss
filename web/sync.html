@@ -4181,7 +4181,7 @@ sweepFocus();
       + row("Same-signal RF (coherence tests)", "ONE antenna → power splitter → all boards. Exactly ONE DC-pass branch may power the active antenna (normally the Pro's); DC-block every other leg or the bias supplies fight")
       + row("Gain discipline", "start the new board at amp/LNA/VGA = 0 on a split, externally-amplified path; walk gain up while watching for clipping — the current One config (LNA 40/VGA 44 into a starved path) is the counter-example under review")
       + row("USB budget", "2 B per complex sample: Pro 32 + One 12 MB/s already exceeds one USB 2.0 bus's safe envelope — separate root controllers, lower rates, or sequential captures; record expected-vs-received sample counts every run")
-      + row("Geometry honesty", "record electrical phase-center coordinates (not enclosure-edge gaps) and cable lengths before any phase math — the '3 cm baseline' review taught that lesson"));
+      + row("Geometry honesty", "record electrical phase-center coordinates (not enclosure-edge gaps) and cable lengths before any phase math — the '3 cm baseline' review taught that lesson. Scale check: 3 cm of geometry is up to ~100 ps of delay and ~57° of L1 carrier phase — small, but NOT negligible at this station's ambitions; and the AA.250 is Ø86.4 mm, so '3 cm' was never a center-to-center spacing anyway"));
     h += "<div class='hw-src'>Sources: official docs — <a href='" + DOC_CLK + "'>external clock interface</a> · <a href='" + DOC_TRIG + "'>hardware triggering</a> · <a href='" + DOC_COMP + "'>hardware components</a> · station laws in AGENTS.md (star topology, labeling hold, USB roots).</div>";
     return h;
   }

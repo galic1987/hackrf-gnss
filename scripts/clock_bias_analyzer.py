@@ -14,7 +14,11 @@ v2 (2026-08-28 amendment) fixes v1 defects:
   v1 printed tau*ADEV/sqrt(3) from ordinary second differences — a different
   statistic (flat for white PM; proper TDEV goes as tau^-1/2).
 - Gap segmentation: the row series is split wherever an inter-row gap exceeds
-  5x the median dt; only the LONGEST segment is analyzed and every hole is
+  1.5x the median dt (tightened 5x -> 2x -> 1.5x, 2026-08-29 e7f0e22: every
+  missed epoch now splits, so within-segment cadence is uniform to sub-epoch
+  jitter; see docs/superpowers/evidence/leg1-gap-gate-reachability.md for
+  the measured reachability arithmetic of this rule); only the LONGEST
+  segment is analyzed and every hole is
   reported (v1 substituted the average spacing and printed gaps but never
   rejected or segmented them).
 - Continuity gates replace the bare row count: segment span >= 3600 s AND

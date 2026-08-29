@@ -139,9 +139,10 @@ def fit_drift(samples):
     needs), so the round-13 HAC prescription was implemented, measured
     and reverted. Calibrated paths, in order: (a) cross-window empirical
     slope scatter (the producer fits every window; the scatter IS the
-    honest sigma), (b) parametric AR with an externally pinned ρ band.
-    Until one lands, treat fit_sigma_ppm as a ~5× too-tight floor on live
-    data."""
+    honest sigma) — LANDED 2026-08-29: emitted GEO sigmas are
+    max(fit_sigma, scatter) once >=5 disjoint windows exist, and the
+    provisional 5x inflation of this OLS value before that;
+    (b) parametric AR with an externally pinned ρ band."""
     n = len(samples)
     if n < 3:
         return None
@@ -339,13 +340,27 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
             del w.fit_hist[:-12]
             w.last_fit_t = t
         sc = scatter_sigma(w.fit_hist)
-        votes.append((ppm, sig_ppm, prn, t))
+        sc_ppm = sc / L1_HZ * 1e6 if sc else None
+        # round-16 review: the EMITTED sigma must be the calibrated one.
+        # Once >=5 disjoint windows exist, every GEO row and consensus
+        # weight uses max(OLS, cross-window scatter) — the OLS value alone
+        # understates 6-20x on live AR(1) phase noise. Before 5 windows,
+        # publish the MC-calibrated provisional 5x-OLS inflation (measured
+        # 2026-08-28: 17% 1-sigma coverage at face value), explicitly
+        # flagged — never the optimistic raw OLS number.
+        if sc_ppm is not None:
+            sig_emit, sig_prov = max(sig_ppm, sc_ppm), False
+        else:
+            sig_emit, sig_prov = 5.0 * sig_ppm, True
+        votes.append((ppm, sig_emit, prn, t))
         diag[f"{sysname} {prn}"] = {
             "ok": True, "n": ev["n"],
             "slope_hz": round(ev["slope_hz"], 6),
             "fit_sigma_ppm": round(sig_ppm, 9),
-            "scatter_sigma_ppm": round(sc / L1_HZ * 1e6, 9) if sc else None,
+            "scatter_sigma_ppm": round(sc_ppm, 9) if sc_ppm else None,
             "scatter_n": len(w.fit_hist),
+            "emitted_sigma_ppm": round(sig_emit, 9),
+            "sigma_provisional": sig_prov,
             "ppm": round(ppm, 9),
         }
     rows = []

@@ -13,7 +13,9 @@ Bodnar is GPS-disciplined).
 
 Precision claim gates (all over ≥ 1 h of continuous data):
 - RMS of detrended clock-bias series b(t) < 1 ns.
-- Allan deviation < 1 ns for τ = 10–1000 s.
+- TDEV(τ) < 1 ns for τ = 10–1000 s (MDEV-derived TDEV per NIST SP 1065, as
+  implemented in scripts/clock_bias_analyzer.py — "Allan deviation in ns"
+  would be dimensionally wrong; ADEV is dimensionless).
 - WAAS GEO carrier-phase cross-check consistent (structure in b(t) is clock, not
   channel noise).
 

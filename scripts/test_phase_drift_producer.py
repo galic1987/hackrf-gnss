@@ -320,6 +320,48 @@ def main():
     rows3, _ = pd.process_state({"epoch": 3000.0}, {}, 40.0, 40.0, 30.0, 28)
     check("legacy: no tracker key -> no rows", rows3 == [])
 
+    # --- emitted GEO sigma: calibrated, never optimistic OLS (round 16) ---
+    # Six disjoint windows whose TRUE slope wanders ±0.4 Hz across windows:
+    # the cross-window scatter must dominate each window's tiny OLS sigma,
+    # and the emitted row sigma must carry it (not the raw OLS value).
+    def feed(n_win, win_s=60.0):
+        windows = {}
+        rows, diag = [], {}
+        for k in range(n_win):
+            base = 100000.0 + k * (win_s + 10.0)
+            wander = 0.4 * math.sin(k * 2.1)
+            for i in range(int(win_s) + 1):
+                t = base + i
+                nz = 0.004 * (((i * 37 + k * 11) % 11) - 5) / 5.0
+                cyc = (-500.0 + wander) * i + nz
+                st = {"epoch": t, "tracker": {"sats": [
+                    {"sys": "sbas", "prn": 131, "carrier_cycles": cyc,
+                     "slip": False, "cn0_proxy": 40.0,
+                     "lock_s": 5000.0 + i, "epoch": t}]}}
+                rows, diag = pd.process_state(st, windows, win_s, 10.0, 25.0, 20)
+        return rows, diag
+
+    rows, diag = feed(6)
+    d = diag["sbas 131"]
+    per = {r["band"]: r for r in rows}
+    emitted = per["L1 / WAAS 131 (phase)"]["sigma"]
+    check("sigma: scatter wired into emitted row",
+          d["scatter_sigma_ppm"] is not None and not d["sigma_provisional"]
+          and abs(emitted - d["emitted_sigma_ppm"]) < 1e-9
+          and emitted >= d["scatter_sigma_ppm"] - 1e-12
+          and emitted >= d["fit_sigma_ppm"],
+          f"emitted={emitted} scatter={d['scatter_sigma_ppm']} ols={d['fit_sigma_ppm']}")
+    check("sigma: scatter actually dominates tiny OLS here",
+          d["scatter_sigma_ppm"] > 3.0 * d["fit_sigma_ppm"],
+          f"ratio={d['scatter_sigma_ppm']/max(d['fit_sigma_ppm'],1e-15):.1f}")
+
+    rows, diag = feed(2)   # fresh windows: <5 disjoint fits -> provisional
+    d = diag["sbas 131"]
+    check("sigma: provisional 5x inflation before 5 windows",
+          d["sigma_provisional"] is True
+          and abs(d["emitted_sigma_ppm"] - 5.0 * d["fit_sigma_ppm"]) < 1e-12,
+          f"emitted={d['emitted_sigma_ppm']} ols={d['fit_sigma_ppm']}")
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILURES: {FAILURES}")
