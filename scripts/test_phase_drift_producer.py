@@ -64,6 +64,34 @@ def main():
     check("fit: sigma in the expected band", sigma_n < 5 * expect + 1e-6,
           f"sigma={sigma_n:.2e} expect~{expect:.2e}")
 
+    # --- fit_drift: autocorrelated residuals — pinned calibration fact ------
+    # Monte Carlo (deterministic LCG): on AR(1) rho=0.95 residuals the
+    # residual-based OLS sigma UNDERSTATES the true slope scatter (measured
+    # 2026-08-28: ~5x at n=40; a Newey-West HAC on the same residuals was
+    # worse still and was reverted). This test pins the limitation so the
+    # estimator is never "trusted" blindly again.
+    def gen_ar1(t0, n, slope_hz, rho, innov_cyc, seed):
+        out, x, e = [], seed, 0.0
+        for i in range(n):
+            x = (1103515245 * x + 12345) % (2**31)
+            e = rho * e + innov_cyc * (2.0 * (x / 2**31) - 1.0)
+            out.append((t0 + i, slope_hz * i + e))
+        return out
+
+    errs, sigs = [], []
+    for k in range(300):
+        ar = gen_ar1(1000.0, 40, 50.0, 0.95, 0.02, seed=29 + 131 * k)
+        sl, sg, _ = pd.fit_drift(ar)
+        errs.append(sl - 50.0)
+        sigs.append(sg)
+    emp = math.sqrt(sum(e * e for e in errs) / len(errs))
+    sig_med = sorted(sigs)[len(sigs) // 2]
+    check("fit: AR(1) OLS sigma understates (pinned, ~5x)",
+          emp > 1.5 * sig_med,
+          f"empirical={emp:.3e} median_sigma={sig_med:.3e}")
+    check("fit: AR(1) slope stays unbiased", abs(sum(errs) / len(errs)) < emp,
+          f"mean_err={sum(errs)/len(errs):.3e}")
+
     check("fit: <3 points -> None", pd.fit_drift(s[:2]) is None)
     check("fit: zero time span -> None",
           pd.fit_drift([(1.0, 0.0), (1.0, 1.0), (1.0, 2.0)]) is None)

@@ -126,8 +126,22 @@ def fit_drift(samples):
     """Least-squares slope of (t, cycles) samples.
 
     Returns (slope_hz, sigma_hz, n) or None when the window is degenerate
-    (<3 points or zero time span). sigma_hz is the honest 1-sigma slope
-    uncertainty from the fit residuals: sqrt(Σr²/(n-2) / Σ(t-t̄)²)."""
+    (<3 points or zero time span). sigma_hz is the 1-sigma slope
+    uncertainty from the fit residuals: sqrt(Σr²/(n-2) / Σ(t-t̄)²).
+
+    KNOWN LIMITATION (measured 2026-08-28, Monte Carlo, 4000 trials,
+    AR(1) ρ=0.95, n=40): when the phase residuals are strongly
+    autocorrelated, detrending absorbs the low-frequency wander into the
+    fit and the residual-based OLS sigma UNDERESTIMATES the true slope
+    scatter ~5× (empirical 1.15e-3 vs OLS 2.4e-4, 17% 1-σ coverage). A
+    Newey-West HAC (L=4) on the same residuals is WORSE (19× under, 4%
+    coverage — the fit destroyed the low-frequency information the HAC
+    needs), so the round-13 HAC prescription was implemented, measured
+    and reverted. Calibrated paths, in order: (a) cross-window empirical
+    slope scatter (the producer fits every window; the scatter IS the
+    honest sigma), (b) parametric AR with an externally pinned ρ band.
+    Until one lands, treat fit_sigma_ppm as a ~5× too-tight floor on live
+    data."""
     n = len(samples)
     if n < 3:
         return None
