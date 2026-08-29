@@ -1,5 +1,15 @@
 # Leg 1 v2 — first full-day verdict (2026-08-28)
 
+> **Addendum 2026-08-29:** this verdict is historical. Two statements in it
+> are superseded: (1) "no P0b consumer reads MT9 yet" — the consumer was
+> written, shadow-validated, and promoted on 2026-08-29 (commits fcd66eb,
+> 0000c8f); its acceptance artifact was reissued with the honest
+> paired-epoch metric in `2026-08-29-p0b-acceptance-reissued.md`
+> (cross-GEO closure ~3e-5 ppm, NOT the 2.36e-7 unpaired-median artifact;
+> output remains observe-only). (2) The clock-bias pipeline is now v3
+> (GPS+BDS, commit 8d420ed); v2-era row counts and segment statistics
+> below describe the superseded generation.
+
 **Pipeline verdict: `INSUFFICIENT DATA` — correct, honest, and informative.**
 The v2 pipeline worked end-to-end on live data for a full day; the sky and the
 observable — not the code — set the outcome. The sub-ns claim gates were NOT

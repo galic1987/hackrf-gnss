@@ -89,9 +89,11 @@ identify WHICH physical Bodnar output feeds a radio, and one external
 report claimed a reversed mapping exists somewhere on paper. Until both
 cable ends are photographed and labeled (Bodnar output, mode, radio serial,
 port, cable length, timestamp), do NOT reconfigure OUT1 or OUT2 to PPS —
-the port-budget options above stay on hold. Also note `live_radio` still
-sets Pro#2 P2 as CLKOUT at startup (harmless unconnected, but not a ready
-trigger input until its mode is explicitly changed for the TDC window).
+the port-budget options above stay on hold. P2 CLKOUT is configured OFF in
+the deployed tracker build (`live_radio` calls `set_clkout_enable(false)`,
+live since the 2026-08-29 16:44 restart), but treat P2 as not-yet-proven at
+pin level: verify no 10 MHz at the connector before using it as a trigger
+input for the TDC window.
 - Radio work (flashes, captures) requires stopping `tracker_producer` +
   `live_radio` first. The Pro-free window that opens is `band_producer`'s
   ONLY snapshot opportunity (`pro_owned()` fails closed while the tracker

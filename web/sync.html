@@ -3377,7 +3377,7 @@ sweepFocus();
       specs: [
         ["LBE-1421 outputs", "2 \u00d7 low-jitter, both set 10 MHz", "PPS available on OUT1 if re-tasked"],
         ["stability class", "~1e-11 ADEV (vendor class)", "not locally measured \u2014 flagged 2026-08-28"],
-        ["correction register", "FPGA 0x60\u20130x7F, fp_1_63 \u00b11% window", "shadow: computed, never written"],
+        ["correction register", "radio.h idx 23, fp_1_63 \u00b11% window \u2014 MCU/Si5351C, not FPGA", "shadow: computed, never written"],
         ["CLKIN switch", "at RX stream start", "verify: hackrf_clock -i"]
       ],
       links: [
@@ -3498,7 +3498,7 @@ sweepFocus();
       s: "iCE40UP5K gateware: tick counter, correction register, TDC \u2014 and what each number really is.",
       b: [
         "Four FPGA images coexist on the Pro. Slot 0 hosts the 48-tap carry-chain TDC; Slot 1 a coarse trigger latch; Slot 2 the 12-bit extended-precision RX (CIC + NCO, 54% logic cells, 0% of the 128 KB SPRAM used); production runs release 0x469 on all four slots (manifest-verified today).",
-        "The tick counter is a free-running 32 MHz fabric counter \u2014 its polls feed the heartbeat chart. The clock-correction register (0x60\u20130x7F) is written by the discipline loop in shadow mode only.",
+        "The tick counter is a free-running 32 MHz fabric counter \u2014 its polls feed the heartbeat chart. The clock-correction register (RADIO_CLOCK_CORRECTION, radio-interface index 23, fp_1_63 \u2014 it steers the Si5351C-synthesized sample/LO clocks, never the TCXO) is computed by the discipline loop in shadow mode only and never written. The 0x60\u20130x7F FPGA page exists only as a GPSDO design-doc register-map proposal \u2014 no gateware implements it.",
         "<b>TDC honesty note:</b> 499 ps is the LSB of the internal ring-oscillator self-test. No external single-edge measurement exists yet (it needs the PPS port freed plus an atomic coarse+fine latch), so \u201ccalibrated\u201d was retracted from every TDC mention on 2026-08-28."
       ],
       svg: chainSvg([
@@ -3507,7 +3507,7 @@ sweepFocus();
         { t: ["ts nibble", "packer"], s: "12-bit + 4-bit ts" },
         { t: ["tick ctr", "32 MHz"], s: "heartbeat source" },
         { t: ["TDC 48-tap"], s: "Slot 0 \u00b7 499 ps LSB*" },
-        { t: ["corr reg", "0x60\u20137F"], s: "shadow-only" },
+        { t: ["corr reg", "idx 23"], s: "shadow-only" },
         { t: ["SPI / USB"], s: "to host" }
       ], { bw: 108 }),
       specs: [
@@ -3862,7 +3862,7 @@ sweepFocus();
         specs: [["Part", "Si5351C — 2 PLLs, 8 outputs, I²C-programmable"], ["Input", "TCXO or CLKIN (auto-detected at stream start)"], ["Correction", "fractional divider re-programming, ±0.1 ppm steps as used by the discipline loop"], ["Register map", "Skyworks AN619 (Si5351 register map generator)"]],
         links: [["Datasheet", DS_SI5351], ["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
     { id: "p1", x: 30, y: 92, w: 112, h: 66, t: ["P1 = CLKIN"], s: "10 MHz in",
-      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO lock · " + g.n_sat + " sats" : "ref DEGRADED") : null; },
+      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO fix · " + g.n_sat + " sats (NMEA, not oscillator telemetry)" : "ref DEGRADED") : null; },
       tip: ["P1 — the board's ear for the reference", "Default CLKIN: a 3.3 V, 10 MHz square wave. When detected at stream start it replaces the TCXO as the reference. Green: the health of the GPSDO feeding this port, from the live NMEA probe."],
       det: { h3: "P1 (CLKIN) — where the Bodnar enters the board",
         paras: ["P1 is one of the Pro's two configurable SMA ports; by default it is CLKIN. A detected 10 MHz, 3.3 V square wave overrides the TCXO — but the switch happens ONLY when an RX/TX stream starts, which is why this station's law says: attach the clock first, then start the tracker.",
@@ -4053,7 +4053,7 @@ sweepFocus();
         specs: [["Part", "Si5351C"], ["CLKOUT", "10 MHz, 3.3 V square, high-Z load"], ["Station", "unused — star topology, both radios fed directly"]],
         links: [["Datasheet", DS_SI5351]] } },
     { id: "clkin", x: 30, y: 92, w: 112, h: 66, t: ["CLKIN SMA"], s: "10 MHz in",
-      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO lock · " + g.n_sat + " sats" : "ref DEGRADED") : null; },
+      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO fix · " + g.n_sat + " sats (NMEA, not oscillator telemetry)" : "ref DEGRADED") : null; },
       tip: ["CLKIN — One's reference ear", "High-impedance input expecting a 3.3 V, 10 MHz square wave. Shared with header P22 pin 2 — feed ONE of them, never both. Wired today: Bodnar OUT1."],
       det: { h3: "CLKIN (One) — second star branch lands here",
         paras: ["The One's CLKIN is electrically the same idea as the Pro's P1: a detected 10 MHz square wave replaces the local crystal at stream start. Wired today from Bodnar OUT1 with a cable matched in length to the Pro's OUT2 feed — relative frequency drift between the radios is thereby ~0 by construction.",
