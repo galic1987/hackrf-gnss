@@ -79,3 +79,56 @@ MDEV-TDEV, gap segmentation, continuity gates, gen grouping, missing-τ
 vacuous-pass guard. Deployed 09:45 after cargo test 322/322 and
 manifest_check PASS ×4 on Pro#2 (0x469 all slots). Shadow validator log:
 /tmp/clock_bias_shadow.jsonl (302 rows).
+
+---
+
+## Overnight attempt (2026-08-29, three runs, final 03:40 EDT)
+
+**The pipeline continues to fail closed on fragmented, code-limited data. No
+qualifying hour exists, so the RMS and TDEV claim gates have not been
+evaluated.**
+
+Three analyzer runs over the historically GPS-rich 23:00–05:00 window
+(analyzer v2.1, e7f0e22: NIST MDEV-TDEV, quality/poison gates, gen grouping,
+segmentation now splitting on EVERY missed epoch — inter-row gap > 1.5× the
+1.04 s median — so within-segment cadence is uniform to sub-epoch jitter):
+
+```
+attempt #1 00:40 — 12,955 rows; kept 2,318; longest segment 52 s / 50 rows
+attempt #2 02:12 — 13,828 rows; kept 2,589; longest segment 51 s / 50 rows
+attempt #3 03:40 — 16,726 rows; 14,609 quality-pass (n_sat>=5, slips==0);
+  11,517 poison-class excluded (79%); kept 3,092;
+  461 holes; longest segment 51 s / 50 rows (unchanged)
+continuity gates: span>=3600 s AND rows>=3400 AND max-gap<=5 s
+INSUFFICIENT DATA (exit 1) on all three attempts
+```
+
+**Hole anatomy.** Two compounding layers: (a) multi-thousand-second absences
+(8,550 s during the pre-restart churn era, plus 6,278 s, 5,447 s, 3,263 s,
+2,251 s holes) where no clean solve exists at all; (b) a constant fabric of
+2–25 s solve misses — the producer emits only on cleanly-converged seconds,
+and on the night's sat-sets that is roughly one second in five at best.
+
+**Density argument.** Raw flow improved through the night (evening ~4
+rows/min → ~32 rows/min after 02:00 as the sky ripened), but the poison gate
+held at ~79% on churned sets: kept flow peaked at ~5.6 rows/min. The
+continuity gate needs 3,400 kept rows in one uninterrupted hour (56.7
+kept/min) — an order of magnitude beyond the night's best. The binding
+constraint is observable density on the current sat-set/anchor geometry, not
+the gates and not the analyzer.
+
+**GEO cross-check (03:40, state.phase_drift.json, scatter-calibrated
+sigmas):** sbas131 +0.00061 ppm (scatter σ 1.9e-4), sbas135 −0.00151 ppm
+(scatter σ 3.5e-4) — the two GEO phase slopes disagree with each other and
+with the clock-bias series' −0.00004 ppm/day-class slope by orders of
+magnitude beyond their sigmas; the discrepancy stays assigned to the
+unremoved GEO-motion residual (the P0b MT9 LOS subtraction deploys in the
+next window bundle). The new disjoint-window scatter sigma confirmed live
+that per-window OLS sigmas were 6–20× too tight (sbas131: 8.9e-6 vs 1.8e-4
+ppm), and the consensus sigma now reports the honest 2.1e-4 class.
+
+**Standing:** the v2 pipeline is validated end-to-end (sign fix, solver,
+gates, honest segmentation); the sub-ns claim remains NOT SUPPORTED — no
+qualifying hour has ever existed in this data. The path is unchanged: spec
+component 1 (prompt carrier-phase residual with sample-exact epochs) for the
+100×-class observable, and a richer/tilted antenna for sat-set density.
