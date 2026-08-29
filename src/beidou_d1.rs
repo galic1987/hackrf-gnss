@@ -1,7 +1,8 @@
 //! BeiDou B1I D1 navigation-message decode (BDS-SIS-ICD-B1I; MEO/IGSO
 //! satellites — GEO PRNs 1..=5 broadcast D2 at 500 bps, not handled: none are
 //! visible from this station), plus the BDS broadcast-orbit/clock model with
-//! ICD constants and RINEX-3 C-record parsing.
+//! ICD constants (including the GEO special case of ICD 5.2.4.2, gated on
+//! [`is_bds_geo`]) and RINEX-3 C-record parsing.
 //!
 //! D1 NAV: 50 bps BPSK with the 20-bit Neumann-Hofman secondary code on top
 //! (1 ms per NH chip, NH period == nav-bit period, edges aligned with the
@@ -42,6 +43,10 @@ use crate::gps::broadcast::{
 pub const MU_BDS: f64 = 3.986004418e14;
 /// BDS ICD Earth rotation rate (rad/s).
 pub const OMEGA_BDS: f64 = 7.2921150e-5;
+/// ICD GEO orbital-plane rotation about the X axis, radians (-5 deg,
+/// BDS-SIS-ICD-B1I 5.2.4.2 — written as the literal so the const needs no
+/// non-const to_radians call).
+const GEO_ROT_RAD: f64 = -0.087_266_462_599_716_47;
 /// BDS ICD pi (used for the semicircle->radian conversions).
 const PI_BDS: f64 = 3.1415926535898;
 /// BDT = GPST - BDT_GPST_OFFSET (BDT has no leap seconds).
@@ -421,12 +426,30 @@ fn wrap_tk(mut tk: f64) -> f64 {
     tk
 }
 
+/// GEO gate for the BDS orbit model (BDS-SIS-ICD-B1I 5.2.4.2): BDS-2 GEOs
+/// (PRN 1..=5) and BDS-3 GEOs (PRN >= 59; RTKLIB 2.4.3 eph2pos's
+/// `sys==SYS_CMP && prn<=5` branch, extended to `prn>=59` for the BDS-3
+/// GEO slots) get the special orbital-plane transform in
+/// [`sat_pos_ecef_bds`]. Every bird this station has ever locked is
+/// MEO/IGSO (C23/C32/C37) and answers false; the GEOs sit over Asia.
+pub fn is_bds_geo(prn: u8) -> bool {
+    prn <= 5 || prn >= 59
+}
+
 /// Satellite ECEF position (metres) at `t` — same Kepler equations as GPS
-/// but with BDS ICD constants (mu, omega_e). `t` is the GPST-equivalent SOW
-/// (toe/toc are stored shifted by +14 s, so the difference cancels the
-/// BDT/GPST offset). MEO/IGSO only: GEO needs the ICD's +5 deg orbital-plane
-/// transform, not implemented (no GEOs at this station).
+/// but with BDS ICD constants (mu, omega_e; CGCS2000 coincides with WGS-84
+/// at this precision — cm-class frame difference, immaterial next to
+/// broadcast-ephemeris error). `t` is the GPST-equivalent SOW (toe/toc are
+/// stored shifted by +14 s, so the offset cancels INSIDE differences like
+/// tk = t - toe; the standalone -omega_e*toe node term converts back with
+/// (e.toe - BDT_GPST_OFFSET) — see the note in sat_pos_ecef_bds_impl).
+/// GEO satellites ([`is_bds_geo`]) take the ICD 5.2.4.2 special case; the
+/// MEO/IGSO composition is unchanged.
 pub fn sat_pos_ecef_bds(e: &BrdcEph, t: f64) -> [f64; 3] {
+    sat_pos_ecef_bds_impl(e, t, is_bds_geo(e.prn))
+}
+
+fn sat_pos_ecef_bds_impl(e: &BrdcEph, t: f64, geo: bool) -> [f64; 3] {
     let a = e.sqrt_a * e.sqrt_a;
     let n0 = (MU_BDS / (a * a * a)).sqrt();
     let tk = wrap_tk(t - e.toe);
@@ -440,7 +463,26 @@ pub fn sat_pos_ecef_bds(e: &BrdcEph, t: f64) -> [f64; 3] {
     let rk = a * (1.0 - e.e * ce) + e.crs * s2 + e.crc * c2;
     let ik = e.i0 + e.cis * s2 + e.cic * c2 + e.idot * tk;
     let (xp, yp) = (rk * uk.cos(), rk * uk.sin());
-    let om = e.omega0 + (e.omega_dot - OMEGA_BDS) * tk - OMEGA_BDS * e.toe;
+    if geo {
+        // ICD 5.2.4.2 GEO special case (RTKLIB 2.4.3 eph2pos prn<=5 branch):
+        // the ascending node is composed WITHOUT the -omega_e*tk term (a
+        // GEO is nearly Earth-fixed, so its node lives in the rotating
+        // frame directly), then the orbital-plane vector is rotated by
+        // -5 deg about the X axis. The standalone node term needs the RAW
+        // BDT toe: e.toe is stored shifted +14 s (GPST-equivalent) so the
+        // difference cancels in tk, but here toe appears OUTSIDE the
+        // difference — using it unconverted rotates every BDS node by
+        // -omega_e*14 s (measured 2026-08-29: C37 anchor residual
+        // +1645.6 m with the stored toe, +35.6 m converted).
+        let om = e.omega0 + e.omega_dot * tk - OMEGA_BDS * (e.toe - BDT_GPST_OFFSET);
+        let (co, so, ci, si) = (om.cos(), om.sin(), ik.cos(), ik.sin());
+        let (xg, yg, zg) = (xp * co - yp * ci * so, xp * so + yp * ci * co, yp * si);
+        let (cp, sp) = (GEO_ROT_RAD.cos(), GEO_ROT_RAD.sin());
+        return [xg, yg * cp - zg * sp, yg * sp + zg * cp];
+    }
+    // Same raw-BDT-toe conversion as the GEO path (see above): RTKLIB keeps
+    // the broadcast BDT SOW in eph.toes for exactly this term.
+    let om = e.omega0 + (e.omega_dot - OMEGA_BDS) * tk - OMEGA_BDS * (e.toe - BDT_GPST_OFFSET);
     let (co, so, ci, si) = (om.cos(), om.sin(), ik.cos(), ik.sin());
     [xp * co - yp * ci * so, xp * so + yp * ci * co, yp * si]
 }
@@ -1240,5 +1282,266 @@ C22 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         assert_eq!(r.rejected, 1, "the sc-band record lost the vote");
         assert!(!r.ephs.contains_key(&25));
         assert!(r.ephs.contains_key(&1), "unit-neutral records still pass");
+    }
+
+    // ---------------- live BRDC fixtures (2026-08-29) --------------------
+    //
+    // Verbatim C-record blocks from the live BKG mixed BRDC
+    // (observations/brdc_latest.rnx, 2026-08-29; BKG writes lowercase-e
+    // exponents and 80-column records — the trailing blanks on the last two
+    // lines of each block are part of the live record). C01 is a GEO
+    // (sqrtA 6493.4 -> A ~ 42164 km, i0 ~ 0.094 rad, unit-neutral), C23 a
+    // BDS-3 MEO (sqrtA 5282.7 -> ~27906 km) — the birds the tracker locks
+    // at this station are MEO/IGSO (C23/C32/C37).
+    const BRDC_C01_1200: &str = "\
+C01 2026 08 29 12 00 00-8.519273251295e-07 2.930988785010e-14 0.000000000000e+00
+     1.000000000000e+00-4.524843750000e+02 1.343270238311e-09 1.876679212411e+00
+    -1.446530222893e-05 5.151481600478e-04 3.053108230233e-05 6.493364641190e+03
+     5.616000000000e+05-1.098960638046e-07 1.337900099195e-01 8.381903171539e-09
+     9.431225122668e-02-9.330781250000e+02-2.597167920069e+00-5.800241603344e-10
+    -7.928901699153e-11                    1.077000000000e+03                   
+     2.000000000000e+00 0.000000000000e+00 4.499999928242e-09 4.500000000000e-09
+     5.624100000000e+05 1.000000000000e+00                                      ";
+
+    const BRDC_C01_1300: &str = "\
+C01 2026 08 29 13 00 00-8.514616638422e-07 7.815970093361e-14 0.000000000000e+00
+     1.000000000000e+00 8.071875000000e+01 1.081830776880e-09 2.146081185536e+00
+     2.779532223940e-06 5.181714659557e-04 3.437604755163e-05 6.493353404999e+03
+     5.652000000000e+05-1.178123056889e-07 3.761902764636e-01 4.051253199577e-08
+     9.458600123518e-02-1.057906250000e+03-2.846531141242e+00-2.285809498855e-10
+    -7.678891285216e-11                    1.077000000000e+03                   
+     2.000000000000e+00 0.000000000000e+00 4.499999928242e-09 4.500000000000e-09
+     5.654700000000e+05 1.000000000000e+00                                      ";
+
+    const BRDC_C23_1800: &str = "\
+C23 2026 08 29 18 00 00-4.561807727441e-04-1.215028078150e-12 0.000000000000e+00
+     1.000000000000e+00 1.132812500000e+01 3.987308944565e-09 1.453141282173e+00
+     6.644986569881e-07 3.006046172231e-04 1.267576590180e-05 5.282656003952e+03
+     5.832000000000e+05 2.980232238770e-08-2.643959637177e+00-1.816079020500e-08
+     9.443500102542e-01 9.301562500000e+01-5.178029058037e-01-6.813498095259e-09
+     9.786121916973e-11                    1.077000000000e+03                   
+     2.000000000000e+00 0.000000000000e+00 2.200000004393e-08 2.200000004393e-08
+     5.832000000000e+05 0.000000000000e+00                                      ";
+
+    #[test]
+    fn parses_the_live_c01_geo_record() {
+        // the 12:00 BDT block alone: the GEO's i0 ~ 0.094 rad carries no
+        // unit evidence, so the spec default (radians) applies
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{BRDC_C01_1200}"));
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 0);
+        let e = &r.ephs[&1];
+        assert_eq!(e.sys, 1);
+        assert!((e.af0 - (-8.519273251295e-07)).abs() < 1e-18);
+        assert!((e.af1 - 2.930988785010e-14).abs() < 1e-24);
+        assert_eq!(e.af2, 0.0);
+        assert!((e.sqrt_a - 6493.364641190).abs() < 1e-9);
+        assert!((e.e - 5.151481600478e-04).abs() < 1e-15);
+        // radians pass through unscaled (RINEX-3.05 Table A6 fn. ***)
+        assert!((e.m0 - 1.876679212411).abs() < 1e-12);
+        assert!((e.i0 - 9.431225122668e-02).abs() < 1e-12);
+        // BDT epochs (Saturday 12:00 = SOW 561600) stored GPST-equivalent
+        assert!((e.toe - sow_bdt_to_gpst(561_600.0)).abs() < 1e-9, "toe {}", e.toe);
+        assert!((e.toc - sow_bdt_to_gpst(561_600.0)).abs() < 1e-9, "toc {}", e.toc);
+        assert_eq!(e.week, 1077.0);
+        assert_eq!(e.health, Some(0), "SatH1 = 0 in the live record");
+        assert!((e.tgd - 4.499999928242e-09).abs() < 1e-20, "TGD1 (B1I group delay)");
+        assert!(is_bds_geo(e.prn));
+        // GEO radius at toe: A = 6493.36^2 m = 42163.8 km; r sits within
+        // A*(1 +/- e) plus the crs/crc harmonics (~+-8 km on this record),
+        // so the band is A-centric, not a 1 km pin on A itself
+        let p = sat_pos_ecef_bds(e, e.toe);
+        let rr = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!(rr > 42_100_000.0 && rr < 42_230_000.0, "GEO radius {rr}");
+    }
+
+    #[test]
+    fn c01_newer_issue_wins_selection() {
+        // both live blocks: the 13:00 BDT issue (toe 565200) displaces the
+        // 12:00 one (toe 561600), either file order
+        for txt in [
+            format!("{RNX_HDR}{}\n{}", BRDC_C01_1200, BRDC_C01_1300),
+            format!("{RNX_HDR}{}\n{}", BRDC_C01_1300, BRDC_C01_1200),
+        ] {
+            let r = parse_rinex_bds_nav(&txt);
+            assert_eq!(r.rejected, 0);
+            let e = &r.ephs[&1];
+            assert!((e.toe - sow_bdt_to_gpst(565_200.0)).abs() < 1e-9, "toe {}", e.toe);
+            assert!((e.toc - sow_bdt_to_gpst(565_200.0)).abs() < 1e-9, "toc {}", e.toc);
+            assert!((e.af0 - (-8.514616638422e-07)).abs() < 1e-18);
+            assert!((e.sqrt_a - 6493.353404999).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn parses_the_live_c23_meo_record() {
+        let r = parse_rinex_bds_nav(&format!("{RNX_HDR}{BRDC_C23_1800}"));
+        assert_eq!(r.unit, AngUnit::Radians);
+        assert_eq!(r.rejected, 0);
+        let e = &r.ephs[&23];
+        assert_eq!(e.sys, 1);
+        assert!((e.af0 - (-4.561807727441e-04)).abs() < 1e-15);
+        assert!((e.af1 - (-1.215028078150e-12)).abs() < 1e-22);
+        assert!((e.sqrt_a - 5282.656003952).abs() < 1e-9);
+        assert!((e.m0 - 1.453141282173).abs() < 1e-12);
+        assert!((e.i0 - 9.443500102542e-01).abs() < 1e-12);
+        // Saturday 18:00 BDT = SOW 583200, stored GPST-equivalent
+        assert!((e.toe - sow_bdt_to_gpst(583_200.0)).abs() < 1e-9, "toe {}", e.toe);
+        assert!((e.toc - sow_bdt_to_gpst(583_200.0)).abs() < 1e-9, "toc {}", e.toc);
+        assert_eq!(e.week, 1077.0);
+        assert_eq!(e.health, Some(0));
+        assert!((e.tgd - 2.200000004393e-08).abs() < 1e-19, "TGD1");
+        assert!(!is_bds_geo(e.prn));
+        // BDS MEO radius ~ 27906 km from Earth centre (A = 5282.656^2 m)
+        let p = sat_pos_ecef_bds(e, e.toe);
+        let rr = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!((rr - 27_906_000.0).abs() < 500_000.0, "MEO radius {rr}");
+    }
+
+    #[test]
+    fn node_term_uses_raw_bdt_toe_not_stored_gpst() {
+        // Regression pin for the 2026-08-29 fix: e.toe is stored shifted
+        // +14 s (GPST-equivalent) so tk = t - toe is frame-clean, but the
+        // standalone -omega_e*toe node term must convert back to the raw
+        // BDT toe. With the stored toe the node is rotated -omega_e*14 s
+        // (live: C37 anchor residual +1645.6 m -> +35.6 m when converted).
+        let e = parse_rinex_bds(&format!("{RNX_HDR}{BRDC_C23_1800}"))[&23].clone();
+        // reproduce the orbital-plane vector at tk = 0 (identical under
+        // either toe convention), then compose the node BOTH ways
+        let a = e.sqrt_a * e.sqrt_a;
+        let n0 = (MU_BDS / (a * a * a)).sqrt();
+        let mk = e.m0; // tk = 0
+        let ek = kepler_e(mk, e.e);
+        let (se, ce) = (ek.sin(), ek.cos());
+        let vk = ((1.0 - e.e * e.e).sqrt() * se).atan2(ce - e.e);
+        let phik = vk + e.omega;
+        let (s2, c2) = ((2.0 * phik).sin(), (2.0 * phik).cos());
+        let uk = phik + e.cus * s2 + e.cuc * c2;
+        let rk = a * (1.0 - e.e * ce) + e.crs * s2 + e.crc * c2;
+        let ik = e.i0 + e.cis * s2 + e.cic * c2;
+        let (xp, yp) = (rk * uk.cos(), rk * uk.sin());
+        let pos_at = |om: f64| {
+            let (co, so, ci, si) = (om.cos(), om.sin(), ik.cos(), ik.sin());
+            [xp * co - yp * ci * so, xp * so + yp * ci * co, yp * si]
+        };
+        let om_raw = e.omega0 - OMEGA_BDS * (e.toe - BDT_GPST_OFFSET); // ICD
+        let om_old = e.omega0 - OMEGA_BDS * e.toe; // the bug (stored toe)
+        let _ = n0;
+        let p_fixed = sat_pos_ecef_bds(&e, e.toe);
+        let p_oracle = pos_at(om_raw);
+        let p_bug = pos_at(om_old);
+        let d = |u: [f64; 3], v: [f64; 3]| {
+            ((u[0] - v[0]).powi(2) + (u[1] - v[1]).powi(2) + (u[2] - v[2]).powi(2)).sqrt()
+        };
+        assert!(d(p_fixed, p_oracle) < 1e-6, "node must use raw BDT toe: {} m", d(p_fixed, p_oracle));
+        assert!(d(p_fixed, p_bug) > 20_000.0,
+                "stored-toe composition must diverge by ~omega_e*14 s * r ({} m)", d(p_fixed, p_bug));
+    }
+
+    #[test]
+    fn geo_branch_is_the_icd_plane_rotation_and_earth_fixed_node() {
+        // the gate: BDS-2 GEOs 1..=5 and BDS-3 GEOs >= 59 take the branch;
+        // the station's MEO/IGSO birds (23/32/37) never do
+        for prn in [1u8, 5, 59, 63] {
+            assert!(is_bds_geo(prn), "PRN {prn} is a GEO slot");
+        }
+        for prn in [6u8, 23, 32, 37, 58] {
+            assert!(!is_bds_geo(prn), "PRN {prn} stays on the standard path");
+        }
+        let e = parse_rinex_bds(&format!("{RNX_HDR}{BRDC_C01_1200}"))[&1].clone();
+        let n = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        // at tk = 0 the two node compositions coincide, so the branch
+        // difference is EXACTLY the ICD's -5 deg rotation about X
+        let (cp, sp) = (GEO_ROT_RAD.cos(), GEO_ROT_RAD.sin());
+        let meo = sat_pos_ecef_bds_impl(&e, e.toe, false);
+        let geo = sat_pos_ecef_bds_impl(&e, e.toe, true);
+        let rot = [meo[0], meo[1] * cp - meo[2] * sp, meo[1] * sp + meo[2] * cp];
+        let d = (0..3).map(|i| (geo[i] - rot[i]).powi(2)).sum::<f64>().sqrt();
+        assert!(d < 1e-6, "GEO branch at toe = Rx(-5 deg) of the standard composition: {d} m");
+        // the rotation is an isometry (radius unchanged by the branch)
+        assert!((n(geo) - n(meo)).abs() < 1e-6);
+        // at tk = 1 h the branch's Earth-fixed node (no -omega_e*tk)
+        // diverges from the rotating composition by km class
+        let a = sat_pos_ecef_bds_impl(&e, e.toe + 3600.0, true);
+        let b = sat_pos_ecef_bds_impl(&e, e.toe + 3600.0, false);
+        let d = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
+        assert!(d > 1e6, "the Earth-fixed GEO node must diverge: {d} m");
+        // the public entry point routes a GEO PRN through the branch
+        assert!((n(sat_pos_ecef_bds(&e, e.toe)) - n(geo)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bdt_offset_const_and_clock_polynomial_handcheck() {
+        assert_eq!(BDT_GPST_OFFSET, 14.0, "BDT = GPST - 14 s (no leap seconds in BDT)");
+        assert_eq!(sow_bdt_to_gpst(561_600.0), 561_614.0);
+        // hand-computed clock of the live C23 record at t = toc = toe:
+        // dt = af0 + F*e*sqrtA*sinE - TGD1, F = -2*sqrt(mu)/c^2, E = kepler(M0)
+        //    = -4.561807727441e-04 - 7.007e-10 - 2.2e-8
+        //    = -4.5620347340506e-04 (independent evaluation of the record)
+        let e = parse_rinex_bds(&format!("{RNX_HDR}{BRDC_C23_1800}"))[&23].clone();
+        let dt = sat_clock_bds(&e, e.toe);
+        assert!((dt - (-4.5620347340506e-04)).abs() < 1e-12, "dt {dt}");
+    }
+
+    /// The 2026-08-29 availability diagnosis as a solve: 5 GPS + 3 BDS
+    /// synthetic rows over the station anchor with a known injected clock
+    /// bias — the mixed vector recovers it; and 4 GPS + 3 BDS (one bird
+    /// dropping, the scenario that zeroed every clean GPS-only run) is 7
+    /// rows, over the example's >=5 gate. (The gate itself lives in the
+    /// example's main loop; this pins the solver side of it.)
+    #[test]
+    fn mixed_gps_bds_clock_only_recovers_injected_bias() {
+        use crate::gps::pvt::{solve_clock_only, Meas};
+        // pvt.rs's real-geometry fixture: the New York station and five of
+        // its six SGP4-derived GPS satellite positions (km)
+        const STATION: [f64; 3] = [1351.991, -4653.584, 4133.012];
+        const GPS_SATS: [[f64; 3]; 5] = [
+            [5869.975, -16762.018, 19215.021],   // PRN16
+            [-3107.678, -19845.218, 17310.754],  // PRN4
+            [13935.468, -7948.651, 20949.401],   // PRN26
+            [12385.868, -23003.053, 2879.614],   // PRN27
+            [21723.378, -9762.873, 11751.846],   // PRN31
+        ];
+        // three synthetic BDS MEO rows through the real orbit model (e = 0,
+        // i0 = 0.96, toe = 0 -> position at t=0 is (m0, omega0) only); the
+        // (m0, omega0) are chosen so all three sit 38-89 deg elevation over
+        // STATION (verified by an independent evaluation)
+        let bds_sats = [(0.90, 4.40), (0.40, 3.80), (6.20, 5.00)].map(|(m0, om0)| {
+            let e = BrdcEph {
+                sys: 1,
+                sqrt_a: 5283.0,
+                e: 0.0,
+                m0,
+                omega0: om0,
+                i0: 0.96,
+                toe: 0.0,
+                toc: 0.0,
+                ..Default::default()
+            };
+            let p = sat_pos_ecef_bds(&e, 0.0);
+            [p[0] / 1000.0, p[1] / 1000.0, p[2] / 1000.0]
+        });
+        let clock_km = 50.0;
+        let build = |n_gps: usize| -> Vec<Meas> {
+            GPS_SATS[..n_gps]
+                .iter()
+                .chain(bds_sats.iter())
+                .map(|s| {
+                    let g = (0..3).map(|i| (STATION[i] - s[i]).powi(2)).sum::<f64>().sqrt();
+                    Meas { sat: *s, pseudorange: g + clock_km, clock_free: false }
+                })
+                .collect()
+        };
+        for weighted in [true, false] {
+            let f = solve_clock_only(&build(5), STATION, weighted).expect("5 GPS + 3 BDS solves");
+            assert_eq!(f.n_sat, 8);
+            assert!((f.clock_km - clock_km).abs() < 1e-6, "clock {}", f.clock_km);
+            assert!(f.residual_rms_m < 1e-3, "rms {}", f.residual_rms_m);
+            // the killer scenario: one GPS bird down — 4 + 3 = 7 rows, over
+            // the >=5 gate that a 4-row GPS-only epoch dies against
+            let f = solve_clock_only(&build(4), STATION, weighted).expect("4 GPS + 3 BDS = 7 rows");
+            assert_eq!(f.n_sat, 7);
+            assert!((f.clock_km - clock_km).abs() < 1e-6, "clock {}", f.clock_km);
+        }
     }
 }
