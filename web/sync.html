@@ -194,7 +194,7 @@
 <h1>Fused multi-satellite sync</h1>
 <div id="hint">Hover any <span class="tip" tabindex="0" data-tip-title="Tooltips" data-tip="Like this one! Every acronym, unit, metric and chart on this page has a definition: what it is, why it matters, what a good value looks like.">dotted-underlined term</span> (or press Tab to focus it) to learn what it means. Click any <b>&#9432; specs</b> pill &mdash; or the card title itself &mdash; for the full component description: schematic, spec sheet and datasheet links.</div>
 <div id="alerts"></div>
-<div id="tourstart"><button class="segbtn" id="tourbtn">&#9654; take the 2-minute tour</button> &mdash; nine stops, from the headline number down to the quantum definition of the second.</div>
+<div id="tourstart"><button class="segbtn" id="tourbtn">&#9654; take the 2-minute tour</button> &nbsp; <button class="segbtn" id="hwbtn" style="border-color:#6ec1e4">&#9881; hardware lab &mdash; the boards, live</button> &mdash; nine stops, from the headline number down to the quantum definition of the second.</div>
 
 <div class="grid">
 
@@ -3671,6 +3671,626 @@ sweepFocus();
     });
     h2.appendChild(b);
   });
+})();
+</script>
+
+<!-- ==================== HARDWARE LAB (education overlay) ====================
+     Interactive block diagrams of the two physical radios on this station.
+     Every chip, port and wire is hover-explained and click-detailed, with
+     live values bound from /api/sync. Facts follow the official docs:
+     hackrf.readthedocs.io/en/latest/hardware_components.html, hackrf_pro.rst,
+     hackrf_one.rst, external_clock_interface.rst, hardware_triggering.rst. -->
+<style id="hwedu-css">
+  #hwedu { display: none; position: fixed; inset: 0; z-index: 400; overflow-y: auto;
+           background: rgba(3, 6, 10, 0.88); padding: 3vh 18px 6vh; }
+  #hwedu .hw-card { background: var(--card); border: 1px solid #3a4a58; border-radius: 12px;
+                    max-width: 1240px; margin: 0 auto; padding: 1em 1.3em 1.3em;
+                    box-shadow: 0 14px 60px rgba(0,0,0,0.6); }
+  #hwedu h2 { margin: 0.2em 3em 0.1em 0; }
+  #hwedu .hw-sub { color: var(--dim); font-size: 0.9em; margin-bottom: 0.7em; }
+  #hwedu .hw-close { float: right; background: none; border: 1px solid #3a4a58; color: var(--txt);
+                     border-radius: 6px; padding: 0.2em 0.8em; cursor: pointer; font-size: 1em; }
+  #hwedu .hw-close:hover { background: #18222c; }
+  #hwedu .hw-tabs { margin: 0.5em 0 0.7em; }
+  #hwedu .hw-tabs button { background: #10161c; color: var(--txt); border: 1px solid #3a4a58;
+                           border-radius: 7px; padding: 0.3em 1em; margin-right: 0.5em;
+                           cursor: pointer; font-size: 0.92em; }
+  #hwedu .hw-tabs button.on { border-color: #6ec1e4; color: #9fd8f0; }
+  #hwedu .hw-live { display: flex; flex-wrap: wrap; gap: 0.5em 1.4em; background: #0c1218;
+                    border: 1px solid #22303a; border-radius: 8px; padding: 0.45em 0.9em;
+                    font-size: 0.88em; margin-bottom: 0.6em; font-family: ui-monospace, Menlo, monospace; }
+  #hwedu .hw-live b { color: #9fd8f0; }
+  #hwedu svg { display: block; width: 100%; height: auto; background: #0a0f14;
+               border: 1px solid #22303a; border-radius: 8px; }
+  #hwedu .hw-node { cursor: pointer; }
+  #hwedu .hw-node:hover rect { stroke: #9fd8f0; }
+  #hwedu .hw-edgehit { cursor: pointer; }
+  #hwedu .hw-edgehit:hover + .hw-edgeline { stroke: #9fd8f0; }
+  #hwedu #hw-detail { margin-top: 0.7em; background: #0c1218; border: 1px solid #2a3742;
+                      border-radius: 8px; padding: 0.7em 1em; font-size: 0.92em; line-height: 1.5; }
+  #hwedu #hw-detail h3 { margin: 0 0 0.3em; color: #9fd8f0; }
+  #hwedu #hw-detail table { width: 100%; border-collapse: collapse; margin: 0.5em 0; }
+  #hwedu #hw-detail td, #hwedu #hw-detail th { border: 1px solid #2a3742; padding: 0.25em 0.55em;
+                      font-size: 0.88em; text-align: left; }
+  #hwedu #hw-detail th { background: #18222c; color: var(--dim); }
+  #hwedu #hw-detail a { color: #6ec1e4; text-decoration: none; border-bottom: 1px dotted #2a4a5a; }
+  #hwedu .hw-lv { color: #8fe3a8; font-weight: 700; }
+  #hwedu .hw-src { color: var(--dim); font-size: 0.8em; margin-top: 0.6em;
+                   border-top: 1px solid #22303a; padding-top: 0.5em; }
+</style>
+
+<div id="hwedu" role="dialog" aria-label="Hardware lab">
+  <div class="hw-card">
+    <button class="hw-close" id="hw-close">&#10005; close</button>
+    <h2>Hardware lab &mdash; the boards behind the numbers</h2>
+    <div class="hw-sub">The official HackRF Pro / HackRF One architecture, wired to this station's live state.
+      <b>Hover</b> any chip or wire for the short explanation; <b>click</b> it for the full lesson &mdash;
+      specs, failure modes, datasheet links, and (green) the value it has <i>right now</i>.</div>
+    <div class="hw-tabs">
+      <button id="hw-tab-pro" class="on">HackRF Pro &mdash; &hellip;6450 &middot; production GNSS</button>
+      <button id="hw-tab-one">HackRF One &mdash; &hellip;922c &middot; ATSC / phase</button>
+      <button id="hw-tab-wire">&#9883; connect a third board (clock &middot; trigger &middot; ground)</button>
+    </div>
+    <div class="hw-live" id="hw-live">loading live state&hellip;</div>
+    <div id="hw-svgbox"></div>
+    <div id="hw-detail"><h3>Nothing selected</h3>Click any block or any wire on the diagram above &mdash; every line has its full explanation.</div>
+  </div>
+</div>
+
+<script id="hwedu-js">
+(function hwEduInit() {
+  if (window.__hwEdu) return; window.__hwEdu = true;
+  var FONT = "font-family:ui-monospace,Menlo,monospace;";
+  var ST = null;            // last /api/sync payload
+  var BOARD = "pro";
+
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function el(tag, attrs, inner) {
+    var s = "<" + tag;
+    for (var k in attrs) s += " " + k + '="' + attrs[k] + '"';
+    return inner === undefined ? s + "/>" : s + ">" + inner + "</" + tag + ">";
+  }
+  function sgn(x) { return x < 0 ? "\u2212" : "+"; }
+
+  // ---------- diagram data ----------
+  // Node: {id,x,y,w,h,t:[title lines],s:sub, lv:fn(ST)->green live line|null,
+  //        tip:[title,body], det:{h3,paras[],specs[][],links[][]}}
+  // Edge: {x1,y1,x2,y2,label,lx,ly,dash?, tip:[title,body], det:{...}}
+  var DS_MAX2831 = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX2831-MAX2832.pdf";
+  var DS_MAX2839 = "https://www.analog.com/media/en/technical-documentation/data-sheets/max2839.pdf";
+  var DS_MAX5864 = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX5864.pdf";
+  var DS_SI5351 = "https://www.skyworksinc.com/-/media/SkyWorks/SL/documents/public/data-sheets/Si5351-B.pdf";
+  var DS_RFFC = "https://www.qorvo.com/products/d/da001967";
+  var PG_MAX2831 = "https://www.analog.com/en/products/max2831.html";
+  var PG_MAX5864 = "https://www.analog.com/en/products/max5864.html";
+  var DOC_COMP = "https://hackrf.readthedocs.io/en/latest/hardware_components.html";
+  var DOC_CLK = "https://hackrf.readthedocs.io/en/stable/external_clock_interface.html";
+  var DOC_TRIG = "https://hackrf.readthedocs.io/en/stable/hardware_triggering.html";
+  var DOC_PRO = "https://hackrf.readthedocs.io/en/latest/hackrf_pro.html";
+  var DOC_ONE = "https://hackrf.readthedocs.io/en/latest/hackrf_one.html";
+
+  function lockedSats(ST) {
+    var s = (ST && ST.tracker && ST.tracker.sats) || [];
+    return s.filter(function (x) { return x.locked; }).length;
+  }
+
+  var PRO_NODES = [
+    { id: "ant", x: 10, y: 280, w: 122, h: 82, t: ["RF port (SMA)"], s: "ANT + bias-tee",
+      lv: function (ST) { return ST && ST.tracker ? lockedSats(ST) + " sats locked" : null; },
+      tip: ["RF port — where the sky comes in", "Single 50 Ω SMA for the antenna. The same conductor also carries 3.3 V DC (≤50 mA) UP to power the active antenna's LNA — the bias-tee. This station: Taoglas AA.250 active patch."],
+      det: { h3: "RF port + bias-tee — signal in, power out",
+        paras: ["One SMA female connector is the entire analog I/O of the radio: received RF flows in, transmitted RF (never used here) flows out, and — when the bias-tee is enabled — 3.3 V DC at up to 50 mA flows OUT along the same center conductor to power an active antenna's built-in amplifier.",
+          "The green number is live: satellites the tracker currently holds lock on through this port. It is the end-to-end health check of everything to the left of this box — antenna, feedline, front-end, and the sky itself.",
+          "HackRF Pro vs One: identical concept (3.0–3.3 V, ≤50 mA, software-controlled), but the Pro adds RF-port protection and a hardware transmit-disable facility. Never transmit into the GNSS antenna line — this station is receive-only by policy."],
+        specs: [["Connector", "SMA female, 50 Ω (RP-SMA will mate mechanically but has NO center contact — classic dead-antenna trap)"], ["Bias-tee", "3.3 V, ≤ 50 mA, software enable (tracker sets it at startup)"], ["Max input", "HackRF One: −5 dBm absolute — the GNSS antenna's LNA output is far below this"], ["Station antenna", "Taoglas AA.250, Ø86.4 mm, 1559–1606 MHz, dual-stage LNA, RHCP"]],
+        links: [["HackRF Pro overview", DOC_PRO], ["Station component docs", DOC_COMP]] } },
+    { id: "fe", x: 172, y: 280, w: 130, h: 82, t: ["RF front-end"], s: "switches · filters · amp",
+      tip: ["RF front-end — protection and preselection", "RF switches route the port between receive and transmit paths; filter banks and the optional front-end amplifier condition the signal before the mixer. The Pro's shielding can sits over this whole radio section."],
+      det: { h3: "RF front-end — switches, filters, protection",
+        paras: ["Between the connector and the mixer sit the RF switches (RX/TX routing, half-duplex), band-conditioning filters, a software-switchable RF pre-amplifier (~11 dB, kept OFF here — the antenna already has its LNA), and the Pro's enhanced input protection.",
+          "Why it matters: the first silicon a satellite signal meets decides how much of it survives. The Pro moved the whole radio section under a shielding can and flattened the frequency response versus HackRF One — one reason the same antenna measures cleaner on the Pro.",
+          "Failure modes to know: a stuck TX/RX switch (radio appears deaf), the amp accidentally enabled into a strong-signal environment (intermodulation everywhere), and ESD damage at the port — the classic cause of a 'dead' HackRF front-end."],
+        specs: [["Architecture", "half-duplex: RX and TX share the port, switched in firmware"], ["Pre-amp", "≈11 dB, software-controlled — OFF in this station (antenna LNA does the job)"], ["Pro improvement", "shielded radio section, flatter response, port protection, TX hardware-disable option"], ["Operating range", "100 kHz – 6 GHz (tunable 0 Hz – 7.1 GHz)"]],
+        links: [["HackRF Pro overview", DOC_PRO]] } },
+    { id: "rffc", x: 342, y: 280, w: 132, h: 82, t: ["RFFC5072"], s: "mixer + 1st LO synth",
+      tip: ["RFFC5072 — the wideband gear-shifter", "A mixer with its own synthesized local oscillator (30 MHz–6 GHz). It converts whatever frequency you tuned to a fixed intermediate frequency the transceiver chip can handle. BOTH HackRF Pro and One use this dual-conversion architecture."],
+      det: { h3: "RFFC5072 mixer/synthesizer — first conversion",
+        paras: ["The transceiver chip (next block) only speaks 2.3–2.6 GHz. To cover 100 kHz–6 GHz, the radio first mixes the tuned frequency with a programmable local oscillator inside the RFFC5072, landing the signal on an intermediate frequency (IF) the second stage accepts. The station's 1568.25 MHz tune is realized HERE as much as in the transceiver: the two LOs are planned together by firmware.",
+          "Why two conversions instead of one? Image rejection and range. A single wideband mixer would drag an unwanted image band into every measurement; stepping through a fixed IF lets the filters and the second stage reject it by design.",
+          "Clock note: the RFFC5072's synthesizer reference comes from the same clock tree as everything else (Si5351C, next to the TCXO block). Every ppb of reference error appears on BOTH LOs — which is why the Bodnar GPSDO feeds this board."],
+        specs: [["Function", "wideband mixer + integrated fractional-N synthesizer (1st LO)"], ["LO range", "≈30 MHz – 6 GHz (Qorvo RFFC5071/5072 family)"], ["Firmware", "firmware/common/rffc5071.c — mixer_setup(&mixer, RFFC5071_VARIANT) on both platforms"], ["Used on", "HackRF Pro AND HackRF One — the dual-conversion core of the whole family"]],
+        links: [["Datasheet (Qorvo)", DS_RFFC], ["Hardware components", DOC_COMP]] } },
+    { id: "m2831", x: 514, y: 280, w: 140, h: 82, t: ["MAX2831"], s: "I/Q transceiver · 2nd conv.",
+      lv: function () { return "LO 1568.25 · 16 Msps"; },
+      tip: ["MAX2831 — the radio's heart (Pro)", "2.3–2.6 GHz 802.11b/g transceiver repurposed as the I/Q downconverter: LNA, quadrature mixer, variable-gain amplifiers and the programmable baseband filter. The green line is this station's live configuration."],
+      det: { h3: "MAX2831 transceiver — second conversion to baseband",
+        paras: ["The IF from the RFFC5072 enters the MAX2831, originally a Wi-Fi transceiver. Its receive chain: low-noise amplifier → quadrature mixer against the second LO → programmable-gain stages (the LNA/VGA gain registers you set from the host) → programmable baseband low-pass filter. Out come two analog voltages: I and Q, the signal as a rotating phasor frozen into numbers' reach.",
+          "The gains and filter are why this page exists in GNSS flavor: tonight's explicit 15 MHz baseband filter keeps both GPS L1 (+7.17 MHz) and BeiDou B1I (−7.15 MHz) inside the passband around the 1568.25 MHz tune — earlier the automatic 12 MHz selection sat both signals at its extreme edge and cost real dB.",
+          "Honest part trivia: HackRF Pro = MAX2831; HackRF One r1–r8 = MAX2837; One r9 = MAX2839 (a mask-revision substitute). All three are 2.3–2.7 GHz-class WiMAX/Wi-Fi transceivers playing the same role."],
+        specs: [["Part", "MAX2831 (Pro only) — 2.3–2.6 GHz zero-IF-ish transceiver"], ["RX chain", "LNA → quadrature mixer → VGA → programmable baseband filter"], ["Gain control", "LNA gain 0–40 dB (8 steps) + VGA gain 0–62 dB (2 dB steps), host-set"], ["Baseband filter", "programmable; this station pins 15 MHz explicitly (auto would pick 12 MHz at 16 Msps)"], ["Station config", "LO 1568.25 MHz, 16 Msps — GPS L1 at +7.17 MHz, B1I at −7.15 MHz, both clear of DC"]],
+        links: [["Product page", PG_MAX2831], ["Datasheet", DS_MAX2831]] } },
+    { id: "m5864", x: 694, y: 280, w: 130, h: 82, t: ["MAX5864"], s: "ADC/DAC",
+      lv: function () { return "16 Msps · 8-bit I/Q"; },
+      tip: ["MAX5864 — analog becomes numbers", "Dual ADC (I and Q) + DAC for TX. In standard mode it hands the FPGA 8-bit samples; extended-precision mode packs 12-bit samples with a timestamp nibble embedded in the stream."],
+      det: { h3: "MAX5864 ADC/DAC — the sample quantum",
+        paras: ["Two ADC channels digitize I and Q simultaneously; the DAC path exists for TX and is unused in this station. Every measurement downstream — every PRN correlation, every carrier phase, every drift vote — is arithmetic on the number pairs this chip produces.",
+          "Modes that matter here: standard 8-bit (up to 20 Msps on Pro; our tracker runs 16), half-precision 4-bit (up to 40 Msps — bandwidth over resolution), and the Pro's extended-precision mode: 12-bit samples at low rates (typical ENOB 9–11), with the FPGA's 40-bit timestamp embedded as the top nibble of selected samples — how this station recovers 31.25 ns-quantized sample timing from the stream itself.",
+          "Below 8 Msps the MAX5864 is unspecified — the official docs warn that low rates leave aliases in-band. This station never runs below 16 Msps on the Pro."],
+        specs: [["ADC", "dual (I+Q), 8-bit standard · 12-bit extended-precision · 4-bit half-precision"], ["Rate", "up to 20 Msps (8-bit, Pro) · 40 Msps (4-bit) · unspecified < 8 Msps"], ["Our mode", "16 Msps, 8-bit I/Q = 32 MB/s on USB"], ["Same part", "identical role on HackRF One (2–20 Msps, 8-bit only)"]],
+        links: [["Product page", PG_MAX5864], ["Datasheet", DS_MAX5864]] } },
+    { id: "fpga", x: 864, y: 280, w: 152, h: 82, t: ["iCE40UP5K FPGA"], s: "Pro only · timestamps born here",
+      lv: function (ST) { var c = ST && ST.clock; return c && c.live_tick_hz ? (c.live_tick_hz / 1e6).toFixed(6) + " MHz tick" : null; },
+      tip: ["FPGA — where time is born", "Lattice iCE40 UltraPlus: sample glue, decimation, the 40-bit tick counter behind every timestamp, nibble timestamp injection, and (custom images) the carry-chain TDC. Green: the live tick poll."],
+      det: { h3: "iCE40UP5K FPGA — the Pro's timing engine",
+        paras: ["The Pro replaced HackRF One's CoolRunner-II CPLD with a real FPGA — small (5K LUTs, 1 Mbit SPRAM, 8 DSPs) but enough for a CIC decimator, sample packaging, the 40-bit tick counter at the AFE clock, top-nibble timestamp embedding, and this project's custom images: TDC carry-chain (slot 0), extended-precision RX (slot 2), and the planned soft-metric FIFO + SPRAM frame buffer.",
+          "The green number is the live tick-counter poll — the station's rawest view of the board's clock. PC/USB read jitter (±30 ppm) swamps the TCXO's physics, so its SHAPE matters, not its level.",
+          "Honest status: production slot runs the attested 0x469 image on all four slots (attested 2026-08-28). The 0xE91 pin-swap experiment is quarantined — official mapping is FPGA clock on pin 47, trigger-in on pin 48, and any image that swaps them invalidates every TDC/trigger result."],
+        specs: [["Part", "Lattice iCE40UP5K: 5280 LCs, 30 EBRs, 4×128 Kbit SPRAM, 8 DSP16"], ["Roles", "SGPIO glue, CIC decimation, 40-bit tick (31.25 ns), nibble timestamp injection"], ["Custom images", "slot 0 TDC · slot 2 ext-precision RX · 4 slots total in flash"], ["Production", "release 0x469 on all 4 slots — attested; 0xE91 quarantined (pin swap)"], ["Replaces", "Xilinx CoolRunner-II CPLD on HackRF One (fixed glue, no user logic)"]],
+        links: [["iCE40 UltraPlus family", "https://www.latticesemi.com/en/Products/FPGAandCPLD/iCE40UltraPlus"], ["Hardware components", DOC_COMP]] } },
+    { id: "mcu", x: 864, y: 452, w: 152, h: 82, t: ["LPC43xx"], s: "Cortex-M4 + M0",
+      lv: function (ST) { var d = ST && ST.discipline; return d && d.correction_ppm != null ? "shadow " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : null; },
+      tip: ["LPC43xx — the board's computer", "Dual-core ARM: the M4 runs USB, SPI housekeeping and the clock-correction register; the M0 runs the SGPIO dataplane shoveling samples into USB. Green: the discipline loop's SHADOW intent."],
+      det: { h3: "LPC4320/30 — M4 control + M0 dataplane",
+        paras: ["The microcontroller boots from SPI flash, loads the FPGA bitstream, speaks USB 2.0 High-Speed to the host, and services every control request: set frequency, set gains, read tick counter, write the clock-correction register.",
+          "Core split: the Cortex-M4 runs the control plane (the green line shows the discipline loop's computed correction — SHADOW: logged, never written, because every actuation historically collapsed all tracker locks within a minute). The Cortex-M0 is a full-time assembly worker for SGPIO, moving interleaved I/Q into the USB queue — ~92% loaded at 20 Msps, which is why heavy SPI polling during streaming is a bad idea.",
+          "This is also where firmware risk lives: the flash loader issues found in review (discarded read failures, 'queued reported as applied') are the reason only attested releases run on this board."],
+        specs: [["Cores", "Cortex-M4F @ 204 MHz (control) + Cortex-M0 (SGPIO dataplane)"], ["Firmware", "hackrf_usb — boots from W25Q32 flash, loads FPGA image from a slot"], ["Correction register", "RADIO_CLOCK_CORRECTION — steers Si5351C PLL-A fractional dividers; does NOT propagate to CLKOUT (PLL-B)"], ["Station law", "discipline is SHADOW by default (HACKRF_GNSS_ACTUATE=1 to actuate)"]],
+        links: [["LPC43xx (NXP)", "https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/lpc4300-cortex-m4-m0:LPC4300"], ["Hardware components", DOC_COMP]] } },
+    { id: "usb", x: 1044, y: 452, w: 106, h: 82, t: ["USB-C"], s: "→ this Mac",
+      lv: function (ST) { return ST && ST.consensus_ppm != null ? "consensus " + sgn(ST.consensus_ppm) + Math.abs(ST.consensus_ppm).toFixed(3) + " ppm" : null; },
+      tip: ["USB-C — 480 Mbit/s of reality", "USB 2.0 High-Speed bulk streaming: 2 bytes per complex sample in 8-bit mode, so 16 Msps = 32 MB/s — most of one USB 2.0 bus. Control requests (tick polls, register writes) ride the same cable. Green: the consensus the data feeds."],
+      det: { h3: "USB-C — the bottleneck that is also the lifeline",
+        paras: ["Everything the radio knows crosses this cable: bulk sample data, control transfers (gains, frequency, tick polls, correction register), and power for the whole board. Pro moved to USB Type-C; HackRF One uses Micro-B.",
+          "Bandwidth law: 2 B/sample in 8-bit I/Q mode. 16 Msps = 32 MB/s; 20 Msps = 40 MB/s ≈ the practical ceiling of USB 2.0 after protocol overhead. That is why this station's dual-radio runs must live on separate root controllers — shared-bus congestion shows up as dropped samples and tick-poll outliers on the heartbeat chart.",
+          "The green consensus is what all this plumbing is for: the weighted agreement of every clock voter, computed from the stream this cable carries."],
+        specs: [["Link", "USB 2.0 High-Speed (480 Mbit/s), Type-C on Pro, Micro-B on One"], ["Throughput", "16 Msps 8-bit I/Q = 32 MB/s sustained"], ["Power", "bus-powered — the earlier 'mystery disconnects' were a cable that couldn't carry both data and current"], ["Control", "libhackrf vendor requests: config, tick reads, SPI register access"]],
+        links: [["HackRF Pro overview", DOC_PRO]] } },
+    { id: "tcxo", x: 172, y: 92, w: 122, h: 66, t: ["TCXO"], s: "Pro built-in",
+      tip: ["TCXO — the Pro's own flywheel", "A temperature-compensated crystal oscillator: far stabler than HackRF One's plain crystal, but still a free-running local oscillator. Good enough to find satellites; not good enough to trust — which is why the GPSDO exists."],
+      det: { h3: "TCXO — better than a crystal, still a local opinion",
+        paras: ["HackRF Pro's built-in temperature-compensated crystal oscillator is the default reference when no CLKIN signal is present. It drifts with temperature and age — the class of error this entire dashboard measures.",
+          "History you can see in the data: the Pro ran free on this TCXO before the Bodnar era (the +0.53 ppm era in the drift history), and the One's plain-crystal era was worse (−3 ppm class). The star feed made both radios agree with the GPSDO and, through it, with GPS time itself.",
+          "Physical truth: the TCXO is never 'wrong' — it is an oscillator doing its best. Discipline means comparing it against something better and either steering it (the correction register — currently SHADOW) or just knowing its error (what this station does)."],
+        specs: [["Type", "temperature-compensated crystal oscillator (Pro built-in; One has a plain crystal)"], ["Role", "reference for the Si5351C clock tree when CLKIN is absent"], ["Switching", "CLKIN detection → external reference wins, but ONLY at RX/TX stream start"], ["Measured here", "free-running Pro era ≈ +0.53 ppm; GPSDO-referenced era ≈ −0.054 ppm (station drift history)"]],
+        links: [["External clock interface", DOC_CLK]] } },
+    { id: "si5351", x: 472, y: 92, w: 142, h: 66, t: ["Si5351C"], s: "clock generator",
+      tip: ["Si5351C — the clock tree's root", "A programmable clock generator: takes the reference (TCXO or CLKIN) and synthesizes every clock the board needs — AFE clock, FPGA clock, sample clocks, CLKOUT. The correction register reprograms its fractional dividers."],
+      det: { h3: "Si5351C — one reference in, every clock out",
+        paras: ["The multi-PLL clock generator distributes the reference into the many frequencies a software-defined radio needs: the AFE/sample clocks (PLL-A), the FPGA fabric clock, and the CLKOUT port (PLL-B on Pro).",
+          "The discipline lever: RADIO_CLOCK_CORRECTION re-programs the fractional-N dividers, pulling the synthesized sample clocks by fractions of a ppm WITHOUT touching the reference itself. Two consequences this station learned the hard way: (1) the correction does NOT propagate to CLKOUT (different PLL), so a downstream radio can't be disciplined through the clock cable; (2) writing it mid-stream historically collapsed every tracker lock — hence SHADOW mode.",
+          "With the Bodnar on CLKIN, the Si5351C's job is distribution, not opinion: the reference is already GPS-disciplined, and the best local policy is to leave the steering alone."],
+        specs: [["Part", "Si5351C — 2 PLLs, 8 outputs, I²C-programmable"], ["Input", "TCXO or CLKIN (auto-detected at stream start)"], ["Correction", "fractional divider re-programming, ±0.1 ppm steps as used by the discipline loop"], ["Register map", "Skyworks AN619 (Si5351 register map generator)"]],
+        links: [["Datasheet", DS_SI5351], ["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
+    { id: "p1", x: 30, y: 92, w: 112, h: 66, t: ["P1 = CLKIN"], s: "10 MHz in",
+      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO lock · " + g.n_sat + " sats" : "ref DEGRADED") : null; },
+      tip: ["P1 — the board's ear for the reference", "Default CLKIN: a 3.3 V, 10 MHz square wave. When detected at stream start it replaces the TCXO as the reference. Green: the health of the GPSDO feeding this port, from the live NMEA probe."],
+      det: { h3: "P1 (CLKIN) — where the Bodnar enters the board",
+        paras: ["P1 is one of the Pro's two configurable SMA ports; by default it is CLKIN. A detected 10 MHz, 3.3 V square wave overrides the TCXO — but the switch happens ONLY when an RX/TX stream starts, which is why this station's law says: attach the clock first, then start the tracker.",
+          "The green status is live and double-sourced: the gpsdo_probe reads the Bodnar's own NMEA (fix quality, satellites, HDOP), and the station separately verifies the effect of the clock on the air (soft drift-lock between the two radios' series). A reference can be electrically present and still unhealthy — both views matter.",
+          "Wired today: Bodnar OUT2 → this port, matched-length cable against the One's feed. The cable ends are awaiting user labels before any PPS reconfiguration — the labeling hold is written into AGENTS.md."],
+        specs: [["Expects", "10 MHz, 3.3 V square, high impedance — never exceed 3.3 V / go below 0 V"], ["Detection", "hackrf_clock -i → 'clock signal detected' (valid only after a stream has started)"], ["Alternate", "P22 pin 2 is a SECOND, independent CLKIN on Pro (hackrf_clock -c p22)"], ["Verify on air", "soft drift-lock vs the One's series — fail-closed when the One is dark"]],
+        links: [["External clock interface", DOC_CLK]] } },
+    { id: "p2", x: 700, y: 92, w: 132, h: 66, t: ["P2 = CLKOUT/TRIG"], s: "configurable",
+      lv: function () { return "free · uncabled"; },
+      tip: ["P2 — the spare port with three careers", "Default CLKOUT (10 MHz out). Reassignable via hackrf_clock to carry trigger signals instead — this is the port reserved for the TDC/PPS experiments once the Bodnar port budget is solved."],
+      det: { h3: "P2 — CLKOUT today, trigger tomorrow",
+        paras: ["P2 mirrors P1: by default it outputs a 10 MHz square from the Si5351C (PLL-B — note: NOT the corrected PLL-A clock, a subtlety that killed the old cascade design). hackrf_clock -2 reassigns it to other internal signals, including the trigger input the TDC experiments need.",
+          "Current state: physically free. The tracker historically enabled CLKOUT at startup (a cascade leftover); the deploy bundle disables that, leaving P2 genuinely idle.",
+          "The port-budget problem, stated plainly: the station wants THREE signals from the Bodnar (10 MHz to the Pro, 10 MHz to the One, 1PPS to this port) but the GPSDO has TWO outputs. The documented escape is a 10 MHz distribution amplifier on OUT2, freeing OUT1 for PPS. Until the user photographs and labels the cable ends, PPS stays unrouted."],
+        specs: [["Default", "CLKOUT — 10 MHz, 3.3 V square, high-impedance load"], ["Reassign", "hackrf_clock -2 <signal> — including trigger_in for the TDC work"], ["PLL note", "CLKOUT is PLL-B; clock correction steers PLL-A — correction never reaches P2"], ["Station plan", "10 MHz dist-amp on OUT2 → both radios; OUT1 → 1PPS → this port (blocked on labeling)"]],
+        links: [["External clock interface", DOC_CLK], ["Hardware triggering", DOC_TRIG]] } },
+    { id: "flash", x: 864, y: 92, w: 152, h: 66, t: ["W25Q32 flash"], s: "4 FPGA slots + MCU fw",
+      tip: ["SPI flash — the board's memory", "32 Mbit on Pro (8 Mbit on One). Holds the MCU firmware and FOUR FPGA image slots — how this station carries a production image plus experiments on one board."],
+      det: { h3: "W25Q32 — four slots and a safety story",
+        paras: ["The Pro's 32 Mbit Winbond flash (One: W25Q80BV, 8 Mbit) stores the MCU firmware and four FPGA image slots. hackrf_spiflash writes MCU firmware; the image loader programs and switches FPGA slots.",
+          "Why four slots matter to this station: slot 0 carries the TDC experiment, slot 2 the extended-precision RX work, and the production image must survive alongside them. The attestation record (0x469 on all four slots, 2026-08-28) exists because 'which image is actually running' turned out to be a question with a wrong answer more than once.",
+          "The flip side: loader bugs found in review (flash-read failures discarded, 'queued' reported as 'applied', a busy-wait inside the supposedly sub-second switch blackout) are why firmware releases here follow a strict attest-then-trust rule."],
+        specs: [["Part", "Winbond W25Q32, 32 Mbit SPI flash (Pro) · W25Q80BV 8 Mbit (One)"], ["Contents", "MCU firmware + 4 FPGA image slots"], ["Station record", "release 0x469 attested on all 4 slots (2026-08-28)"], ["Risk", "loader-reporting bugs — only attested releases are trusted"]],
+        links: [["W25Q32 datasheet", "https://www.winbond.com/resource-files/W25Q32JV%20RevJ%2012242024%20Plus.pdf"]] } },
+  ];
+
+  var PRO_EDGES = [
+    { x1: 132, y1: 321, x2: 172, y2: 321, label: "RF in", lx: 152, ly: 311,
+      tip: ["RF in — photons to electrons", "The −160 dBW-class satellite signal enters; 3.3 V bias power flows the OTHER way on the same copper to feed the antenna's LNA."],
+      det: { h3: "Antenna port → front-end",
+        paras: ["One piece of copper, two directions of flow: RF at −160 dBW comes in from the antenna; DC bias at 3.3 V goes out to power the antenna's two-stage LNA. A bias-tee is just an inductor/capacitor pair that keeps those two worlds from seeing each other.",
+          "If this wire fails you get the classic silent death: bias shorted or inductor open → the active antenna goes deaf → 'the sky disappeared' with no error anywhere in software. The station's tracked-vs-expected sky count is the alarm for exactly this."],
+        specs: [["Level", "≈ −160 dBW at the port (GNSS), 20 dB below the thermal noise floor"], ["DC", "3.3 V ≤ 50 mA outbound when bias-tee enabled"]], links: [] } },
+    { x1: 302, y1: 321, x2: 342, y2: 321, label: "RF", lx: 322, ly: 311,
+      tip: ["Front-end → mixer", "Filtered, switch-routed RF, still at the tuned frequency (anywhere from 100 kHz to 6 GHz)."],
+      det: { h3: "Front-end → RFFC5072",
+        paras: ["The signal arrives at the first mixer still at its original frequency — for this station, 1568.25 MHz-centered L-band energy. Everything so far has been analog plumbing: switches, filters, protection.",
+          "From here on, frequency becomes a software concept: the RFFC5072's synthesizer decides what this 100 kHz–6 GHz stream becomes next."],
+        specs: [["Bandwidth", "up to 6 GHz of analog signal"], ["Format", "single-ended 50 Ω RF"]], links: [] } },
+    { x1: 474, y1: 321, x2: 514, y2: 321, label: "IF ≈ 2.x GHz", lx: 494, ly: 311,
+      tip: ["First IF — the dual-conversion trick", "The mixer lands the tuned signal on a fixed intermediate frequency the MAX2831 can digest. Image rejection is the whole reason for two conversions."],
+      det: { h3: "RFFC5072 → MAX2831 (first IF)",
+        paras: ["Mixing the tuned RF with the first LO produces sum and difference frequencies; the design keeps the one that lands in the MAX2831's 2.3–2.6 GHz acceptance band — the intermediate frequency.",
+          "Why not mix straight to baseband in one step? A single wideband conversion drags an 'image' — a second, unwanted band symmetric around the LO — into every measurement. Routing through a fixed IF lets the front-end filters and the second stage suppress it by tens of dB, by design rather than by hope."],
+        specs: [["IF band", "2.3–2.6 GHz (MAX2831 input range)"], ["Benefit", "image rejection + full 100 kHz–6 GHz coverage"]], links: [] } },
+    { x1: 654, y1: 321, x2: 694, y2: 321, label: "analog I/Q", lx: 674, ly: 311,
+      tip: ["Baseband I/Q — the signal as a phasor", "Two analog voltages encoding the signal's amplitude and instantaneous phase around the LO. Everything 'radio' is now done; what remains is arithmetic."],
+      det: { h3: "MAX2831 → MAX5864 (analog baseband I/Q)",
+        paras: ["The quadrature mixer splits the IF against two LO copies 90° apart, producing I (in-phase) and Q (quadrature): together a complex number spinning at the signal's offset from the LO. GPS L1 at +7.17 MHz and BeiDou B1I at −7.15 MHz exist here as two slow rotations in opposite directions.",
+          "The programmable baseband filter lives on this wire in effect: tonight's explicit 15 MHz setting is what keeps both of those rotations inside the passband with margin, instead of rolling them off at the old auto-12 MHz corner."],
+        specs: [["Format", "two differential analog voltages (I, Q)"], ["Filter", "programmable low-pass; 15 MHz pinned by this station"]], links: [] } },
+    { x1: 824, y1: 321, x2: 864, y2: 321, label: "8-bit I/Q", lx: 844, ly: 311,
+      tip: ["Sample pairs on the AFE clock", "One I byte and one Q byte per clock tick, 16 million times a second. In extended-precision mode: 12 bits + a timestamp nibble smuggled in the top."],
+      det: { h3: "MAX5864 → FPGA (sample bus)",
+        paras: ["The ADC's output pins clock sample pairs into the FPGA on the AFE clock. In standard mode that's a byte of I and a byte of Q per tick; in the Pro's extended-precision mode it's 12-bit words whose top nibble carries fragments of the 40-bit timestamp — the trick this station's ts_nibble decoder reverses in software.",
+          "The clock on this bus is synthesized by the Si5351C from the reference — so the Bodnar's discipline literally paces every byte that crosses this wire."],
+        specs: [["Width", "2×8 bit (standard) · 2×12 bit (ext-precision) · 2×4 bit (half-precision, to 40 Msps)"], ["Rate", "16 MHz AFE clock in this station"]], links: [] } },
+    { x1: 940, y1: 362, x2: 940, y2: 452, label: "SGPIO", lx: 948, ly: 410,
+      tip: ["SGPIO — the fire-hose adapter", "Serial General-Purpose I/O: the LPC43xx's trick peripheral that serializes the sample stream so the M0 can shovel it into USB transfers without CPU-per-byte cost."],
+      det: { h3: "FPGA → LPC43xx (SGPIO)",
+        paras: ["SGPIO is an NXP-specific peripheral that behaves like a configurable shift-register farm: the FPGA streams samples in, and the Cortex-M0 assembles them into USB bulk buffers transaction by transaction — ~92% of its cycles at 20 Msps.",
+          "This is the wire that sets the practical sample-rate ceiling: not the RF chain, not USB's raw 480 Mbit/s, but the choreography of SGPIO + M0 + USB DMA. Heavy SPI register polling during streaming steals M0/AHB time and shows up as gaps — one reason tick polls are paced on this station."],
+        specs: [["Peripheral", "SGPIO (Serial GPIO) — NXP LPC43xx"], ["Worker", "Cortex-M0 assembly server, ~92% loaded at 20 Msps"], ["Effect of congestion", "dropped samples + tick-poll outliers (visible on the heartbeat chart)"]], links: [] } },
+    { x1: 1016, y1: 493, x2: 1044, y2: 493, label: "USB bulk", lx: 1030, ly: 483,
+      tip: ["USB bulk — samples leave the board", "Bulk transfers carry the stream; control transfers carry config and polls. 32 MB/s here at 16 Msps — most of one USB 2.0 bus."],
+      det: { h3: "LPC43xx → host (USB)",
+        paras: ["Two logical flows share one cable: bulk IN endpoints streaming samples (best-effort, no retransmit — a congested bus loses data silently), and control transfers for every get/set the host issues.",
+          "Station law born from this wire: the Pro and the One must not share a root controller during dual-radio runs; and the cable upgrade (a serious 120 W/80 Gbps cable) wasn't vanity — the earlier 'mystery resets' were power+data starving on a thin cable."],
+        specs: [["Bulk", "samples, 2 B/complex sample, lossy under congestion"], ["Control", "libhackrf vendor requests: freq, gains, tick reads, registers"]], links: [] } },
+    { x1: 294, y1: 125, x2: 472, y2: 125, label: "reference", lx: 383, ly: 115,
+      tip: ["TCXO → Si5351C", "The local reference the clock tree falls back to when no CLKIN is present. With the Bodnar attached and detected, this wire is idle — but always ready (holdover)."],
+      det: { h3: "TCXO → Si5351C (local reference)",
+        paras: ["The TCXO feeds one of the Si5351C's reference inputs. When the firmware detects a CLKIN signal at stream start, the external reference wins and this wire stops mattering; unplug the Bodnar and the board silently returns to it at the next stream start.",
+          "'Silently' is the operative word — the only honest confirmations are hackrf_clock -i (electrical detection) and the on-air drift behavior (which this station watches continuously). The −1.7 ppm 'broken chain' era in the drift history is exactly this fallback happening unnoticed."],
+        specs: [["Fallback", "automatic at stream start when CLKIN absent"], ["Station witness", "drift-history eras: free TCXO +0.53 ppm · GPSDO −0.054 ppm · broken chain −1.7 ppm"]], links: [] } },
+    { x1: 142, y1: 125, x2: 172, y2: 125, label: "10 MHz", lx: 157, ly: 115,
+      tip: ["CLKIN — the GPSDO's voice", "Bodnar OUT2 → P1: a 10 MHz, 3.3 V square wave that, once detected at stream start, makes the whole board a GPS-disciplined instrument."],
+      det: { h3: "P1 → Si5351C (external reference)",
+        paras: ["This short wire is the single most important connection in the station's clock architecture: through it, the Leo Bodnar LBE-1421's GPS-disciplined 10 MHz replaces the local TCXO as the reference for every oscillator on the board.",
+          "Two caveats the station learned empirically: detection is only evaluated at RX/TX stream start (clock first, tracker second — always), and 'detected' says nothing about which Bodnar output or cable is attached — hence the labeling hold before any PPS work."],
+        specs: [["Signal", "10 MHz, 3.3 V square, high-Z"], ["Source today", "Bodnar OUT2, matched-length cable vs the One's feed"]], links: [["External clock interface", DOC_CLK]] } },
+    { x1: 700, y1: 125, x2: 614, y2: 125, label: "clk/trig", lx: 657, ly: 115,
+      tip: ["P2 ↔ Si5351C/fabric", "As CLKOUT, P2 echoes a 10 MHz from PLL-B. Reassigned, it becomes a trigger line into the FPGA fabric — the route reserved for the PPS/TDC calibration."],
+      det: { h3: "P2 ↔ clock tree / FPGA fabric",
+        paras: ["P2's default career is output: a 10 MHz square from PLL-B. Its reassigned career (hackrf_clock -2) is input: a trigger/PPS edge routed into the FPGA — the physical path the external TDC calibration will use.",
+          "Why the PLL letter matters: the discipline correction steers PLL-A (sample clocks), while CLKOUT comes from PLL-B. A radio fed from this port does NOT inherit the correction — the old Pro→One cascade taught that lesson the hard way, and the star topology is its tombstone."],
+        specs: [["CLKOUT", "PLL-B, 10 MHz, 3.3 V"], ["Trigger", "reassigned via hackrf_clock -2; 3.3 V, rising edge"]], links: [["Hardware triggering", DOC_TRIG]] } },
+    { x1: 614, y1: 158, x2: 900, y2: 280, label: "clock tree (PLL-A: AFE + sample clocks)", lx: 700, ly: 205,
+      tip: ["The clock tree — every tick's ancestor", "From the chosen reference, the Si5351C synthesizes the AFE clock, the FPGA fabric clock and the sample clocks. The correction register bends these dividers by fractions of a ppm."],
+      det: { h3: "Si5351C → everywhere (clock distribution)",
+        paras: ["One reference in, a family of clocks out: the AFE clock pacing the ADC, the FPGA fabric clock (pin 47 — remember the quarantined pin-swap), the sample clocks, and CLKOUT from the second PLL.",
+          "Every oscillator on the board is therefore the SAME oscillator, related by rational ratios. That's why a single 10 MHz reference disciplines the whole instrument — and why a reference problem corrupts every measurement identically (which is precisely what makes the drift-consensus math possible)."],
+        specs: [["PLL-A", "sample/AFE clocks — the corrected ones"], ["PLL-B", "CLKOUT — NOT corrected"], ["Correction", "fractional-N divider steering, ±0.1 ppm steps"]], links: [["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
+    { x1: 940, y1: 158, x2: 940, y2: 280, label: "bitstream", lx: 948, ly: 215,
+      tip: ["Flash → FPGA at boot", "At power-up the MCU reads the selected FPGA image slot from flash and configures the iCE40 over SPI. Slot switches are a deliberate, attested act on this station."],
+      det: { h3: "W25Q32 → iCE40UP5K (boot configuration)",
+        paras: ["The iCE40UP5K is SRAM-based: its personality arrives over this wire at every boot, when the MCU streams the selected slot's bitstream into it. Four slots mean four possible radios in one box.",
+          "This wire is why image provenance is a hard requirement: 'which slot booted' is decided here, in a quarter-second nobody watches. The station's rule — attest, then trust — exists because this wire once carried the wrong answer."],
+        specs: [["Protocol", "SPI slave configuration at boot"], ["Slots", "4 — production + experiments coexist"]], links: [] } },
+    { x1: 940, y1: 534, x2: 654, y2: 345, dash: true, label: "SPI/GPIO control plane: gains · filters · LO · registers", lx: 830, ly: 560,
+      tip: ["The control plane — the M4's voice", "Every chip has a register file, and the M4 speaks to all of them over SPI/GPIO: set the LO, set the gains, pick the filter, read the status. Slow, chatty, and absolutely in charge."],
+      det: { h3: "Cortex-M4 → all chips (SPI/GPIO control)",
+        paras: ["Data flows right-to-left on the top row; commands flow on this dashed line. The MAX2831's gain registers, the RFFC5072's synthesizer words, the Si5351C's dividers, the FPGA's slot registers (0x10–0x57 and counting) — all are SPI/GPIO conversations the M4 has on the host's behalf.",
+          "Why this wire has a failure mode worth knowing: these transactions share the M4/AHB with the SGPIO dataplane. Polling registers too aggressively during a 16 Msps stream shows up as sample gaps — the station paces its tick polls for exactly this reason."],
+        specs: [["Bus", "SPI + bit-banged GPIO, per-chip selects"], ["Register maps", "Si5351: AN619 · MAX2831/5864: datasheets · FPGA slots: project register map"]], links: [] } },
+  ];
+
+  // ---------- HackRF One (…922c — ATSC/phase receiver) ----------
+  var ONE_NODES = [
+    { id: "ant", x: 10, y: 280, w: 122, h: 82, t: ["RF port (SMA)"], s: "ANT + bias-tee",
+      lv: function (ST) { var p = ST && ST.phase; return p ? (p.lock ? "phase LOCK" : "RF-dark · no lock") : null; },
+      tip: ["RF port — same idea, stricter limits", "50 Ω SMA with software bias (3.0–3.3 V, ≤50 mA). Absolute max input −5 dBm. Green: the LIVE status of this station's One — currently RF-dark."],
+      det: { h3: "RF port (One) — mind the −5 dBm",
+        paras: ["Same concept as the Pro: one SMA, receive and transmit half-duplex, bias power up the coax for an active antenna. The differences that matter: no enhanced port protection, and a hard −5 dBm absolute maximum input — exceeding it can permanently damage the front-end.",
+          "Green status is live from the phase producer: this station's One is RF-dark — its ATSC pilot amplitude sits at 0.05–0.09 z against a 0.75 z acquisition floor (was 2.5–3.7 z healthy). The dark-mode heartbeats you see are the tombstone system working, not a lock.",
+          "Suspects on the bench: antenna path (whip vs patch confound), feedline, or the front-end itself. The fair test is the known-good AA.250 through a one-DC-pass splitter with the One's leg DC-blocked — not yet run."],
+        specs: [["Connector", "SMA female, 50 Ω"], ["Bias", "3.0–3.3 V, ≤ 50 mA, software-controlled"], ["ABSOLUTE MAX INPUT", "−5 dBm — exceed it and the board can be permanently damaged"], ["Station role", "ATSC pilot phase receiver @ 602.80944 MHz, 6 Msps — currently RF-dark"]],
+        links: [["HackRF One overview", DOC_ONE]] } },
+    { id: "fe", x: 172, y: 280, w: 130, h: 82, t: ["RF front-end"], s: "switches · filters · amp",
+      tip: ["RF front-end (One)", "RX/TX switches, filter conditioning and the software pre-amp — the same recipe as the Pro, but WITHOUT the shielding can and the newer protection."],
+      det: { h3: "RF front-end (One) — the unshielded generation",
+        paras: ["Functionally the same stage as on the Pro: half-duplex switching, conditioning filters, an ~11 dB software pre-amplifier (this station's One runs LNA 40 / VGA 44 on the ATSC path — high gain chasing a weak signal, itself a clue in the RF-dark investigation).",
+          "The generational differences are physical: no shielding can over the radio section, older protection, and a noisier USB Micro-B/power situation. The Pro's 'flatter frequency response' claim is measured against exactly this board.",
+          "Diagnostic note: the station law for unknown RF paths is amp/LNA/VGA all ZERO at first contact, then walk gain up while watching linearity — the current high-gain ATSC config predates that law and is part of why the RF-dark cause is still open."],
+        specs: [["Architecture", "half-duplex, switched RX/TX"], ["Pre-amp", "≈11 dB software-controlled"], ["vs Pro", "no shield, older protection, flatter-response baseline"], ["Station config", "LNA 40 / VGA 44 / amp 0 on the ATSC path (under review)"]],
+        links: [["HackRF One overview", DOC_ONE]] } },
+    { id: "rffc", x: 342, y: 280, w: 132, h: 82, t: ["RFFC5072"], s: "mixer + 1st LO synth",
+      tip: ["RFFC5072 — same chip, same job", "Identical first-conversion mixer/synthesizer as on the Pro: wideband LO + mixer landing the tuned signal on the IF the transceiver accepts."],
+      det: { h3: "RFFC5072 (One) — the shared gear-shifter",
+        paras: ["HackRF One covers 1 MHz–6 GHz with the same dual-conversion trick as the Pro: this mixer's internal synthesizer provides the first LO, converting the tuned frequency to the ~2.x GHz IF.",
+          "Same clock caveat: its synthesizer reference comes from the board clock tree — on the One that means the plain 25 MHz-class crystal unless CLKIN is fed. This board's CLKIN is fed by the Bodnar star (matched cable vs the Pro), which is what makes its ATSC pilot measurements comparable to the Pro's GNSS ones at all."],
+        specs: [["Function", "wideband mixer + fractional-N synthesizer (1st LO)"], ["Coverage", "1 MHz – 6 GHz operating (One)"], ["Firmware", "same rffc5071.c driver as the Pro"]],
+        links: [["Datasheet (Qorvo)", DS_RFFC]] } },
+    { id: "m2839", x: 514, y: 280, w: 140, h: 82, t: ["MAX2839 (r9)"], s: "r1–r8: MAX2837",
+      lv: function () { return "602.8 MHz · 6 Msps"; },
+      tip: ["MAX2839 — the r9 substitution", "HackRF One revisions r1–r8 use the MAX2837; r9 moved to the MAX2839, a mask-revision substitute for the same role: LNA → quadrature mixer → VGA → baseband filter → analog I/Q."],
+      det: { h3: "MAX2839 / MAX2837 — One's second conversion",
+        paras: ["Same job as the Pro's MAX2831: take the IF from the RFFC5072 down to analog baseband I/Q, with host-set LNA/VGA gains and a programmable baseband filter. The part number tells you the board revision: r1–r8 carry the MAX2837, r9 the MAX2839 (a supply-chain substitution, functionally equivalent for users).",
+          "The filter caveat that lives in the official docs: below 8 Msps the MAX2837/39's minimum 1.75 MHz filter bandwidth leaves aliases in-band — combined with the MAX5864 being unspecified below 8 MHz, 8 Msps is the practical floor on a One. Our ATSC path runs 6 Msps for legacy reasons and lives with the consequences.",
+          "Gain note: LNA 40 dB + VGA 44 dB on this board's ATSC path is near the top of the range — appropriate only when the incoming signal is genuinely weak, which is exactly what the RF-dark investigation is trying to prove or refute."],
+        specs: [["r9 part", "MAX2839 (this class of board)"], ["r1–r8 part", "MAX2837"], ["Filter floor", "min 1.75 MHz bandwidth → keep sample rates ≥ 8 Msps"], ["Station config", "602.80944 MHz (ATSC ch35 pilot), 6 Msps, LNA 40 / VGA 44"]],
+        links: [["MAX2839 datasheet", DS_MAX2839]] } },
+    { id: "m5864", x: 694, y: 280, w: 130, h: 82, t: ["MAX5864"], s: "ADC/DAC · 8-bit only",
+      lv: function () { return "6 Msps · 8-bit I/Q"; },
+      tip: ["MAX5864 (One) — 8 bits, no tricks", "Same ADC/DAC part as the Pro, but on the One there is no extended-precision and no half-precision mode: 8-bit I/Q, 2–20 Msps, full stop."],
+      det: { h3: "MAX5864 (One) — the plain mode",
+        paras: ["One role, one mode: dual 8-bit ADC for I and Q, DAC for TX. The Pro's extended-precision (12-bit + timestamp nibble) and half-precision (4-bit @ 40 Msps) modes do not exist here — the One's CPLD has no room for that logic.",
+          "Practical consequences for this station: the One's measurements are ~20 dB poorer in dynamic range than the Pro's extended-precision captures, and sample timing must come from elsewhere (the shared 10 MHz reference + trigger lines), not from in-stream timestamps."],
+        specs: [["ADC", "dual 8-bit (I+Q)"], ["Rate", "2–20 Msps (keep ≥ 8 Msps — see the transceiver's filter floor)"], ["Station", "6 Msps = 12 MB/s on USB"]],
+        links: [["Datasheet", DS_MAX5864]] } },
+    { id: "cpld", x: 864, y: 280, w: 152, h: 82, t: ["CoolRunner-II CPLD"], s: "fixed glue · no user logic",
+      tip: ["CPLD — the Pro's FPGA ancestor", "A small Xilinx CoolRunner-II complex programmable logic device: non-volatile (no boot bitstream), fixed glue between the ADC, SGPIO and control lines. No 40-bit tick counter, no TDC, no user images."],
+      det: { h3: "CoolRunner-II CPLD — glue, and nothing more",
+        paras: ["Where the Pro has a reprogrammable FPGA with slots and custom images, the One has a small non-volatile CPLD doing fixed wiring: moving samples from the MAX5864 into SGPIO format and back, plus some control glue.",
+          "Non-volatile means it needs no configuration at boot (contrast with the Pro's flash→FPGA bitstream wire) — but it also means the One can never grow a tick counter, a TDC, or a soft-metric FIFO. Every 'the One should measure X like the Pro does' idea dies on this block.",
+          "Timing consequence: the One's sample clock is still derived from the shared reference (so frequency coherence with the Pro is achievable via the star), but sample-ZERO alignment and fine timing require the external trigger path (P28 pins) instead of in-FPGA machinery."],
+        specs: [["Part", "Xilinx CoolRunner-II CPLD (non-volatile)"], ["Role", "fixed sample glue + control, no user logic"], ["Contrast", "Pro: iCE40UP5K FPGA, 4 image slots, custom timing logic"]],
+        links: [["Hardware components", DOC_COMP]] } },
+    { id: "mcu", x: 864, y: 452, w: 152, h: 82, t: ["LPC43xx"], s: "Cortex-M4 + M0",
+      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "ref lock · HDOP " + g.hdop : "ref DEGRADED") : null; },
+      tip: ["LPC43xx — same computer", "Same dual-core ARM as the Pro: M4 control + M0 SGPIO dataplane. Green: the health of the reference this board reports seeing (from the live GPSDO probe)."],
+      det: { h3: "LPC43xx (One) — same split-brain",
+        paras: ["The One runs the same microcontroller family and the same architecture: M4 for USB/control, M0 for the SGPIO assembly server. Firmware: hackrf_usb from the same tree.",
+          "Worth knowing on this station: the One's firmware reports CLKIN detection only after a stream has started, and its clock chain was the victim of the old cascade design (fed from the Pro's PLL-B CLKOUT, inheriting none of the correction). The star feed made this board a first-class citizen — same Bodnar, matched cable, independent failure domain."],
+        specs: [["Cores", "Cortex-M4F @ 204 MHz + Cortex-M0"], ["Firmware", "hackrf_usb (same tree as the Pro)"], ["CLKIN check", "hackrf_clock -i — valid only after RX/TX start"]],
+        links: [["Hardware components", DOC_COMP]] } },
+    { id: "usb", x: 1044, y: 452, w: 106, h: 82, t: ["USB Micro-B"], s: "→ this Mac",
+      lv: function () { return "12 MB/s stream"; },
+      tip: ["USB Micro-B — the older connector", "Same USB 2.0 High-Speed, older connector. 6 Msps × 2 B = 12 MB/s here. Shares a root controller budget with the Pro — station law: separate roots for dual-radio runs."],
+      det: { h3: "USB Micro-B (One)",
+        paras: ["USB 2.0 High-Speed over a Micro-B connector: same protocol as the Pro, flimsier connector and cable ecosystem. Combined sample+control traffic at 6 Msps is 12 MB/s.",
+          "Bus budgeting for dual-radio: Pro 32 MB/s + One 12 MB/s = 44 MB/s — over the safe envelope of a single USB 2.0 bus. The station's rule stands: separate root controllers, or lower rates, or sequential testing."],
+        specs: [["Link", "USB 2.0 HS, Micro-B"], ["Throughput", "12 MB/s at the ATSC config"], ["Law", "separate USB roots for dual-radio precision runs"]],
+        links: [["HackRF One overview", DOC_ONE]] } },
+    { id: "xtal", x: 172, y: 92, w: 122, h: 66, t: ["Crystal"], s: "plain XO · no TCXO",
+      tip: ["Plain crystal — the One's weak flywheel", "No temperature compensation: this oscillator's frequency wanders with the weather. The −3 ppm era in the drift history is this crystal, free-running."],
+      det: { h3: "Plain crystal (One) — why the One needed the star most",
+        paras: ["The One ships with a plain crystal oscillator — no temperature compensation at all. Its free-running drift (−3 ppm class in this station's history, and it moves with temperature) is an order of magnitude worse than the Pro's TCXO.",
+          "That made the One the biggest beneficiary of the Bodnar star: with 10 MHz on its CLKIN, the crystal is out of the loop entirely, and the One measures as if it were a GPS-disciplined instrument.",
+          "Fallback caveat identical to the Pro: if the CLKIN signal vanishes, the crystal silently returns at the next stream start. The station watches for exactly this (the soft drift-lock + the recency-gated ATSC voter)."],
+        specs: [["Type", "plain crystal oscillator (no TCXO on One)"], ["Free-running", "−3 ppm class, temperature-sensitive (station drift history)"], ["Fix", "10 MHz CLKIN from the Bodnar star"]],
+        links: [["External clock interface", DOC_CLK]] } },
+    { id: "si5351b", x: 472, y: 92, w: 142, h: 66, t: ["Si5351C"], s: "clock generator",
+      tip: ["Si5351C (One) — same distributor", "Same clock generator as the Pro: reference in (crystal or CLKIN), all board clocks out, including the 10 MHz CLKOUT port."],
+      det: { h3: "Si5351C (One)",
+        paras: ["Same part, same job: multiply and divide the reference into the AFE clock, sample clocks, and the CLKOUT port's 10 MHz.",
+          "CLKOUT on the One is the classic daisy-chain feed: 3.3 V, 10 MHz square, intended for a high-impedance load — you may connect one board's CLKOUT directly to another's CLKIN. This station deliberately does NOT daisy-chain anymore: the star gives each radio the GPSDO directly, removing the reset/PLL-B/correction-propagates-or-not failure modes of the cascade."],
+        specs: [["Part", "Si5351C"], ["CLKOUT", "10 MHz, 3.3 V square, high-Z load"], ["Station", "unused — star topology, both radios fed directly"]],
+        links: [["Datasheet", DS_SI5351]] } },
+    { id: "clkin", x: 30, y: 92, w: 112, h: 66, t: ["CLKIN SMA"], s: "10 MHz in",
+      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO lock · " + g.n_sat + " sats" : "ref DEGRADED") : null; },
+      tip: ["CLKIN — One's reference ear", "High-impedance input expecting a 3.3 V, 10 MHz square wave. Shared with header P22 pin 2 — feed ONE of them, never both. Wired today: Bodnar OUT1."],
+      det: { h3: "CLKIN (One) — second star branch lands here",
+        paras: ["The One's CLKIN is electrically the same idea as the Pro's P1: a detected 10 MHz square wave replaces the local crystal at stream start. Wired today from Bodnar OUT1 with a cable matched in length to the Pro's OUT2 feed — relative frequency drift between the radios is thereby ~0 by construction.",
+          "One-sharing caveat from the official docs: this SMA and header P22 pin 2 are the SAME signal on a One (unlike the Pro, where they're independent). Feed exactly one of them.",
+          "Green status: the live GPSDO health — if this ever reads DEGRADED while the tracker looks fine, suspect this cable first."],
+        specs: [["Expects", "10 MHz, 3.3 V square, high-Z — 0 V to 3.3 V only"], ["Sharing", "same signal as P22 pin 2 — never feed both"], ["Source today", "Bodnar OUT1, matched-length vs the Pro feed"]],
+        links: [["External clock interface", DOC_CLK]] } },
+    { id: "clkout", x: 700, y: 92, w: 132, h: 66, t: ["CLKOUT SMA"], s: "10 MHz out",
+      lv: function () { return "unused (star)"; },
+      tip: ["CLKOUT — the daisy-chain mouth", "A 10 MHz, 3.3 V square output for feeding other equipment. In this station it's idle: the star feeds each radio its own GPSDO line instead."],
+      det: { h3: "CLKOUT (One) — available, deliberately idle",
+        paras: ["CLKOUT exists so one HackRF can reference another (CLKOUT→CLKIN daisy-chain). That is precisely the topology this station abandoned: a cascade means the downstream radio inherits the upstream radio's boot order, reset events, and PLL choices.",
+          "It remains the zero-cost way to add a third receiver to the reference family if a distribution amplifier isn't available — one cable, CLKOUT→CLKIN, done. Trade-offs are documented in the 'connect a third board' tab."],
+        specs: [["Output", "10 MHz, 3.3 V square, high-Z load"], ["Enable", "hackrf_clock -o 1 (off by default)"], ["Station", "idle — star topology"]],
+        links: [["External clock interface", DOC_CLK]] } },
+    { id: "p28", x: 864, y: 92, w: 152, h: 66, t: ["P28 header"], s: "trig out 15 · in 16 · GND 2",
+      tip: ["P28 — the One's trigger pins (inside the case)", "Pin 15 = trigger output, pin 16 = trigger input, pin 2 = ground. Requires opening the case. The route to sample-aligned dual-radio captures."],
+      det: { h3: "P28 — trigger out (15), trigger in (16), ground (2)",
+        paras: ["HackRF One keeps its trigger signals on an internal 0.1\" header: pin 15 is the trigger OUTPUT (fires when this board starts an operation), pin 16 is the trigger INPUT (arm with hackrf_transfer -H or hackrf_sync_start), pin 2 is ground. The trigger is a 3.3 V pulse, rising edge, synchronizing starts to better than one sample period.",
+          "Physical access requires opening the case — clips may crack; the official docs link a how-to video.",
+          "Station plan for the dual-GPS coherence work: Pro P2 (reassigned to trigger-out) → this header's pin 16, with common ground carried by the clock cables. Arm the One first, then start the Pro."],
+        specs: [["Pin 15", "trigger output"], ["Pin 16", "trigger input (arm: hackrf_transfer -H / hackrf_sync_start, API ≥ 1.14)"], ["Pin 2", "ground — jumper to the other board's pin 2 if clock cables don't already common it"], ["Access", "internal — case must be opened"]],
+        links: [["Hardware triggering", DOC_TRIG]] } },
+    { id: "flash1", x: 1044, y: 92, w: 106, h: 66, t: ["W25Q80BV"], s: "8 Mbit flash",
+      tip: ["SPI flash (One)", "8 Mbit — MCU firmware and the CPLD needs nothing (it's non-volatile). A quarter of the Pro's capacity, which mattered when custom MCU images grew."],
+      det: { h3: "W25Q80BV — the One's smaller memory",
+        paras: ["8 Mbit of SPI flash for the MCU firmware. No FPGA slots here — the CPLD is non-volatile and fixed.",
+          "The capacity difference (8 vs 32 Mbit) is one of the quiet reasons custom firmware work happens on the Pro: room for multiple images, experiments, and rollback."],
+        specs: [["Part", "Winbond W25Q80BV, 8 Mbit"], ["Contents", "MCU firmware only"]],
+        links: [["Hardware components", DOC_COMP]] } },
+  ];
+
+  var ONE_EDGES = [
+    { x1: 132, y1: 321, x2: 172, y2: 321, label: "RF in", lx: 152, ly: 311,
+      tip: ["RF in (One)", "The ATSC broadcast waveform enters here (602.8 MHz, 6 MHz channel). −5 dBm is the absolute ceiling — broadcast signals after a whip/preamp are far below it."],
+      det: { h3: "Antenna port → front-end (One)",
+        paras: ["This station's One receives the ATSC ch35 broadcast pilot — a strong, always-on terrestrial signal whose 60 Hz-scattered pilot tones make an excellent frequency ruler for the clock chain.",
+          "The signal here is currently ~35–38 dB starved versus its healthy level — the open hardware question of the station. Everything on this diagram to the right of the port has been exonerated by the dark-mode diagnostics; the fault is physical, left of this wire."],
+        specs: [["Signal", "ATSC 8-VSB pilot @ 602.80944 MHz"], ["Status", "starved 35–38 dB — physical cause open"]], links: [] } },
+    { x1: 302, y1: 321, x2: 342, y2: 321, label: "RF", lx: 322, ly: 311,
+      tip: ["Front-end → mixer (One)", "Conditioned RF at the tuned frequency heads to the first mixer, as on the Pro."],
+      det: { h3: "Front-end → RFFC5072 (One)",
+        paras: ["Same wire, same meaning as on the Pro: analog RF, still at 602.8 MHz, about to become a software-defined frequency problem."],
+        specs: [], links: [] } },
+    { x1: 474, y1: 321, x2: 514, y2: 321, label: "IF ≈ 2.x GHz", lx: 494, ly: 311,
+      tip: ["First IF (One)", "The 602.8 MHz ATSC channel mixed up to the transceiver's acceptance band — same dual-conversion as the Pro."],
+      det: { h3: "RFFC5072 → MAX2839 (first IF)",
+        paras: ["The first LO mixes the ATSC channel into the 2.3–2.7 GHz acceptance band of the MAX2839 — identical architecture to the Pro, different part revision at the far end."],
+        specs: [], links: [] } },
+    { x1: 654, y1: 321, x2: 694, y2: 321, label: "analog I/Q", lx: 674, ly: 311,
+      tip: ["Baseband I/Q (One)", "The ATSC pilot as two analog voltages spinning at its offset from the LO — the offset the phase producer turns into a clock-drift vote."],
+      det: { h3: "MAX2839 → MAX5864 (analog baseband)",
+        paras: ["At baseband, the ATSC pilot is a narrow tone whose exact frequency equals the LO's error plus the transmitter's own (excellent) discipline. The phase producer's whole job is measuring that tone's wander against the Bodnar-referenced expectation."],
+        specs: [], links: [] } },
+    { x1: 824, y1: 321, x2: 864, y2: 321, label: "8-bit I/Q", lx: 844, ly: 311,
+      tip: ["Sample pairs (One)", "8-bit I and Q per AFE clock — no 12-bit mode, no timestamp nibble. Timing must come from the reference and trigger lines, not the stream."],
+      det: { h3: "MAX5864 → CPLD (sample bus)",
+        paras: ["Plain 8-bit sample pairs into fixed glue logic. Contrast with the Pro, where this wire can also carry 12-bit samples with embedded timestamps — the One has no such channel, which is why fine timing on the One needs P28 trigger hardware instead of stream metadata."],
+        specs: [], links: [] } },
+    { x1: 940, y1: 362, x2: 940, y2: 452, label: "SGPIO", lx: 948, ly: 410,
+      tip: ["SGPIO (One)", "Same NXP peripheral, same M0 assembly server: serialized samples into USB bulk buffers."],
+      det: { h3: "CPLD → LPC43xx (SGPIO)",
+        paras: ["The fixed-glue CPLD formats samples for SGPIO exactly as the Pro's FPGA does; the M0 core shuffles them to USB. At 6 Msps this core has an easier life than the Pro's (12 vs 32 MB/s)."],
+        specs: [], links: [] } },
+    { x1: 1016, y1: 493, x2: 1044, y2: 493, label: "USB bulk", lx: 1030, ly: 483,
+      tip: ["USB bulk (One)", "12 MB/s of ATSC samples plus control — the phase producer at the far end."],
+      det: { h3: "LPC43xx → host (USB)",
+        paras: ["The stream feeding the phase producer's pilot tracker. When this station ran the One on a shared root with the Pro, congestion here was a noise source; separate roots are the law."],
+        specs: [], links: [] } },
+    { x1: 294, y1: 125, x2: 472, y2: 125, label: "reference", lx: 383, ly: 115,
+      tip: ["Crystal → Si5351C", "The plain-crystal fallback, idle while the Bodnar's 10 MHz is detected. −3 ppm class when it runs the show."],
+      det: { h3: "Crystal → Si5351C (local fallback)",
+        paras: ["Same fallback semantics as the Pro: no CLKIN detected at stream start → this crystal becomes the reference, silently. The station's drift history shows exactly what that sounds like (−3 ppm era)."],
+        specs: [], links: [] } },
+    { x1: 142, y1: 125, x2: 172, y2: 125, label: "10 MHz", lx: 157, ly: 115,
+      tip: ["CLKIN — star branch #2", "Bodnar OUT1 → this port, matched cable length to the Pro's feed: relative drift between the radios ≈ 0 by construction."],
+      det: { h3: "CLKIN → Si5351C (external reference)",
+        paras: ["The second branch of the Bodnar star. Equal-length cables make the two radios frequency-coherent; they do NOT prove equal electrical delay or phase — that calibration is still ahead of the station."],
+        specs: [], links: [["External clock interface", DOC_CLK]] } },
+    { x1: 700, y1: 125, x2: 614, y2: 125, label: "10 MHz out", lx: 657, ly: 115,
+      tip: ["CLKOUT — idle by design", "The daisy-chain mouth, unused in the star topology. Available if a third board ever needs a reference the cheap way."],
+      det: { h3: "Si5351C → CLKOUT",
+        paras: ["Idle today. The star made this port redundant: feeding a third radio from here would re-introduce the cascade's failure modes (upstream reset = downstream reference loss) — documented as the cheap-but-worse option in the wiring tab."],
+        specs: [], links: [] } },
+    { x1: 864, y1: 158, x2: 614, y2: 280, dash: true, label: "trigger fabric (via CPLD glue)", lx: 760, ly: 200,
+      tip: ["P28 ↔ CPLD — the trigger path", "Pin 15's output pulse and pin 16's input edge travel through CPLD glue to the sample engine: the input edge releases sample capture, aligning starts to better than one sample period."],
+      det: { h3: "P28 header ↔ sample engine (trigger path)",
+        paras: ["The trigger is not a network packet or a USB message: it is a hardware edge on pin 16 that releases sample capture in the same clock domain as the ADC stream — hence the official 'error of less than one sample period'. Pin 15 is the symmetric output when this board is the master.",
+          "Sub-sample alignment is NOT promised: hardware triggering aligns to within one sample clock (62.5 ns at 16 Msps, 167 ns at 6 Msps). The residual integer-sample lag must be measured with a common RF signal after triggering — the design's own acceptance test."],
+        specs: [["Accuracy", "< 1 sample period start alignment"], ["Not included", "sub-sample / phase alignment — needs separate calibration"]], links: [["Hardware triggering", DOC_TRIG]] } },
+    { x1: 940, y1: 534, x2: 654, y2: 345, dash: true, label: "SPI/GPIO control plane", lx: 830, ly: 560,
+      tip: ["Control plane (One)", "Same M4 voice: gains, LO, filter, CLKOUT enable, CLKIN detection status."],
+      det: { h3: "Cortex-M4 → all chips (control)",
+        paras: ["Identical role to the Pro's control plane. The One's version additionally owns the CLKOUT enable and the CLKIN detection bit that hackrf_clock -i reads."],
+        specs: [], links: [] } },
+  ];
+
+  // ---------- wiring view: adding a third board ----------
+  function wireHtml(ST) {
+    var g = (ST && ST.gpsdo) || {};
+    var refLine = g.lock ? "<b class='hw-lv'>reference healthy</b> — " + g.n_sat + " sats, HDOP " + g.hdop + ", fix " + g.fix_quality
+                         : "<b style='color:#e57373'>reference DEGRADED or probe dark</b>";
+    function card(t, rows) {
+      return "<div style='background:#0c1218;border:1px solid #2a3742;border-radius:8px;padding:0.7em 1em;margin-bottom:0.7em'>"
+        + "<h3 style='margin:0 0 0.4em;color:#9fd8f0'>" + t + "</h3>" + rows + "</div>";
+    }
+    function row(k, v) { return "<div style='margin:0.3em 0'><b style='color:#8fc9e8'>" + k + "</b> — " + v + "</div>"; }
+    var h = "";
+    h += "<div style='margin-bottom:0.7em;font-size:0.95em'>Live reference: " + refLine + " (gpsdo_probe, 5 s cadence, TTL 30 s — a dead probe reads as degraded, never as healthy)</div>";
+    h += card("① CLOCK — 10 MHz frequency reference (the one cable every added board needs)",
+      row("What it is", "A 10 MHz, 3.3 V square wave shared by all boards so every sample clock and LO derives from the SAME oscillator. Frequency coherence — not phase alignment, not sample zero — comes from this wire alone.")
+      + row("HackRF Pro", "P1 SMA = CLKIN (default) · P22 pin 2 = second independent CLKIN (<code>hackrf_clock -c p22</code>) · P2 SMA = CLKOUT (default; reassignable)")
+      + row("HackRF One", "CLKIN SMA (SHARED with P22 pin 2 — feed exactly one) · CLKOUT SMA (<code>hackrf_clock -o 1</code>)")
+      + row("Rules that bite", "Detection happens ONLY at RX/TX stream start — clock first, start second. Verify with <code>hackrf_clock -i</code> after starting a stream. Never exceed 3.3 V or go below 0 V.")
+      + row("Ways to feed a third board", "best: GPSDO/distribution-amp branch of its own (star) · cheap: any board's CLKOUT → new board's CLKIN (inherits that board's boot/reset fate — the cascade this station abandoned)")
+      + row("This station today", "Bodnar OUT2 → Pro P1 · Bodnar OUT1 → One CLKIN · matched-length cables · PPS routed nowhere (2 outputs, 3 wanted signals — dist-amp on OUT2 is the documented escape; cable labeling by the user is the gate)"));
+    h += card("② TRIGGER — sample-zero alignment (the second cable, when starts must coincide)",
+      row("What it is", "A 3.3 V rising-edge pulse that releases sample capture in the ADC clock domain: all armed boards start within ONE SAMPLE PERIOD of each other (62.5 ns @ 16 Msps, 167 ns @ 6 Msps). Sub-sample/phase alignment is NOT included — measure the residual lag with a common RF signal afterwards.")
+      + row("HackRF Pro", "trigger signals available on the configurable P1/P2 SMA ports (<code>hackrf_clock -1/-2</code> to assign) — no case opening")
+      + row("HackRF One", "P28 header INSIDE the case: <b>pin 15 = trigger out · pin 16 = trigger in · pin 2 = GND</b> (male-to-male 0.1\" jumper wires)")
+      + row("Procedure", "arm the triggered board(s) FIRST (<code>hackrf_transfer -H …</code> or <code>hackrf_sync_start(dev, RX)</code>, API ≥ 1.14), then start the master — no special flag needed on the master. Disarm a stale trigger with <code>hackrf_sync_start(dev, OFF)</code> or <code>hackrf_set_hw_sync_mode(0)</code>.")
+      + row("This station's plan", "Pro P2 (reassigned trigger-out) → One P28 pin 16, ground via the clock cables; arm One, fire Pro. Blocked behind the GPSDO port budget (①) and the cable-labeling hold."));
+    h += card("③ GROUND & RF — the unglamorous third that decides whether ① and ② mean anything",
+      row("Common ground", "the clock cable's shield usually commons the boards; if not, jumper P28 pin 2 ↔ P28 pin 2 (One) before any trigger work — a floating trigger is a random-number generator")
+      + row("Same-signal RF (coherence tests)", "ONE antenna → power splitter → all boards. Exactly ONE DC-pass branch may power the active antenna (normally the Pro's); DC-block every other leg or the bias supplies fight")
+      + row("Gain discipline", "start the new board at amp/LNA/VGA = 0 on a split, externally-amplified path; walk gain up while watching for clipping — the current One config (LNA 40/VGA 44 into a starved path) is the counter-example under review")
+      + row("USB budget", "2 B per complex sample: Pro 32 + One 12 MB/s already exceeds one USB 2.0 bus's safe envelope — separate root controllers, lower rates, or sequential captures; record expected-vs-received sample counts every run")
+      + row("Geometry honesty", "record electrical phase-center coordinates (not enclosure-edge gaps) and cable lengths before any phase math — the '3 cm baseline' review taught that lesson"));
+    h += "<div class='hw-src'>Sources: official docs — <a href='" + DOC_CLK + "'>external clock interface</a> · <a href='" + DOC_TRIG + "'>hardware triggering</a> · <a href='" + DOC_COMP + "'>hardware components</a> · station laws in AGENTS.md (star topology, labeling hold, USB roots).</div>";
+    return h;
+  }
+
+  // ---------- render engine ----------
+  var overlay = document.getElementById("hwedu");
+  var svgbox = document.getElementById("hw-svgbox");
+  var detail = document.getElementById("hw-detail");
+
+  function showDetail(det, lvText) {
+    if (!det) return;
+    var h = "<h3>" + esc(det.h3) + "</h3>";
+    if (lvText) h += "<div class='hw-lv' style='margin-bottom:0.4em'>LIVE: " + esc(lvText) + "</div>";
+    (det.paras || []).forEach(function (p) { h += "<p>" + p + "</p>"; });
+    if (det.specs && det.specs.length) {
+      h += "<table><tr><th>item</th><th>value</th></tr>";
+      det.specs.forEach(function (r) { h += "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; });
+      h += "</table>";
+    }
+    if (det.links && det.links.length) {
+      h += "<div style='margin-top:0.5em'>";
+      det.links.forEach(function (l) { h += "<a href='" + l[1] + "' target='_blank' rel='noopener' style='margin-right:1em'>" + esc(l[0]) + " ↗</a>"; });
+      h += "</div>";
+    }
+    detail.innerHTML = h;
+    detail.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function renderBoard() {
+    if (BOARD === "wire") { svgbox.innerHTML = wireHtml(ST); return; }
+    var nodes = BOARD === "pro" ? PRO_NODES : ONE_NODES;
+    var edges = BOARD === "pro" ? PRO_EDGES : ONE_EDGES;
+    var out = [];
+    edges.forEach(function (e, i) {
+      var dash = e.dash ? " stroke-dasharray='6 4'" : "";
+      out.push("<g class='hw-edge tip' data-ei='" + i + "' data-tip-title=\"" + esc(e.tip[0]) + "\" data-tip=\"" + esc(e.tip[1]) + "\">"
+        + "<line class='hw-edgehit' x1='" + e.x1 + "' y1='" + e.y1 + "' x2='" + e.x2 + "' y2='" + e.y2 + "' stroke='rgba(0,0,0,0)' stroke-width='16'/>"
+        + "<line class='hw-edgeline' x1='" + e.x1 + "' y1='" + e.y1 + "' x2='" + e.x2 + "' y2='" + e.y2 + "' stroke='#4a6a7a' stroke-width='2'" + dash + "/>"
+        + "<text x='" + e.lx + "' y='" + e.ly + "' text-anchor='middle' fill='#7f96a3' font-size='10' style='" + FONT + "'>" + esc(e.label) + "</text></g>");
+    });
+    nodes.forEach(function (n) {
+      var lines = "";
+      (n.t || []).forEach(function (t, li) {
+        lines += "<text x='" + (n.x + n.w / 2) + "' y='" + (n.y + 22 + li * 14) + "' text-anchor='middle' fill='#dbe5ea' font-size='11.5' style='" + FONT + "font-weight:700'>" + esc(t) + "</text>";
+      });
+      if (n.s) lines += "<text x='" + (n.x + n.w / 2) + "' y='" + (n.y + n.h - 24) + "' text-anchor='middle' fill='#7f96a3' font-size='9' style='" + FONT + "'>" + esc(n.s) + "</text>";
+      if (n.lv) lines += "<text class='hw-lv' data-lv='" + n.id + "' x='" + (n.x + n.w / 2) + "' y='" + (n.y + n.h - 9) + "' text-anchor='middle' fill='#8fe3a8' font-size='9.5' style='" + FONT + "font-weight:700'></text>";
+      out.push("<g class='hw-node tip' data-nid='" + n.id + "' data-tip-title=\"" + esc(n.tip[0]) + "\" data-tip=\"" + esc(n.tip[1]) + "\">"
+        + "<rect x='" + n.x + "' y='" + n.y + "' width='" + n.w + "' height='" + n.h + "' rx='8' fill='#10161c' stroke='#3a4a58' stroke-width='1.5'/>"
+        + lines + "</g>");
+    });
+    svgbox.innerHTML = "<svg viewBox='0 0 1160 620' role='img' aria-label='board block diagram'>" + out.join("") + "</svg>";
+    svgbox.querySelectorAll(".hw-node").forEach(function (g) {
+      g.addEventListener("click", function () {
+        var n = nodes.filter(function (x) { return x.id === g.getAttribute("data-nid"); })[0];
+        showDetail(n.det, n.lv ? n.lv(ST) : null);
+      });
+    });
+    svgbox.querySelectorAll(".hw-edge").forEach(function (g) {
+      g.addEventListener("click", function () {
+        showDetail(edges[+g.getAttribute("data-ei")].det, null);
+      });
+    });
+    paintLive();
+  }
+
+  function paintLive() {
+    var nodes = BOARD === "pro" ? PRO_NODES : (BOARD === "one" ? ONE_NODES : []);
+    nodes.forEach(function (n) {
+      if (!n.lv) return;
+      var t = svgbox.querySelector("[data-lv='" + n.id + "']");
+      if (t) t.textContent = n.lv(ST) || "";
+    });
+    var lv = document.getElementById("hw-live");
+    if (!ST) { lv.textContent = "waiting for /api/sync…"; return; }
+    var c = ST.clock || {}, gd = ST.gpsdo || {}, d = ST.discipline || {}, ph = ST.phase || {};
+    lv.innerHTML =
+      "<span>FPGA tick <b>" + (c.live_tick_hz ? (c.live_tick_hz / 1e6).toFixed(6) + " MHz" : "—") + "</b></span>"
+      + "<span>consensus <b>" + (ST.consensus_ppm != null ? sgn(ST.consensus_ppm) + Math.abs(ST.consensus_ppm).toFixed(3) + " ppm" : "—") + "</b></span>"
+      + "<span>GPSDO <b>" + (gd.lock ? "lock · " + gd.n_sat + " sats · HDOP " + gd.hdop : "DEGRADED/dark") + "</b></span>"
+      + "<span>CLKIN soft-verify <b>" + (ST.clkin_soft_verified === true ? "locked" : (ST.clkin_soft_verified === false ? "FAILED" : "closed (dark)")) + "</b></span>"
+      + "<span>One <b>" + (ph.lock ? "phase lock" : "RF-dark") + "</b></span>"
+      + "<span>discipline <b>" + (d.correction_ppm != null ? "SHADOW " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : "—") + "</b></span>"
+      + "<span>tracker <b>" + lockedSats(ST) + " sats locked</b></span>";
+  }
+
+  function poll() {
+    fetch("/api/sync").then(function (r) { return r.json(); }).then(function (st) {
+      ST = st; paintLive();
+    }).catch(function () {});
+  }
+
+  function setBoard(b) {
+    BOARD = b;
+    document.getElementById("hw-tab-pro").className = b === "pro" ? "on" : "";
+    document.getElementById("hw-tab-one").className = b === "one" ? "on" : "";
+    document.getElementById("hw-tab-wire").className = b === "wire" ? "on" : "";
+    renderBoard();
+  }
+
+  document.getElementById("hwbtn").addEventListener("click", function () {
+    overlay.style.display = "block"; poll(); renderBoard();
+  });
+  document.getElementById("hw-close").addEventListener("click", function () { overlay.style.display = "none"; });
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.style.display = "none"; });
+  document.getElementById("hw-tab-pro").addEventListener("click", function () { setBoard("pro"); });
+  document.getElementById("hw-tab-one").addEventListener("click", function () { setBoard("one"); });
+  document.getElementById("hw-tab-wire").addEventListener("click", function () { setBoard("wire"); });
+  setInterval(function () { if (overlay.style.display === "block") poll(); }, 5000);
 })();
 </script>
 </body>

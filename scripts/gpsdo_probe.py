@@ -102,18 +102,22 @@ def snapshot(st, port):
                       "snr_max": max(snrs),
                       "snr_med": sorted(snrs)[len(snrs) // 2]}
     fresh_gga = now - st.get("gga_epoch", 0) < TTL_S
+    # Panel-merge law (src/main.rs): whole top-level key, later-file-wins —
+    # everything lives under "gpsdo" so no other producer's keys can collide.
     return {
         "epoch": now,
         "ttl_s": TTL_S,
-        "port": port,
-        "lock": bool(fresh_gga and st.get("fix_quality", 0) > 0),
-        "fix_quality": st.get("fix_quality") if fresh_gga else None,
-        "n_sat": st.get("n_sat") if fresh_gga else None,
-        "hdop": st.get("hdop") if fresh_gga else None,
-        "alt_m": st.get("alt_m") if fresh_gga else None,
-        "rmc_status": st.get("rmc_status") if now - st.get("rmc_epoch", 0) < TTL_S else None,
-        "rmc_mode": st.get("rmc_mode") if now - st.get("rmc_epoch", 0) < TTL_S else None,
-        "gsv": gsv,
+        "gpsdo": {
+            "port": port,
+            "lock": bool(fresh_gga and st.get("fix_quality", 0) > 0),
+            "fix_quality": st.get("fix_quality") if fresh_gga else None,
+            "n_sat": st.get("n_sat") if fresh_gga else None,
+            "hdop": st.get("hdop") if fresh_gga else None,
+            "alt_m": st.get("alt_m") if fresh_gga else None,
+            "rmc_status": st.get("rmc_status") if now - st.get("rmc_epoch", 0) < TTL_S else None,
+            "rmc_mode": st.get("rmc_mode") if now - st.get("rmc_epoch", 0) < TTL_S else None,
+            "gsv": gsv,
+        },
     }
 
 
@@ -128,8 +132,9 @@ def publish(doc):
 def main():
     port, fd = open_port()
     if fd is None:
-        publish({"epoch": time.time(), "ttl_s": TTL_S, "port": None,
-                 "lock": False, "error": "no /dev/cu.usbmodem* (GPSDO absent)"})
+        publish({"epoch": time.time(), "ttl_s": TTL_S,
+                 "gpsdo": {"port": None, "lock": False,
+                           "error": "no /dev/cu.usbmodem* (GPSDO absent)"}})
         sys.exit("no GPSDO serial port found")
     print(f"gpsdo_probe: reading {port}", flush=True)
     st = {}
