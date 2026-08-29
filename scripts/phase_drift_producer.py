@@ -154,6 +154,11 @@ GPS_UNIX_EPOCH = 315964800.0   # 1980-01-06T00:00:00 UTC as unix seconds
 GPS_LEAP_S = 18.0              # GPS - UTC leap seconds (pinned; 18 since 2017)
 GEO_MAX_DT_S = 3600.0          # 2nd-order Taylor propagation bound, s
 GEO_MAX_URA = 7                # MT9 URA usability gate
+# applied_t (stream-time of last MT9 application) advances only on message
+# events — observed tens of seconds live. If it stops advancing for this
+# long, the cached vector is no longer being maintained by fresh decodes:
+# fail closed. 300 s tolerates several missed MT9 broadcasts.
+GEO_MSG_FRESH_S = 300.0
 LAM_L1_M = C_MPS / L1_HZ       # L1 carrier wavelength (~0.1903 m)
 WGS84_A = 6378137.0            # semi-major axis, m
 WGS84_F = 1.0 / 298.257223563  # flattening
@@ -318,6 +323,8 @@ class GeoCorrector:
         self.geo = None             # latest accepted sbas_geonav dict (SI)
         self.offset_cycles = 0.0    # running stitch across ephemeris swaps
         self.last_dt = None         # propagation dt of the last applied sample
+        self._last_applied_t = None  # last seen geonav["applied_t"] value
+        self._msg_refresh_unix = None  # t_unix when applied_t last advanced
 
     def _term(self, geo, t_unix):
         """Correction term rho/lambda_L1 - f_L1*dt_geo (cycles) and the
@@ -343,6 +350,13 @@ class GeoCorrector:
             self.offset_cycles = 0.0
         if geonav is None:
             return
+        # message freshness: applied_t advances only when the tracker
+        # (re)applies the vector on a decode event; watch it here so
+        # correct() can tell a live vector from a frozen one
+        at = geonav.get("applied_t")
+        if at is not None and at != self._last_applied_t:
+            self._last_applied_t = at
+            self._msg_refresh_unix = t_unix
         if (not slip and self.geo is not None
                 and (geonav.get("iodn") != self.geo.get("iodn")
                      or geonav.get("t0_s") != self.geo.get("t0_s"))):
@@ -367,6 +381,12 @@ class GeoCorrector:
         ura = geo.get("ura")
         if ura is None or ura > GEO_MAX_URA:
             return cycles, False, "ura"
+        if (self._msg_refresh_unix is None
+                or t_unix - self._msg_refresh_unix > GEO_MSG_FRESH_S):
+            # the tracker stopped refreshing this vector (MT9 decode
+            # outage or frozen publication) — propagation age from t0 is
+            # not evidence the message itself is still current
+            return cycles, False, "msg-stale"
         try:
             term, dt = self._term(geo, t_unix)
         except (KeyError, TypeError, ValueError):
@@ -498,6 +518,8 @@ class P0bShadow:
                 cw.add(t, cycles, slip=True)
             return frag
         frag["p0b_age_s"] = round(abs(gc.last_dt), 1)
+        if gc._msg_refresh_unix is not None:
+            frag["p0b_msg_age_s"] = round(t - gc._msg_refresh_unix, 1)
         # only APPLIED samples join the corrected chain: a gated-out second
         # contributes nothing (SatWindow's own >5 s gap check flushes the
         # chain if the outage stretches — a gap in the correction is not

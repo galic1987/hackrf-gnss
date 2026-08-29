@@ -481,6 +481,25 @@ def main():
     _, a, r = g4.correct(unix_of(t0_s + 3599), 0.0)
     check("p0b gate: |dt|=3599 still applies", a, f"{a} {r}")
 
+    # message freshness: applied_t frozen -> stale after GEO_MSG_FRESH_S,
+    # even though propagation age from t0 is still tiny; the gate re-opens
+    # only when applied_t ADVANCES (a real decode event), not on re-update
+    g7 = pd.GeoCorrector(site)
+    g7.update(geo1, unix_of(t0_s))
+    _, a, r = g7.correct(unix_of(t0_s), 0.0)
+    check("p0b msg: fresh vector applies", a, f"{a} {r}")
+    _, a, r = g7.correct(unix_of(t0_s + 301), 0.0)
+    check("p0b msg: frozen applied_t -> msg-stale",
+          not a and r == "msg-stale", f"{a} {r}")
+    g7.update(geo1, unix_of(t0_s + 302))     # same applied_t: no refresh
+    _, a, r = g7.correct(unix_of(t0_s + 302), 0.0)
+    check("p0b msg: re-update without decode stays stale",
+          not a and r == "msg-stale", f"{a} {r}")
+    geo1b = dict(geo1, applied_t=5.0)        # decode event advances it
+    g7.update(geo1b, unix_of(t0_s + 303))
+    _, a, r = g7.correct(unix_of(t0_s + 303), 0.0)
+    check("p0b msg: advanced applied_t re-opens the gate", a, f"{a} {r}")
+
     # GPS-day wrap: t0 at 86384 (16 s grid), evaluation 60 s past
     # midnight -> dt wraps to +76 s and the correction still applies
     gw = mk_geo(86384.0, [-19139594.24, -37569516.96, -2323.2],
