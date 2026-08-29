@@ -90,12 +90,14 @@ def test_gap_segmentation_longest_segment_analyzed():
     assert rep["tdev"], rep["tdev"]
 
 
-def test_missing_gate_tau_never_passes_vacuously():
-    # reviewer-constructed case: gates pass (3400 rows, span ~3672 s, max-gap
-    # 1.5 s) but the mixed cadence puts median dt at 0.8 s, so tau=1000 needs
-    # m=1250 -> n>=3751 and is OMITTED. v1's all() over the partial table
-    # returned a claim-supporting verdict with only tau={10,100} tested.
-    random.seed(11)
+def test_mixed_cadence_splits_and_refuses():
+    # Before the 1.5x rule (round-14) this mixed-cadence fixture (60/40 of
+    # 0.8 s / 1.5 s, median 0.8 s) was the missing-tau vacuous-pass case:
+    # it stayed ONE segment and tau=1000 silently dropped out. Now every
+    # 1.5 s step (1.875x median) splits, the fragments can never reach the
+    # continuity gates, and the series is refused outright — the missing-tau
+    # guard is subsumed by construction (n>=3400 AND span>=3600 forces
+    # dt>=1.058, which forces 3m+1<=2835<n for tau=1000).
     ep, t = [], 1_787_000_000.0
     dts = [0.8] * 6 + [1.5] * 4            # 60/40 mix, median 0.8
     for k in range(3400):
@@ -106,10 +108,9 @@ def test_missing_gate_tau_never_passes_vacuously():
              "n_sat": 8, "n_fresh": 2, "n_pred": 6, "slips": 0,
              "gen": "v2-1", "source": "clock_bias"} for e in ep]
     rep = analyze(rows)
-    assert 1000 not in rep.get("tdev", {}), rep.get("tdev")
-    assert rep["gate_fails"] and "not evaluable" in rep["gate_fails"][0], \
-        rep["gate_fails"]
+    assert len(rep["segments"]) > 100, len(rep["segments"])
     assert not rep.get("verdict"), rep.get("verdict")
+    assert rep["gate_fails"], rep["gate_fails"]
 
 
 def test_continuity_gates_rows_do_not_equal_an_hour():
