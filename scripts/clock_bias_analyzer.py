@@ -282,6 +282,10 @@ def main():
     print(f"quality gates: {rep['n_quality']} rows (n_sat>=5, slips==0); "
           f"excluded {rep['n_poison']} poison-class rows "
           f"(residual_rms_m >= {POISON_RMS_M:.0f} m)")
+    print(f"NOTE: poison gate {POISON_RMS_M:.0f} m is DATA-DERIVED from the "
+          f"v2 rows it filters (see spec pre-registration 2026-08-29) — "
+          f"verdicts using it are exploratory until re-derived from a "
+          f"measurement-error budget or a held-out day")
     if rep["gens"]:
         print("gens found: " + ", ".join(
             f"{_gen_label(g)} ({c} rows)" for g, c in sorted(

@@ -19,6 +19,18 @@ Precision claim gates (all over ≥ 1 h of continuous data):
 - WAAS GEO carrier-phase cross-check consistent (structure in b(t) is clock, not
   channel noise).
 
+**Pre-registered quality-gate caveat (2026-08-29, R19):** the analyzer's
+poison-class residual threshold (POISON_RMS_M = 500 m) was derived from the
+same v2 rows it now filters (20.8k rows: healthy-hour residual p50 148 /
+p95 300 / p99 410 m). That makes any acceptance evaluated with it
+*exploratory, not independent*. Before the next claim attempt the gate must
+be re-derived from one of:
+1. a measurement-error budget with ionosphere, troposphere, group-delay and
+   GPS/BDS inter-system-bias terms modeled (none are today), or
+2. a held-out day not used for threshold selection.
+Until then the analyzer reports which gate was applied and verdicts carry
+the "data-derived gate" label.
+
 ## Current baseline (verified 2026-08-27)
 
 - Pro#1 (977c…): DEAD, hardware power-input fault (J1/Q4 path; no LED on dumb
