@@ -32,8 +32,10 @@ not applied truth: in SHADOW mode the register is unity, the add-back
 is 0, and rows carry corr_applied: false so consumers can tell.
 Making the row a RAW-TCXO measurement comparable to every other voter
 (ATSC ch35 via CLKOUT, PC clock). Like the code row, GEO line-of-sight
-motion Doppler is NOT subtracted (the tracker publishes no sat velocity;
-the code row absorbs it in its sigma floor). The honest fit sigma is
+motion Doppler is NOT subtracted in the PUBLISHED rows (the code row
+absorbs it in its sigma floor) — the tracker now publishes the MT9 state
+vector this chain was missing, but the removal runs SHADOW-only until
+the evidence gate passes (P0b SHADOW below). The honest fit sigma is
 published as-is; inter-source systematics (GEO motion floor +-0.025 ppm —
 covers the +-0.01 ppm range-rate bound +-0.5-3 m/s ÷ c, with margin; CLKOUT
 chain) are visible in the scatter.
@@ -46,6 +48,20 @@ white-noise OLS rather than correlated-residual. The consensus row is
 therefore published as ClockDriftPpmComponent — visible in the merged
 sources table, excluded from series_producer's voting consensus — until
 geometry correction and real uncertainty land (P0b).
+
+P0b SHADOW (2026-08-29): the tracker now publishes each GEO's MT9
+(DO-229D A.4.5.1) state vector as sbas_geonav, so the line-of-sight
+range rate AND the GEO clock can be removed. That correction runs here
+in SHADOW ONLY: a GeoCorrector per SBAS channel computes
+    corr(t) = cycles(t) + rho(t)/lambda_L1 - f_L1 * dt_geo(t)
+(step-free-stitched across ephemeris swaps), a parallel window fits its
+slope, and the result lands ONLY in per-sat diag keys (p0b_ppm,
+p0b_sigma_ppm, p0b_applied / p0b_reason, p0b_iodn, p0b_age_s) and in
+the convergence-evidence file observations/phase_drift_p0b_shadow.jsonl
+(corrected vs uncorrected ppm per GEO per cycle). Every published
+row/value/weight stays the uncorrected path, bit-for-bit; promotion to
+live is gated on ~1 h of shadow evidence showing the corrected GEOs
+agreeing far better than the uncorrected ones.
 
 Continuity guards (a window is only as good as its phase chain):
   - slip=true on any report -> the chain broke that second (watchdog or
@@ -91,7 +107,8 @@ Publishes:
   NON-VOTING note above): one instrument must vote once in
   series_producer's cross-producer consensus, and this chain shares the
   radio with the WAAS code row.
-  state["phase_drift"] — diagnostics: per-sat slope/fit sigma/n/gates.
+  state["phase_drift"] — diagnostics: per-sat slope/fit sigma/n/gates,
+  plus the P0b SHADOW keys (p0b_*) when the shadow corrector is active.
 
 Unit tests: scripts/test_phase_drift_producer.py (synthetic fixtures,
 no live observations touched).
@@ -116,6 +133,18 @@ GAP_S = 5.0               # report gap longer than this breaks the chain
 BREAK_CYC = 25.0          # one-step increment deviation = phase break
 COLLAPSE_CYC = 50.0       # |accumulator| above this can reseed-collapse
 COLLAPSE_FRAC = 0.02      # ...to below this fraction of its magnitude
+
+SHADOW_JSONL = f"{OBS}/phase_drift_p0b_shadow.jsonl"  # P0b evidence file
+
+# P0b SHADOW constants (GEO geometric correction from the tracker's MT9
+# sbas_geonav publication, SI units — src/live.rs GeoNavPub)
+GPS_UNIX_EPOCH = 315964800.0   # 1980-01-06T00:00:00 UTC as unix seconds
+GPS_LEAP_S = 18.0              # GPS - UTC leap seconds (pinned; 18 since 2017)
+GEO_MAX_DT_S = 3600.0          # 2nd-order Taylor propagation bound, s
+GEO_MAX_URA = 7                # MT9 URA usability gate
+LAM_L1_M = C_MPS / L1_HZ       # L1 carrier wavelength (~0.1903 m)
+WGS84_A = 6378137.0            # semi-major axis, m
+WGS84_F = 1.0 / 298.257223563  # flattening
 
 
 def log(msg):
@@ -198,6 +227,143 @@ def scatter_sigma(slopes):
     return 1.4826 * mad
 
 
+def gps_tod_s(unix_t):
+    """GPS time-of-day (s into the GPS day) for a unix timestamp.
+
+    MT9's t0 is broadcast as seconds into the GPS day (13 bits x 16 s),
+    so the corrector works entirely in the GPS-day frame. The leap count
+    is pinned as a module constant (18 s since 2017-01-01) rather than
+    read from a table: every discipline on this station lives in the
+    current era."""
+    return (unix_t - GPS_UNIX_EPOCH + GPS_LEAP_S) % 86400.0
+
+
+def wrap_tod(dt):
+    """Wrap a time-of-day difference to [-43200, +43200) s — the
+    day-boundary-safe propagation argument against MT9's t0 (a state
+    vector applied just before GPS midnight is evaluated just after)."""
+    return (dt + 43200.0) % 86400.0 - 43200.0
+
+
+def llh_to_ecef(lat_deg, lon_deg, h_m):
+    """WGS-84 geodetic -> ECEF metres (constants pinned above; no dep)."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    e2 = WGS84_F * (2.0 - WGS84_F)
+    s = math.sin(lat)
+    n = WGS84_A / math.sqrt(1.0 - e2 * s * s)
+    return ((n + h_m) * math.cos(lat) * math.cos(lon),
+            (n + h_m) * math.cos(lat) * math.sin(lon),
+            (n * (1.0 - e2) + h_m) * math.sin(lat))
+
+
+def load_site_ecef(path=f"{OBS}/site.json"):
+    """Canonical site anchor -> ECEF, or None. Fail-closed: no anchor, no
+    correction — a wrong anchor is worse than none (sky_producer treats
+    the same file as the one canonical anchor, never a guess)."""
+    try:
+        with open(path) as f:
+            site = json.load(f)
+        return llh_to_ecef(site["lat"], site["lon"], site["h_m"])
+    except Exception:
+        return None
+
+
+class GeoCorrector:
+    """P0b SHADOW geometric correction for one SBAS channel, from the
+    tracker's published MT9 state vector (sbas_geonav, SI units —
+    DO-229D A.4.5.1, src/live.rs GeoNavPub).
+
+    Sign derivation (pinned by the synthetic tests): the measured carrier
+    slope is -rho_dot/lambda + f_L1*agf1 + f_clock (range shortening
+    advances the phase — the tracker's f_D < 0 when the satellite
+    recedes — and the GEO clock polynomial rides on top), so the
+    correction ADDS the geometric/clock term back:
+        corr(t) = cycles(t) + rho(t)/lambda_L1 - f_L1 * dt_geo(t)
+    leaving d(corr)/dt = f_clock — the oscillator observable, with the
+    GEO's line-of-sight range rate (+-1 Hz class, the +-0.025 ppm floor
+    the uncorrected rows absorb in their sigma) removed.
+
+    rho(t) is the geometric range site->GEO with the state vector
+    propagated by the 2nd-order Taylor series of DO-229D A.4.5.1.1
+    (pos = p0 + v0*dt + a*dt^2/2) and dt wrapped across the GPS-day
+    boundary; dt_geo = agf0 + agf1*dt is the GEO clock polynomial.
+
+    Continuity across ephemeris swaps: MT9 updates arrive on a ~2-minute
+    cadence with a fresh t0/iodn, and two consecutive state vectors
+    disagree by decimetre-class extrapolation differences — ~cycle-class
+    jumps in rho/lambda. A naive swap would step the corrected series and
+    poison every slope fit spanning the swap, so update() STITCHES: at
+    the swap instant t it adds (old_term(t) - new_term(t)) to a running
+    offset, making the corrected series step-free by construction. A
+    channel slip/reseed breaks the phase chain itself, so stitching is
+    pointless there — re-anchor (offset reset to 0) instead; a step is
+    then legal."""
+
+    def __init__(self, site_ecef):
+        self.site = site_ecef
+        self.geo = None             # latest accepted sbas_geonav dict (SI)
+        self.offset_cycles = 0.0    # running stitch across ephemeris swaps
+        self.last_dt = None         # propagation dt of the last applied sample
+
+    def _term(self, geo, t_unix):
+        """Correction term rho/lambda_L1 - f_L1*dt_geo (cycles) and the
+        day-wrapped propagation dt (s) for one state vector."""
+        dt = wrap_tod(gps_tod_s(t_unix) - geo["t0_s"])
+        dt2 = dt * dt
+        px = geo["pos_m"][0] + geo["vel_mps"][0] * dt \
+            + 0.5 * geo["acc_mps2"][0] * dt2
+        py = geo["pos_m"][1] + geo["vel_mps"][1] * dt \
+            + 0.5 * geo["acc_mps2"][1] * dt2
+        pz = geo["pos_m"][2] + geo["vel_mps"][2] * dt \
+            + 0.5 * geo["acc_mps2"][2] * dt2
+        dx, dy, dz = px - self.site[0], py - self.site[1], pz - self.site[2]
+        rho = math.sqrt(dx * dx + dy * dy + dz * dz)
+        clk = geo["agf0_s"] + geo["agf1_sps"] * dt
+        return rho / LAM_L1_M - L1_HZ * clk, dt
+
+    def update(self, geonav, t_unix, slip=False):
+        """Accept the tracker's latest sbas_geonav (called each cycle;
+        None = field absent, keep the cached vector)."""
+        if slip:
+            # a slip/reseed broke the phase chain: re-anchor, don't stitch
+            self.offset_cycles = 0.0
+        if geonav is None:
+            return
+        if (not slip and self.geo is not None
+                and (geonav.get("iodn") != self.geo.get("iodn")
+                     or geonav.get("t0_s") != self.geo.get("t0_s"))):
+            # ephemeris swap mid-chain: stitch the corrected series
+            # step-free at t_swap — offset += old_term(t) - new_term(t)
+            try:
+                old_term, _ = self._term(self.geo, t_unix)
+                new_term, _ = self._term(geonav, t_unix)
+                self.offset_cycles += old_term - new_term
+            except (KeyError, TypeError, ValueError):
+                pass    # can't stitch a malformed vector — keep old offset
+        self.geo = geonav
+
+    def correct(self, t_unix, cycles):
+        """-> (corrected_cycles, applied, reason). Fail-closed gates: the
+        correction is applied ONLY from a present, usable (ura <= 7),
+        fresh (|dt| <= 3600 s after day-wrap) state vector — anything
+        else returns the input unchanged with a short reason."""
+        geo = self.geo
+        if geo is None:
+            return cycles, False, "no-geonav"
+        ura = geo.get("ura")
+        if ura is None or ura > GEO_MAX_URA:
+            return cycles, False, "ura"
+        try:
+            term, dt = self._term(geo, t_unix)
+        except (KeyError, TypeError, ValueError):
+            return cycles, False, "bad-geonav"
+        if abs(dt) > GEO_MAX_DT_S:
+            return cycles, False, "stale"
+        self.last_dt = dt
+        return cycles + term + self.offset_cycles, True, None
+
+
 class SatWindow:
     """Sliding window of continuity-verified (t, cycles, cn0) samples for
     one channel. Any phase break — slip flag, reseed collapse, increment
@@ -273,6 +439,75 @@ class SatWindow:
         return {"slope_hz": slope, "sigma_hz": sigma, "n": n}
 
 
+class P0bShadow:
+    """SHADOW wiring for the P0b geometric correction, persisted across
+    process_state calls: per-sat GeoCorrector + a parallel SatWindow of
+    corrected cycles, plus the jsonl convergence-evidence file.
+
+    SHADOW LAW: nothing here touches the published path. process_state
+    feeds the corrector only AFTER the uncorrected window has ingested
+    the sample exactly as before; the corrected fit lands in diag-only
+    p0b_* keys and in the evidence file. Promotion to the live rows is a
+    separate step, gated on ~1 h of this evidence showing the corrected
+    GEOs agreeing far better than the uncorrected ones."""
+
+    def __init__(self, site_ecef, shadow_path=SHADOW_JSONL):
+        self.site = site_ecef
+        self.shadow_path = shadow_path
+        self.correctors = {}        # (sys, prn) -> GeoCorrector
+        self.windows = {}           # (sys, prn) -> corrected SatWindow
+
+    def ingest(self, key, s, t, cycles, corr, window_s,
+               min_lock_s, min_cn0, min_samples):
+        """Feed one 1 Hz sbas report through the shadow correction and fit
+        the corrected window. Returns the diag fragment (p0b_* keys; the
+        private "_n" marks a live corrected fit and is popped before the
+        diag is published)."""
+        if self.site is None:
+            return {"p0b_applied": False, "p0b_reason": "no-site"}
+        gc = self.correctors.setdefault(key, GeoCorrector(self.site))
+        cw = self.windows.setdefault(key, SatWindow(window_s))
+        cw.window_s = window_s
+        slip = bool(s.get("slip"))
+        gc.update(s.get("sbas_geonav"), t, slip=slip)
+        corrected, applied, reason = gc.correct(t, cycles)
+        frag = {"p0b_applied": applied}
+        if gc.geo is not None:
+            frag["p0b_iodn"] = gc.geo.get("iodn")
+        if not applied:
+            frag["p0b_reason"] = reason
+            if slip:
+                # the chain broke and no correction re-anchors it: flush
+                # the parallel window too (a slip sample only ever flushes,
+                # it never joins a chain)
+                cw.add(t, cycles, slip=True)
+            return frag
+        frag["p0b_age_s"] = round(abs(gc.last_dt), 1)
+        # only APPLIED samples join the corrected chain: a gated-out second
+        # contributes nothing (SatWindow's own >5 s gap check flushes the
+        # chain if the outage stretches — a gap in the correction is not
+        # phase-continuous evidence)
+        cw.add(t, corrected, slip=slip, cn0=s.get("cn0_proxy"),
+               lock_s=s.get("lock_s"), corr=corr)
+        ev = cw.evaluate(min_lock_s, min_cn0, min_samples)
+        if ev is not None:
+            # same register add-back convention as the published rows, so
+            # corrected and uncorrected ppm are directly comparable
+            frag["p0b_ppm"] = round(ev["slope_hz"] / L1_HZ * 1e6 + corr, 9)
+            frag["p0b_sigma_ppm"] = round(ev["sigma_hz"] / L1_HZ * 1e6, 9)
+            frag["_n"] = ev["n"]
+        return frag
+
+    def append(self, line):
+        """One evidence line per sbas sat per cycle. Shadow I/O must never
+        take the published path down — log and drop on failure."""
+        try:
+            with open(self.shadow_path, "a") as f:
+                f.write(json.dumps(line) + "\n")
+        except Exception as e:
+            log(f"p0b shadow append error: {e}")
+
+
 def row(band, name, ppm, sigma, epoch, sats, extra=None,
         kind="ClockDriftPpm"):
     r = {
@@ -291,10 +526,14 @@ def row(band, name, ppm, sigma, epoch, sats, extra=None,
     return r
 
 
-def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
+def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
+                  p0b=None):
     """Ingest one tracker state file. Returns (rows, diag): sources rows
     (per-GEO + consensus) and per-sat diagnostics for the phase_drift
-    key. `windows` persists across calls (keyed by (sys, prn))."""
+    key. `windows` persists across calls (keyed by (sys, prn)). `p0b` is
+    the optional P0bShadow state — when given, sbas reports ALSO feed the
+    shadow geometric correction (diag-only p0b_* keys + evidence jsonl;
+    the published rows are computed exactly as without it)."""
     # The discipline cache is historical intent, not applied truth (same
     # fix as tracker_producer review round 6): in SHADOW mode nothing was
     # written to hardware, so the measured slope carries NO register
@@ -324,10 +563,23 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
               cn0=s.get("cn0_proxy"), lock_s=s.get("lock_s"), corr=corr)
         if sysname != "sbas":
             continue               # MEO slope is orbit-dominated; GEOs only
+        # P0b SHADOW: feed the corrected chain in parallel. This NEVER
+        # touches the published path below — a shadow-path failure logs
+        # and degrades to "no p0b keys this cycle"; it may not kill rows.
+        frag = {}
+        if p0b is not None:
+            try:
+                frag = p0b.ingest(key, s, t, cycles, corr, window_s,
+                                  min_lock_s, min_cn0, min_samples)
+            except Exception as e:
+                log(f"p0b shadow error {sysname} {prn}: {e}")
+                frag = {}
         ev = w.evaluate(min_lock_s, min_cn0, min_samples)
         if ev is None:
-            diag[f"{sysname} {prn}"] = {"ok": False, "lock_s": w.lock_s,
-                                        "n": len(w.samples)}
+            frag.pop("_n", None)
+            d = {"ok": False, "lock_s": w.lock_s, "n": len(w.samples)}
+            d.update(frag)
+            diag[f"{sysname} {prn}"] = d
             continue
         ppm = ev["slope_hz"] / L1_HZ * 1e6 + corr
         sig_ppm = ev["sigma_hz"] / L1_HZ * 1e6
@@ -363,6 +615,18 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
             "sigma_provisional": sig_prov,
             "ppm": round(ppm, 9),
         }
+        if frag:
+            shadow_n = frag.pop("_n", None)
+            diag[f"{sysname} {prn}"].update(frag)
+            if shadow_n is not None:
+                # convergence evidence: corrected vs uncorrected ppm, one
+                # line per GEO per cycle (needs the uncorrected fit too —
+                # uncorr_ppm is the whole point of the comparison)
+                p0b.append({"epoch": round(t, 2), "prn": prn,
+                            "p0b_ppm": frag["p0b_ppm"],
+                            "p0b_sigma_ppm": frag["p0b_sigma_ppm"],
+                            "uncorr_ppm": round(ppm, 9),
+                            "iodn": frag.get("p0b_iodn"), "n": shadow_n})
     rows = []
     for ppm, sig_ppm, prn, t in votes:
         # components are NOT "ClockDriftPpm": one instrument must vote
@@ -422,6 +686,9 @@ def main():
     log(f"phase drift producer starting — {window_s:.0f} s window, "
         f"min {min_samples} samples, cn0>={MIN_CN0:.0f} dB, GEOs only")
     windows = {}
+    p0b = P0bShadow(load_site_ecef())
+    if p0b.site is None:
+        log("p0b shadow DISABLED — site anchor unreadable (fail-closed)")
     last_mtime = 0.0
     last_pub = 0.0
     while True:
@@ -440,7 +707,7 @@ def main():
                 time.sleep(0.2)    # mid-replace read; retry next tick
                 continue
             rows, diag = process_state(state, windows, window_s,
-                                       min_lock_s, MIN_CN0, min_samples)
+                                       min_lock_s, MIN_CN0, min_samples, p0b)
             try:
                 publish(rows, diag, now)
                 last_pub = now

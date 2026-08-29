@@ -13,12 +13,18 @@ Synthetic fixtures only — never touches live observations. Covers:
   - missing carrier-phase fields (pre-dcfcfaa state) -> no rows, no crash
   - end-to-end synthetic GEO fixture through process_state, including
     the corr-register add-back convention
+  - P0b GeoCorrector: synthetic-GEO sign recovery, ephemeris-swap
+    stitching, fail-closed gates, GPS-day wrap, slip re-anchor, and the
+    process_state shadow wiring (diag keys + evidence jsonl; published
+    rows proven to stay the uncorrected path)
 
   python3 scripts/test_phase_drift_producer.py
 """
+import json
 import math
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import phase_drift_producer as pd
@@ -362,6 +368,190 @@ def main():
           and abs(d["emitted_sigma_ppm"] - 5.0 * d["fit_sigma_ppm"]) < 1e-12,
           f"emitted={d['emitted_sigma_ppm']} ols={d['fit_sigma_ppm']}")
 
+    # --- P0b GeoCorrector: synthetic GEO, sign, stitch, gates, wrap -------
+    # Synthetic GEO over the real site-anchor coordinates. TRUTH is one
+    # ephemeris (geo1) for the whole span; the measured carrier is
+    #   cycles(t) = -rho(t)/lam + f_L1*dt_geo(t) + f_clock*t
+    # (range shortening advances the phase — the tracker's f_D < 0 when
+    # the satellite recedes — and the GEO clock polynomial rides on top).
+    # The corrector must remove BOTH geometry terms and leave f_clock.
+    site = pd.llh_to_ecef(39.0029556, -77.6051478, 77.1)
+    lam = pd.LAM_L1_M
+    f_clock = 1.3
+    t0_s = 65216.0
+
+    def mk_geo(t0, pos, vel, acc, agf0=-8.75e-8, agf1=-9.09e-13,
+               iodn=47, ura=0):
+        return {"iodn": iodn, "t0_s": t0, "ura": ura, "pos_m": list(pos),
+                "vel_mps": list(vel), "acc_mps2": list(acc),
+                "agf0_s": agf0, "agf1_sps": agf1, "applied_t": 0.0}
+
+    def prop(geo, dt):
+        return [geo["pos_m"][i] + geo["vel_mps"][i] * dt
+                + 0.5 * geo["acc_mps2"][i] * dt * dt for i in range(3)]
+
+    def rho_site(geo, dt):
+        p = prop(geo, dt)
+        return math.sqrt(sum((p[i] - site[i]) ** 2 for i in range(3)))
+
+    def unix_of(tod):
+        # any GPS day works — the corrector sees only time-of-day
+        return pd.GPS_UNIX_EPOCH - pd.GPS_LEAP_S + 86400.0 * 17000 + tod
+
+    def truth_cycles(geo, i):
+        return (-rho_site(geo, i) / lam
+                + pd.L1_HZ * (geo["agf0_s"] + geo["agf1_sps"] * i)
+                + f_clock * i)
+
+    geo1 = mk_geo(t0_s, [-19139594.24, -37569516.96, -2323.2],
+                  [0.16125, 0.075, 0.104], [2.5e-5, -2.5e-5, 0.0])
+
+    # sign + recovery: the corrected slope IS f_clock, the raw one is not
+    # (it keeps the ~1 Hz class line-of-sight range rate)
+    gc = pd.GeoCorrector(site)
+    corr_s, raw_s = [], []
+    ok1 = True
+    for i in range(45):
+        t = unix_of(t0_s + i)
+        gc.update(geo1, t)
+        cc, applied, _ = gc.correct(t, truth_cycles(geo1, i))
+        ok1 &= applied
+        corr_s.append((t, cc))
+        raw_s.append((t, truth_cycles(geo1, i)))
+    check("p0b: every sample applied", ok1)
+    sl_c, _, _ = pd.fit_drift(corr_s)
+    sl_u, _, _ = pd.fit_drift(raw_s)
+    check("p0b: corrected slope recovers f_clock within 1e-3 Hz",
+          abs(sl_c - f_clock) < 1e-3, f"slope={sl_c}")
+    check("p0b: uncorrected slope keeps the range rate",
+          abs(sl_u - f_clock) > 1e-3, f"slope={sl_u}")
+
+    # ephemeris swap stitching: geo2 = geo1 propagated 128 s to its own t0
+    # plus a decimetre-class refresh difference; the truth signal stays
+    # geo1 (the satellite does not jump — the MODEL does), the corrector
+    # swaps geo1 -> geo2 at i=40 and must stitch the series step-free
+    dt2 = 128.0
+    p2 = prop(geo1, dt2)
+    p2[0] += 0.4
+    p2[2] -= 0.3
+    v2 = [geo1["vel_mps"][i] + geo1["acc_mps2"][i] * dt2 for i in range(3)]
+    geo2 = mk_geo(t0_s + dt2, p2, v2, geo1["acc_mps2"], iodn=48)
+    gc2 = pd.GeoCorrector(site)
+    swap_s = []
+    ok2 = True
+    for i in range(80):
+        t = unix_of(t0_s + i)
+        gc2.update(geo2 if i >= 40 else geo1, t)   # swap fires at i=40
+        cc, applied, _ = gc2.correct(t, truth_cycles(geo1, i))
+        ok2 &= applied
+        swap_s.append((t, cc))
+    check("p0b swap: every sample applied", ok2)
+    step = (swap_s[40][1] - swap_s[39][1]) - f_clock
+    check("p0b swap: stitched series has NO STEP at the swap",
+          abs(step) < 1e-6, f"step={step:.2e} cycles")
+    sl2, _, _ = pd.fit_drift(swap_s)
+    check("p0b swap: slope recovered across the swap",
+          abs(sl2 - f_clock) < 1e-3, f"slope={sl2}")
+
+    # slip re-anchor: a stitch exists, then a slip resets it (a step is
+    # legal across a phase break — re-anchor, don't stitch)
+    g6 = pd.GeoCorrector(site)
+    g6.update(geo1, unix_of(t0_s))
+    g6.update(geo2, unix_of(t0_s + 40))    # stitch -> offset nonzero
+    stitched = g6.offset_cycles
+    g6.update(geo1, unix_of(t0_s + 41), slip=True)
+    check("p0b slip: slip re-anchors (stitch offset reset)",
+          stitched != 0.0 and g6.offset_cycles == 0.0,
+          f"offset {stitched:.3e} -> {g6.offset_cycles}")
+
+    # gates: fail-closed with a reason
+    g3 = pd.GeoCorrector(site)
+    _, a, r = g3.correct(unix_of(t0_s), 0.0)
+    check("p0b gate: missing geonav", not a and r == "no-geonav", f"{a} {r}")
+    g3.update(mk_geo(t0_s, [-19139594.24, -37569516.96, -2323.2],
+                     [0.16125, 0.075, 0.104], [2.5e-5, -2.5e-5, 0.0],
+                     ura=15), unix_of(t0_s))
+    _, a, r = g3.correct(unix_of(t0_s + 10), 0.0)
+    check("p0b gate: ura 15 rejected", not a and r == "ura", f"{a} {r}")
+    g4 = pd.GeoCorrector(site)
+    g4.update(geo1, unix_of(t0_s + 3700))
+    _, a, r = g4.correct(unix_of(t0_s + 3700), 0.0)
+    check("p0b gate: |dt|>3600 -> stale", not a and r == "stale", f"{a} {r}")
+    _, a, r = g4.correct(unix_of(t0_s + 3599), 0.0)
+    check("p0b gate: |dt|=3599 still applies", a, f"{a} {r}")
+
+    # GPS-day wrap: t0 at 86384 (16 s grid), evaluation 60 s past
+    # midnight -> dt wraps to +76 s and the correction still applies
+    gw = mk_geo(86384.0, [-19139594.24, -37569516.96, -2323.2],
+                [0.16125, 0.075, 0.104], [2.5e-5, -2.5e-5, 0.0])
+    g5 = pd.GeoCorrector(site)
+    g5.update(gw, unix_of(60.0))
+    _, a, r = g5.correct(unix_of(60.0), 0.0)
+    check("p0b wrap: 60 s past midnight -> dt=+76 s, applied",
+          a and abs(g5.last_dt - 76.0) < 1e-9, f"dt={g5.last_dt} {a} {r}")
+
+    # --- P0b shadow wiring through process_state --------------------------
+    # diag carries p0b_*; the shadow jsonl gains one line per GEO per
+    # cycle; and the PUBLISHED row value stays the uncorrected slope
+    shadow_path = os.path.join(tempfile.mkdtemp(prefix="p0b_test_"),
+                               "shadow.jsonl")
+    p0b = pd.P0bShadow(site, shadow_path)
+    windows = {}
+    rows = []
+    for i in range(45):
+        t = unix_of(t0_s + i)
+        cyc = truth_cycles(geo1, i)
+        st = {"epoch": t, "tracker": {"sats": [
+            {"sys": "sbas", "prn": 131, "epoch": t, "carrier_cycles": cyc,
+             "doppler_hz": 2.1, "cn0_proxy": 40.0, "lock_s": 400.0 + i,
+             "slip": False, "sbas_geonav": geo1},
+            {"sys": "sbas", "prn": 135, "epoch": t,
+             "carrier_cycles": cyc + 7e5, "doppler_hz": 2.1,
+             "cn0_proxy": 38.0, "lock_s": 400.0 + i, "slip": False,
+             "sbas_geonav": geo1},
+            {"sys": "gps", "prn": 8, "epoch": t,
+             "carrier_cycles": 1800.0 * i, "doppler_hz": 1800.0,
+             "cn0_proxy": 45.0, "lock_s": 400.0 + i, "slip": False},
+        ]}}
+        rows, diag = pd.process_state(st, windows, 40.0, 40.0, 30.0, 28, p0b)
+    ppm_clock = f_clock / pd.L1_HZ * 1e6
+    d131 = diag["sbas 131"]
+    check("p0b wire: diag carries applied fit + provenance",
+          d131.get("p0b_applied") is True
+          and abs(d131["p0b_ppm"] - ppm_clock) < 1e-6
+          and d131.get("p0b_sigma_ppm") is not None
+          and d131.get("p0b_iodn") == 47
+          and d131.get("p0b_age_s") is not None,
+          f"ppm={d131.get('p0b_ppm')} expect~{ppm_clock}")
+    per = {r["band"]: r for r in rows if r["band"] != pd.MY_BAND}
+    unc = per["L1 / WAAS 131 (phase)"]["value"]
+    check("p0b wire: published row is STILL the uncorrected value",
+          abs(unc - sl_u / pd.L1_HZ * 1e6) < 1e-6
+          and abs(unc - ppm_clock) > 1e-7,
+          f"row={unc} uncorr_fit={sl_u / pd.L1_HZ * 1e6}")
+    check("p0b wire: GPS sat carries no p0b keys",
+          "p0b_applied" not in diag.get("gps 8", {}))
+    # gated-out sbas sat still records applied:False + reason
+    st = {"epoch": unix_of(t0_s + 50), "tracker": {"sats": [
+        {"sys": "sbas", "prn": 133, "epoch": unix_of(t0_s + 50),
+         "carrier_cycles": 1.0, "cn0_proxy": 40.0, "lock_s": 500.0,
+         "slip": False}]}}
+    _, diag_ng = pd.process_state(st, {}, 40.0, 40.0, 30.0, 28, p0b)
+    check("p0b wire: no-geonav sat records applied False + reason",
+          diag_ng["sbas 133"].get("p0b_applied") is False
+          and diag_ng["sbas 133"].get("p0b_reason") == "no-geonav",
+          f"{diag_ng['sbas 133']}")
+    lines = [json.loads(l) for l in open(shadow_path)]
+    check("p0b wire: shadow jsonl has both PRNs",
+          {l["prn"] for l in lines} == {131, 135}, f"n={len(lines)}")
+    last = lines[-1]
+    check("p0b wire: shadow line schema",
+          {"epoch", "prn", "p0b_ppm", "p0b_sigma_ppm", "uncorr_ppm",
+           "iodn", "n"} <= set(last.keys()), f"{sorted(last.keys())}")
+    check("p0b wire: shadow corrected/uncorrected differ by range rate",
+          abs(last["p0b_ppm"] - last["uncorr_ppm"]) > 1e-7,
+          f"{last['p0b_ppm']} vs {last['uncorr_ppm']}")
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILURES: {FAILURES}")
@@ -370,4 +560,12 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
+
+def test_main():
+    """pytest entry point: the suite is the plain-assert main() above
+    (repo style — AGENTS.md runs it as a script); this wrapper makes
+    `python3 -m pytest scripts/test_phase_drift_producer.py -x -q`
+    execute the same checks (main() sys.exit(1)s on any failure)."""
     main()
