@@ -36,6 +36,29 @@ const ALT_ANCHOR_BAND_KM: f64 = 0.5;
 const ALT_SANE_KM: (f64, f64) = (-1.0, 30.0);
 const ALT_SITE_BAND_KM: f64 = 3.0;
 
+/// Round-14 stationary-profile trust gates (the 606 m/3 min vertical walk
+/// of 2026-08-28): plausibility must also bind WHERE a fix is and HOW FAST
+/// it can move. The altitude bands alone RATCHET (each observed 255-350 m
+/// hop was inside ALT_ANCHOR_BAND_KM, the anchor recentred, the walk
+/// continued) and nothing bounded horizontal distance at all. HOR_SITE_BAND
+/// is vs the CANONICAL site anchor (site.json never recentres — no ratchet);
+/// JUMP_MAX_MPS is the temporal gate: a bolted-down antenna cannot move, so
+/// consecutive trusted fixes faster than this are multipath failure, not
+/// motion (honest wander at the 60 s+ cadence is < 1 m/s; the observed hops
+/// were 1.4-5.8 m/s). Stationary is the default profile (this station is a
+/// fixed mast); HACKRF_GNSS_MOBILE=1 opts out for car-grade use and restores
+/// the pre-round-14 behavior (both gates simply not computed).
+const HOR_SITE_BAND_M: f64 = 500.0;
+const JUMP_MAX_MPS: f64 = 1.0;
+
+/// Horizontal distance (equirectangular — exact enough at the <= km scale).
+fn hor_dist_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let (r1, r2) = (lat1.to_radians(), lat2.to_radians());
+    let dx = (lon2 - lon1).to_radians() * ((r1 + r2) * 0.5).cos();
+    let dy = r2 - r1;
+    (dx * dx + dy * dy).sqrt() * 6_371_000.0
+}
+
 fn alt_sane(alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> bool {
     alt_km.is_finite()
         && alt_km >= ALT_SANE_KM.0
@@ -55,12 +78,17 @@ fn alt_sane(alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> bool {
 const RMS_PLAUSIBILITY_M: f64 = 50.0; // beyond this the solve measures outliers
 const ISX_SANE_KM: f64 = 50.0; // GPS-BDS clock offset is ~10 km class
 
-fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64, site_alt_km: f64) -> (bool, bool, bool) {
+fn trust_fields(n_sat: usize, redundant_at: usize, rms_m: f64, isx_km: Option<f64>, alt_km: f64, anchor_alt_km: f64, site_alt_km: f64, hor_site_m: Option<f64>, jump_mps: Option<f64>) -> (bool, bool, bool) {
     let geometry_redundant = n_sat >= redundant_at;
     let plausibility_pass = rms_m.is_finite()
         && rms_m < RMS_PLAUSIBILITY_M
         && isx_km.map_or(true, |x| x.is_finite() && x.abs() < ISX_SANE_KM)
-        && alt_sane(alt_km, anchor_alt_km, site_alt_km);
+        && alt_sane(alt_km, anchor_alt_km, site_alt_km)
+        // round-14 (stationary profile; None = not enforced): horizontal
+        // walk bound vs the canonical site — no ratchet, site never moves
+        && hor_site_m.map_or(true, |h| h.is_finite() && h <= HOR_SITE_BAND_M)
+        // round-14: temporal jump gate — the anchor-ratchet killer
+        && jump_mps.map_or(true, |v| v.is_finite() && v <= JUMP_MAX_MPS);
     (geometry_redundant, plausibility_pass, geometry_redundant && plausibility_pass)
 }
 
@@ -374,6 +402,7 @@ fn main() {
     // is fresh, not a constant — the station is going in a car, and a stale
     // constant would bias every light-time anchor after a move. Falls back
     // to the canonical site.json anchor only on cold start.
+    let mut dyn_epoch = 0.0_f64; // epoch of the previous trusted fix (round-14 jump gate)
     let dyn_lla: [f64; 3] = std::fs::read_to_string(OUT)
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -391,6 +420,7 @@ fn main() {
             // A missing trust field reads as false.
             let trusted = pos["trusted_for_history"].as_bool().unwrap_or(false);
             if fresh && trusted {
+                dyn_epoch = pos["epoch"].as_f64()?;
                 Some([
                     pos["lat"].as_f64()?,
                     pos["lon"].as_f64()?,
@@ -401,6 +431,26 @@ fn main() {
             }
         })
         .unwrap_or_else(site_lla);
+    // Round-14 stationary-profile trust gates (opt out HACKRF_GNSS_MOBILE=1):
+    // per-solve (horizontal distance vs the canonical site, 3D jump speed vs
+    // the previous trusted fix). jump is None when no trusted predecessor
+    // exists (cold start) — the horizontal and altitude bands still bind.
+    let stationary = std::env::var("HACKRF_GNSS_MOBILE").map(|v| v != "1").unwrap_or(true);
+    let site_geo = site_lla();
+    let trust_dyn = |lat: f64, lon: f64, alt_m: f64| -> (Option<f64>, Option<f64>) {
+        if !stationary {
+            return (None, None);
+        }
+        let hor = hor_dist_m(lat, lon, site_geo[0], site_geo[1]);
+        let jump = if dyn_epoch > 0.0 {
+            let dh = hor_dist_m(lat, lon, dyn_lla[0], dyn_lla[1]);
+            let dv = (alt_m - dyn_lla[2]).abs();
+            Some(dh.hypot(dv) / (now - dyn_epoch).max(1.0))
+        } else {
+            None
+        };
+        (Some(hor), jump)
+    };
     // Absolute site backstop for the altitude ratchet (see alt_sane): the
     // anchor band above recentres on every published fix; the site band
     // cannot walk. Where dyn_lla IS the site anchor (cold start) the two
@@ -812,8 +862,9 @@ fn main() {
             // — with one BDS measurement the free bias absorbs ANY error
             // (the live divergence era's isx data pointed at a 1 ms
             // code-phase tooth slip being absorbed exactly this way).
+            let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (_, integ0, _) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
             let integ = integ0 && f.n_bds >= 2;
             if !integ {
                 bds_quarantined = Some(format!(
@@ -831,8 +882,9 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
+                trust_fields(f.n_sat, 6, f.residual_rms_m, Some(f.isx_km), f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
             println!(
                 "PVT(anchored,3D(mixed GPS+BDS)): {:.6} {:.6} h {:.0} m | {} gps + {} bds, rms {:.1} m, gdop {:.1}, isx {:.2} km, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_gps, f.n_bds, f.residual_rms_m, f.gdop, f.isx_km, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -1031,8 +1083,9 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
             println!(
                 "PVT(anchored,{mode}): {:.6} {:.6} h {:.0} m | {} sats, rms {:.1} m, gdop {:.1}, sbas-corr {} lt-corr {} iono {} sbas-excl {} [{}]",
                 f.lat, f.lon, f.alt_km * 1000.0, f.n_sat, f.residual_rms_m, f.gdop, n_sbas_corr, n_lt_corr, n_iono_corr, n_sbas_excluded, gate
@@ -1096,8 +1149,9 @@ fn main() {
             } else {
                 "ungated — exact solve, unverifiable"
             };
+            let (hor_m, jump_mps) = trust_dyn(f.lat, f.lon, f.alt_km * 1000.0);
             let (geo_red, integ, trusted) =
-                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km);
+                trust_fields(f.n_sat, 5, f.residual_rms_m, None, f.alt_km, dyn_lla[2] / 1000.0, site_alt_km, hor_m, jump_mps);
             let used: Vec<(u8, u8)> = obs.iter().map(|o| (0u8, o.prn)).collect();
             let fix_json = serde_json::json!({
                 "lat": f.lat,
@@ -1143,26 +1197,36 @@ mod tests {
     #[test]
     fn trust_fields_separates_geometry_from_validity() {
         // clean redundant solve: trusted
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, None, None), (true, true, true));
         // redundant geometry but 105 m rms (observed live): not valid
-        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02, 0.02, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 105.3, None, 0.02, 0.02, 0.02, None, None), (true, false, false));
         // absurd intersystem bias (10,369 km observed): not valid
-        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02, 0.02, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 6, 3.0, Some(10369.0), 0.02, 0.02, 0.02, None, None), (true, false, false));
         // exact solve: never trusted, even when clean
-        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02, 0.02, 0.02), (false, true, false));
+        assert_eq!(trust_fields(4, 5, 0.0, None, 0.02, 0.02, 0.02, None, None), (false, true, false));
         // impossible altitude: not valid
-        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 100.0, 0.02, 0.02, None, None), (true, false, false));
         // round-10b: a 1.5 km vertical blunder against a 20 m anchor must
         // fail plausibility even with clean rms — the gate is anchor-bound
-        assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 1.5, 0.02, 0.02, None, None), (true, false, false));
         // and an in-band altitude (car on a hill, +300 m) passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02, 0.02), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.32, 0.02, 0.02, None, None), (true, true, true));
         // round-11: the anchor band alone is a ratchet — a solve 400 m above
         // an anchor that has already walked ~2.8 km from the site passes the
         // anchor band but must fail the absolute site backstop
-        assert_eq!(trust_fields(6, 5, 3.0, None, 3.2, 2.8, 0.02), (true, false, false));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 3.2, 2.8, 0.02, None, None), (true, false, false));
         // ...while a walk that stays within 3 km of the site still passes
-        assert_eq!(trust_fields(6, 5, 3.0, None, 2.9, 2.6, 0.02), (true, true, true));
+        assert_eq!(trust_fields(6, 5, 3.0, None, 2.9, 2.6, 0.02, None, None), (true, true, true));
+        // round-14: horizontal walk beyond 500 m from the canonical site
+        // fails (the altitude bands ratchet; the site does not)...
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(600.0), None), (true, false, false));
+        // ...while honest wander stays trusted
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(120.0), None), (true, true, true));
+        // round-14: the temporal jump gate — the observed 255-350 m/1-3 min
+        // hops (1.4-5.8 m/s) must fail even when every static band passes
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(3.0)), (true, false, false));
+        // ...and honest sub-1 m/s drift between consecutive fixes passes
+        assert_eq!(trust_fields(6, 5, 3.0, None, 0.02, 0.02, 0.02, Some(10.0), Some(0.5)), (true, true, true));
     }
 
     /// Multi-GEO merge (review round 4): the freshest row wins; material
