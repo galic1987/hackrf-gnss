@@ -15,8 +15,9 @@ Synthetic fixtures only — never touches live observations. Covers:
     the corr-register add-back convention
   - P0b GeoCorrector: synthetic-GEO sign recovery, ephemeris-swap
     stitching, fail-closed gates, GPS-day wrap, slip re-anchor, and the
-    process_state shadow wiring (diag keys + evidence jsonl; published
-    rows proven to stay the uncorrected path)
+    process_state wiring (PROMOTED: emitted rows carry the corrected
+    value, uncorrected lives in extra/diag, geonav-less GEO emits no
+    row, evidence jsonl unchanged)
 
   python3 scripts/test_phase_drift_producer.py
 """
@@ -490,9 +491,10 @@ def main():
     check("p0b wrap: 60 s past midnight -> dt=+76 s, applied",
           a and abs(g5.last_dt - 76.0) < 1e-9, f"dt={g5.last_dt} {a} {r}")
 
-    # --- P0b shadow wiring through process_state --------------------------
-    # diag carries p0b_*; the shadow jsonl gains one line per GEO per
-    # cycle; and the PUBLISHED row value stays the uncorrected slope
+    # --- P0b wiring through process_state (PROMOTED) ----------------------
+    # the PUBLISHED rows now carry the CORRECTED value (fail-closed), the
+    # uncorrected value lives in row extra + diag, and the shadow jsonl
+    # keeps gaining one evidence line per GEO per cycle
     shadow_path = os.path.join(tempfile.mkdtemp(prefix="p0b_test_"),
                                "shadow.jsonl")
     p0b = pd.P0bShadow(site, shadow_path)
@@ -515,6 +517,7 @@ def main():
         ]}}
         rows, diag = pd.process_state(st, windows, 40.0, 40.0, 30.0, 28, p0b)
     ppm_clock = f_clock / pd.L1_HZ * 1e6
+    unc_fit_ppm = sl_u / pd.L1_HZ * 1e6
     d131 = diag["sbas 131"]
     check("p0b wire: diag carries applied fit + provenance",
           d131.get("p0b_applied") is True
@@ -524,23 +527,55 @@ def main():
           and d131.get("p0b_age_s") is not None,
           f"ppm={d131.get('p0b_ppm')} expect~{ppm_clock}")
     per = {r["band"]: r for r in rows if r["band"] != pd.MY_BAND}
-    unc = per["L1 / WAAS 131 (phase)"]["value"]
-    check("p0b wire: published row is STILL the uncorrected value",
-          abs(unc - sl_u / pd.L1_HZ * 1e6) < 1e-6
-          and abs(unc - ppm_clock) > 1e-7,
-          f"row={unc} uncorr_fit={sl_u / pd.L1_HZ * 1e6}")
+    row131 = per["L1 / WAAS 131 (phase)"]
+    check("p0b promoted: emitted row IS the corrected value",
+          abs(row131["value"] - ppm_clock) < 1e-6
+          and abs(row131["value"] - unc_fit_ppm) > 1e-7,
+          f"value={row131['value']} expect~{ppm_clock}")
+    check("p0b promoted: row extra keeps the uncorrected evidence",
+          row131.get("p0b") is True
+          and abs(row131["uncorr_ppm"] - unc_fit_ppm) < 1e-6,
+          f"uncorr_ppm={row131.get('uncorr_ppm')} fit={unc_fit_ppm}")
+    check("p0b promoted: row name tagged · P0b",
+          row131["name"].endswith("· P0b"), f"{row131['name']}")
+    check("p0b promoted: diag ppm == emitted, uncorr kept",
+          abs(d131["ppm"] - ppm_clock) < 1e-6
+          and abs(d131["uncorr_ppm"] - unc_fit_ppm) < 1e-6
+          and d131.get("uncorr_sigma_ppm") is not None,
+          f"ppm={d131['ppm']} uncorr={d131.get('uncorr_ppm')}")
+    cons = [r for r in rows if r["band"] == pd.MY_BAND][0]
+    check("p0b promoted: consensus over corrected votes only",
+          abs(cons["value"] - ppm_clock) < 1e-6
+          and cons["name"].endswith("· P0b")
+          and cons["kind"] == "ClockDriftPpmComponent",
+          f"value={cons['value']}")
+    check("p0b promoted: sigma machinery on the corrected window",
+          d131["sigma_provisional"] is True
+          and abs(row131["sigma"] - d131["emitted_sigma_ppm"]) < 1e-12
+          and abs(d131["emitted_sigma_ppm"]
+                  - 5.0 * d131["fit_sigma_ppm"]) < 1e-12,
+          f"emitted={d131['emitted_sigma_ppm']}")
     check("p0b wire: GPS sat carries no p0b keys",
           "p0b_applied" not in diag.get("gps 8", {}))
-    # gated-out sbas sat still records applied:False + reason
-    st = {"epoch": unix_of(t0_s + 50), "tracker": {"sats": [
-        {"sys": "sbas", "prn": 133, "epoch": unix_of(t0_s + 50),
-         "carrier_cycles": 1.0, "cn0_proxy": 40.0, "lock_s": 500.0,
-         "slip": False}]}}
-    _, diag_ng = pd.process_state(st, {}, 40.0, 40.0, 30.0, 28, p0b)
-    check("p0b wire: no-geonav sat records applied False + reason",
-          diag_ng["sbas 133"].get("p0b_applied") is False
-          and diag_ng["sbas 133"].get("p0b_reason") == "no-geonav",
-          f"{diag_ng['sbas 133']}")
+    # FAIL-CLOSED: a geonav-less GEO with a FULL uncorrected window emits
+    # NO row and NO consensus (pre-P0b it emitted the uncorrected value)
+    windows_ng = {}
+    rows_ng, diag_ng = [], {}
+    for i in range(45):
+        t = unix_of(t0_s + i)
+        st = {"epoch": t, "tracker": {"sats": [
+            {"sys": "sbas", "prn": 133, "epoch": t,
+             "carrier_cycles": 2.0 * i, "cn0_proxy": 40.0,
+             "lock_s": 400.0 + i, "slip": False}]}}
+        rows_ng, diag_ng = pd.process_state(st, windows_ng,
+                                            40.0, 40.0, 30.0, 28, p0b)
+    check("p0b promoted: geonav-less GEO emits NO row, NO consensus",
+          rows_ng == []
+          and diag_ng["sbas 133"].get("ok") is False
+          and diag_ng["sbas 133"].get("p0b_applied") is False
+          and diag_ng["sbas 133"].get("p0b_reason") == "no-geonav"
+          and diag_ng["sbas 133"].get("uncorr_ppm") is not None,
+          f"rows={rows_ng} diag={diag_ng['sbas 133']}")
     lines = [json.loads(l) for l in open(shadow_path)]
     check("p0b wire: shadow jsonl has both PRNs",
           {l["prn"] for l in lines} == {131, 135}, f"n={len(lines)}")

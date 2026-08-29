@@ -31,37 +31,48 @@ wrote that correction (actuate AND corr_applied). The cache is intent,
 not applied truth: in SHADOW mode the register is unity, the add-back
 is 0, and rows carry corr_applied: false so consumers can tell.
 Making the row a RAW-TCXO measurement comparable to every other voter
-(ATSC ch35 via CLKOUT, PC clock). Like the code row, GEO line-of-sight
-motion Doppler is NOT subtracted in the PUBLISHED rows (the code row
-absorbs it in its sigma floor) — the tracker now publishes the MT9 state
-vector this chain was missing, but the removal runs SHADOW-only until
-the evidence gate passes (P0b SHADOW below). The honest fit sigma is
-published as-is; inter-source systematics (GEO motion floor +-0.025 ppm —
-covers the +-0.01 ppm range-rate bound +-0.5-3 m/s ÷ c, with margin; CLKOUT
-chain) are visible in the scatter.
+(ATSC ch35 via CLKOUT, PC clock). GEO line-of-sight motion Doppler IS
+subtracted in the published rows (P0b below — promoted after the
+2026-08-29 acceptance hour; before it, the rows matched the code row in
+absorbing the range rate in the sigma floor). The honest fit sigma is
+published as-is; inter-source systematics (residual ephemeris rate
+error — the corrected GEOs agreed to 2.4e-7 ppm in the acceptance hour;
+CLKOUT chain) are visible in the scatter.
 
 NON-VOTING (systems review 2026-08-25, finding 6): this chain is an
 implemented DIAGNOSTIC, not a discipline voter. It shares the radio and
 the GEOs with the WAAS code row (one instrument must not vote twice),
-GEO line-of-sight range rate is not yet removed, and the uncertainty is
-white-noise OLS rather than correlated-residual. The consensus row is
+and the uncertainty is white-noise OLS rather than correlated-residual
+(the GEO range rate itself is removed — P0b below). The consensus row is
 therefore published as ClockDriftPpmComponent — visible in the merged
 sources table, excluded from series_producer's voting consensus — until
-geometry correction and real uncertainty land (P0b).
+real correlated-residual uncertainty lands (the Tier-1 review).
 
-P0b SHADOW (2026-08-29): the tracker now publishes each GEO's MT9
-(DO-229D A.4.5.1) state vector as sbas_geonav, so the line-of-sight
-range rate AND the GEO clock can be removed. That correction runs here
-in SHADOW ONLY: a GeoCorrector per SBAS channel computes
+P0b (PROMOTED 2026-08-29, after the acceptance hour): the tracker's MT9
+(DO-229D A.4.5.1) sbas_geonav state vector lets a GeoCorrector per SBAS
+channel remove the GEO line-of-sight range rate AND the GEO clock:
     corr(t) = cycles(t) + rho(t)/lambda_L1 - f_L1 * dt_geo(t)
-(step-free-stitched across ephemeris swaps), a parallel window fits its
-slope, and the result lands ONLY in per-sat diag keys (p0b_ppm,
-p0b_sigma_ppm, p0b_applied / p0b_reason, p0b_iodn, p0b_age_s) and in
-the convergence-evidence file observations/phase_drift_p0b_shadow.jsonl
-(corrected vs uncorrected ppm per GEO per cycle). Every published
-row/value/weight stays the uncorrected path, bit-for-bit; promotion to
-live is gated on ~1 h of shadow evidence showing the corrected GEOs
-agreeing far better than the uncorrected ones.
+(step-free-stitched across ephemeris swaps, re-anchored on slips). The
+CORRECTED slope is now the emitted observable: per-sat rows carry the
+corrected ppm and corrected sigma (the max(OLS, disjoint-window
+scatter) machinery runs on the corrected fit history), row extra keeps
+the raw value as evidence (p0b: true, uncorr_ppm), and the diag keeps
+both (ppm = corrected = emitted; uncorr_ppm / uncorr_sigma_ppm; p0b_*
+provenance). FAIL-CLOSED: when the corrector does not apply or the
+corrected window has no fit (no-geonav / stale / ura / bad-geonav /
+post-slip refill) the sat emits NO row and NO consensus vote — a GEO
+row without the motion correction is not a clock observable. The
+shadow jsonl keeps appending corrected vs uncorrected ppm per GEO per
+cycle, verbatim (the promotion evidence chain). Acceptance hour
+(2026-08-29, 6546 shadow rows): cross-PRN |median_131 - median_135|
+2.36e-7 ppm corrected vs 2.12e-3 ppm uncorrected (~9000x; gate was
+<2e-4) — both GEOs read the same -2.4e-5 ppm, the common receiver
+clock; PRN 135's uncorrected 10-min medians marched +2.59e-3 ->
++1.72e-3 (diurnal geometry) while corrected stayed pinned at -2.4e-5
++- 1.3e-4; 17 IODN swaps per PRN stitched cleanly; within-bin MAD
+unchanged (the correction is quasi-static). Rows stay
+ClockDriftPpmComponent — observe-only; cross-producer Tier-1 vote
+promotion is a separate review step.
 
 Continuity guards (a window is only as good as its phase chain):
   - slip=true on any report -> the chain broke that second (watchdog or
@@ -99,16 +110,17 @@ Publishes:
   one consensus row (band "L1 / WAAS GEO (phase)") = sigma-weighted
   median across GEOs, sigma =
   max(formal 1/sqrt(Σw), weighted scatter) — the scatter term keeps the
-  consensus honest when GEOs disagree (their line-of-sight rates differ
-  by m/s class; live, the three visible WAAS GEOs spread ~0.002 ppm and
-  the consensus sigma correctly reports that, not the 1e-4-ppm formal).
+  consensus honest when GEOs disagree (post-P0b the corrected GEOs agree
+  to ~2.4e-7 ppm — the acceptance hour; pre-promotion the uncorrected
+  GEOs spread ~0.002 ppm from their differing line-of-sight rates).
   ALL rows (per-satellite and consensus) are kind ClockDriftPpmComponent
   — visible in the merged sources table but NON-VOTING (see the
   NON-VOTING note above): one instrument must vote once in
   series_producer's cross-producer consensus, and this chain shares the
   radio with the WAAS code row.
-  state["phase_drift"] — diagnostics: per-sat slope/fit sigma/n/gates,
-  plus the P0b SHADOW keys (p0b_*) when the shadow corrector is active.
+  state["phase_drift"] — diagnostics: per-sat slope/fit sigma/n/gates
+  (all on the emitted, corrected series), plus uncorr_ppm /
+  uncorr_sigma_ppm and the P0b provenance keys (p0b_*).
 
 Unit tests: scripts/test_phase_drift_producer.py (synthetic fixtures,
 no live observations touched).
@@ -270,9 +282,10 @@ def load_site_ecef(path=f"{OBS}/site.json"):
 
 
 class GeoCorrector:
-    """P0b SHADOW geometric correction for one SBAS channel, from the
-    tracker's published MT9 state vector (sbas_geonav, SI units —
-    DO-229D A.4.5.1, src/live.rs GeoNavPub).
+    """P0b geometric correction for one SBAS channel, from the tracker's
+    published MT9 state vector (sbas_geonav, SI units — DO-229D A.4.5.1,
+    src/live.rs GeoNavPub). PROMOTED 2026-08-29: the corrected fit is
+    the emitted observable (fail-closed via correct()'s gates).
 
     Sign derivation (pinned by the synthetic tests): the measured carrier
     slope is -rho_dot/lambda + f_L1*agf1 + f_clock (range shortening
@@ -440,16 +453,17 @@ class SatWindow:
 
 
 class P0bShadow:
-    """SHADOW wiring for the P0b geometric correction, persisted across
-    process_state calls: per-sat GeoCorrector + a parallel SatWindow of
-    corrected cycles, plus the jsonl convergence-evidence file.
+    """P0b geometric-correction state, persisted across process_state
+    calls: per-sat GeoCorrector + the corrected SatWindow, plus the
+    jsonl convergence-evidence file.
 
-    SHADOW LAW: nothing here touches the published path. process_state
-    feeds the corrector only AFTER the uncorrected window has ingested
-    the sample exactly as before; the corrected fit lands in diag-only
-    p0b_* keys and in the evidence file. Promotion to the live rows is a
-    separate step, gated on ~1 h of this evidence showing the corrected
-    GEOs agreeing far better than the uncorrected ones."""
+    PROMOTED 2026-08-29 (acceptance hour: corrected 131/135 agreed to
+    2.36e-7 ppm vs 2.12e-3 ppm uncorrected): the corrected window's fit
+    IS the emitted observable — process_state emits it fail-closed (no
+    corrected fit -> no row, no vote) and runs the calibrated scatter
+    sigma on this window's fit history. The evidence file keeps
+    appending corrected vs uncorrected ppm per GEO per cycle, verbatim
+    — it is the promotion evidence chain and stays on."""
 
     def __init__(self, site_ecef, shadow_path=SHADOW_JSONL):
         self.site = site_ecef
@@ -459,10 +473,11 @@ class P0bShadow:
 
     def ingest(self, key, s, t, cycles, corr, window_s,
                min_lock_s, min_cn0, min_samples):
-        """Feed one 1 Hz sbas report through the shadow correction and fit
-        the corrected window. Returns the diag fragment (p0b_* keys; the
-        private "_n" marks a live corrected fit and is popped before the
-        diag is published)."""
+        """Feed one 1 Hz sbas report through the correction and fit the
+        corrected window. Returns the diag fragment (p0b_* keys; the
+        private "_ev" carries the corrected fit dict to process_state —
+        it is the emitted series — and is popped before the diag is
+        published)."""
         if self.site is None:
             return {"p0b_applied": False, "p0b_reason": "no-site"}
         gc = self.correctors.setdefault(key, GeoCorrector(self.site))
@@ -495,7 +510,7 @@ class P0bShadow:
             # corrected and uncorrected ppm are directly comparable
             frag["p0b_ppm"] = round(ev["slope_hz"] / L1_HZ * 1e6 + corr, 9)
             frag["p0b_sigma_ppm"] = round(ev["sigma_hz"] / L1_HZ * 1e6, 9)
-            frag["_n"] = ev["n"]
+            frag["_ev"] = ev
         return frag
 
     def append(self, line):
@@ -563,9 +578,10 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
               cn0=s.get("cn0_proxy"), lock_s=s.get("lock_s"), corr=corr)
         if sysname != "sbas":
             continue               # MEO slope is orbit-dominated; GEOs only
-        # P0b SHADOW: feed the corrected chain in parallel. This NEVER
-        # touches the published path below — a shadow-path failure logs
-        # and degrades to "no p0b keys this cycle"; it may not kill rows.
+        # P0b (promoted 2026-08-29): feed the corrected chain; its fit is
+        # the emitted observable below. A correction-path failure logs and
+        # degrades to "no corrected fit" -> the fail-closed gate drops the
+        # sat; it may not kill the OTHER sats' rows.
         frag = {}
         if p0b is not None:
             try:
@@ -575,23 +591,47 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
                 log(f"p0b shadow error {sysname} {prn}: {e}")
                 frag = {}
         ev = w.evaluate(min_lock_s, min_cn0, min_samples)
-        if ev is None:
-            frag.pop("_n", None)
-            d = {"ok": False, "lock_s": w.lock_s, "n": len(w.samples)}
+        # the UNCORRECTED fit is evidence only now (diag uncorr_ppm, row
+        # extra, shadow jsonl) — P0b made the corrected fit the observable
+        uncorr_ppm = uncorr_sig = None
+        if ev is not None:
+            uncorr_ppm = ev["slope_hz"] / L1_HZ * 1e6 + corr
+            uncorr_sig = ev["sigma_hz"] / L1_HZ * 1e6
+        # emission series, FAIL-CLOSED: with the corrector active this is
+        # the CORRECTED fit — no corrected fit (no-geonav / stale / ura /
+        # bad-geonav / post-slip refill) emits NO row and NO vote: a GEO
+        # row without the motion correction is not a clock observable
+        # (that was the whole point of P0b; never fall back to publishing
+        # the uncorrected value). p0b=None keeps the pre-P0b uncorrected
+        # emission for the legacy unit tests of that machinery —
+        # production always passes a P0bShadow.
+        if p0b is not None:
+            emit_ev = frag.pop("_ev", None)
+            emit_w = p0b.windows.get(key)
+        else:
+            emit_ev, emit_w = ev, w
+        if emit_ev is None:
+            d = {"ok": False, "lock_s": w.lock_s,
+                 "n": len(emit_w.samples) if emit_w is not None
+                 else len(w.samples)}
+            if uncorr_ppm is not None:
+                d["uncorr_ppm"] = round(uncorr_ppm, 9)
             d.update(frag)
             diag[f"{sysname} {prn}"] = d
             continue
-        ppm = ev["slope_hz"] / L1_HZ * 1e6 + corr
-        sig_ppm = ev["sigma_hz"] / L1_HZ * 1e6
+        ppm = emit_ev["slope_hz"] / L1_HZ * 1e6 + corr
+        sig_ppm = emit_ev["sigma_hz"] / L1_HZ * 1e6
         # disjoint-window fit history for the calibrated scatter sigma:
         # record a fit only once the window has fully advanced — fits that
         # share samples are not independent draws, and their scatter would
-        # understate just like the per-window OLS sigma does
-        if t - w.last_fit_t >= window_s:
-            w.fit_hist.append(ev["slope_hz"])
-            del w.fit_hist[:-12]
-            w.last_fit_t = t
-        sc = scatter_sigma(w.fit_hist)
+        # understate just like the per-window OLS sigma does. PROMOTED:
+        # runs on the CORRECTED window when the corrector is active (the
+        # uncorrected fit_hist is no longer needed for emission).
+        if t - emit_w.last_fit_t >= window_s:
+            emit_w.fit_hist.append(emit_ev["slope_hz"])
+            del emit_w.fit_hist[:-12]
+            emit_w.last_fit_t = t
+        sc = scatter_sigma(emit_w.fit_hist)
         sc_ppm = sc / L1_HZ * 1e6 if sc else None
         # round-16 review: the EMITTED sigma must be the calibrated one.
         # Once >=5 disjoint windows exist, every GEO row and consensus
@@ -604,57 +644,70 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
             sig_emit, sig_prov = max(sig_ppm, sc_ppm), False
         else:
             sig_emit, sig_prov = 5.0 * sig_ppm, True
-        votes.append((ppm, sig_emit, prn, t))
+        votes.append((ppm, sig_emit, prn, t,
+                      round(uncorr_ppm, 9) if uncorr_ppm is not None else None))
         diag[f"{sysname} {prn}"] = {
-            "ok": True, "n": ev["n"],
-            "slope_hz": round(ev["slope_hz"], 6),
+            "ok": True, "n": emit_ev["n"],
+            "slope_hz": round(emit_ev["slope_hz"], 6),
             "fit_sigma_ppm": round(sig_ppm, 9),
             "scatter_sigma_ppm": round(sc_ppm, 9) if sc_ppm else None,
-            "scatter_n": len(w.fit_hist),
+            "scatter_n": len(emit_w.fit_hist),
             "emitted_sigma_ppm": round(sig_emit, 9),
             "sigma_provisional": sig_prov,
             "ppm": round(ppm, 9),
         }
+        if p0b is not None:
+            # ppm above IS the corrected, emitted value; keep the raw one
+            d = diag[f"{sysname} {prn}"]
+            d["uncorr_ppm"] = (round(uncorr_ppm, 9)
+                               if uncorr_ppm is not None else None)
+            d["uncorr_sigma_ppm"] = (round(uncorr_sig, 9)
+                                     if uncorr_sig is not None else None)
         if frag:
-            shadow_n = frag.pop("_n", None)
             diag[f"{sysname} {prn}"].update(frag)
-            if shadow_n is not None:
+            if uncorr_ppm is not None:
                 # convergence evidence: corrected vs uncorrected ppm, one
-                # line per GEO per cycle (needs the uncorrected fit too —
-                # uncorr_ppm is the whole point of the comparison)
+                # line per GEO per cycle — the promotion evidence chain,
+                # kept appending verbatim after promotion
                 p0b.append({"epoch": round(t, 2), "prn": prn,
                             "p0b_ppm": frag["p0b_ppm"],
                             "p0b_sigma_ppm": frag["p0b_sigma_ppm"],
-                            "uncorr_ppm": round(ppm, 9),
-                            "iodn": frag.get("p0b_iodn"), "n": shadow_n})
+                            "uncorr_ppm": round(uncorr_ppm, 9),
+                            "iodn": frag.get("p0b_iodn"), "n": emit_ev["n"]})
+    p0b_tag = " · P0b" if p0b is not None else ""
     rows = []
-    for ppm, sig_ppm, prn, t in votes:
+    for ppm, sig_ppm, prn, t, uc in votes:
         # components are NOT "ClockDriftPpm": one instrument must vote
         # once in series_producer's cross-producer consensus — N near-
         # identical per-sat rows from the same phase chain would outvote
         # every independent path. The component kind keeps the rows
         # visible in the merged sources table without voting/charting.
+        extra = {"corr_applied": corr_applied}
+        if p0b is not None:
+            # the emitted value is the GEO-corrected observable; the raw
+            # range-rate-contaminated value stays on the row as evidence
+            extra.update({"p0b": True, "uncorr_ppm": uc})
         rows.append(row(f"L1 / WAAS {prn} (phase)",
                         f"WAAS PRN {prn} carrier-phase slope {window_s:.0f} s "
-                        f"+ corr register · Pro+AA.250",
+                        f"+ corr register · Pro+AA.250{p0b_tag}",
                         ppm, sig_ppm, t, [f"PRN {prn}"],
                         # explicit: was a hardware correction added back?
                         # (shadow mode -> False, value is the raw residual)
-                        extra={"corr_applied": corr_applied},
+                        extra=extra,
                         kind="ClockDriftPpmComponent"))
     if votes:
-        med, sig = weighted_median([(v, s) for v, s, _, _ in votes])
-        t = max(t for _, _, _, t in votes)
+        med, sig = weighted_median([(v, s) for v, s, _, _, _ in votes])
+        t = max(t for _, _, _, t, _ in votes)
         # Consensus is a component too (systems review 2026-08-25 #6):
-        # observe-only until GEO range-rate removal and correlated-
-        # residual uncertainty land; it must not double-vote the radio
-        # it shares with the WAAS code row.
+        # observe-only until the correlated-residual uncertainty lands;
+        # it must not double-vote the radio it shares with the WAAS code
+        # row. P0b promotion changed the observable, not the kind.
         rows.append(row(MY_BAND,
                         f"WAAS GEO carrier-phase consensus ({len(votes)} sats, "
                         f"{window_s:.0f} s slope) + corr register · Pro+AA.250 "
-                        f"· observe-only",
+                        f"· observe-only{p0b_tag}",
                         med, sig, t,
-                        [f"PRN {prn}" for _, _, prn, _ in votes],
+                        [f"PRN {prn}" for _, _, prn, _, _ in votes],
                         extra={"n_sats": len(votes),
                                "corr_applied": corr_applied},
                         kind="ClockDriftPpmComponent"))
@@ -689,6 +742,8 @@ def main():
     p0b = P0bShadow(load_site_ecef())
     if p0b.site is None:
         log("p0b shadow DISABLED — site anchor unreadable (fail-closed)")
+    else:
+        log("p0b PROMOTED — GEO-corrected values are the emitted observable")
     last_mtime = 0.0
     last_pub = 0.0
     while True:
