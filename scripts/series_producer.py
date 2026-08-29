@@ -148,10 +148,22 @@ def clkin_soft_verify(atsc_pts, waas_pts, window=SOFT_WINDOW,
     drift-lock from the diff's wander RMS (about the window mean) and
     least-squares slope. Returns (verdict, diag); verdict is True/False, or
     None when pairs < min_pairs (insufficient evidence — the gate stays
-    closed)."""
+    closed). Round-15: a dark ATSC feed must fail-closed IMMEDIATELY —
+    without a recency gate the historical points of a dead One kept the
+    soft verdict evaluable (and the ATSC voter admissible) for a full
+    SOFT_WINDOW after the feed went dark."""
     import bisect
     atsc_pts, a_segs = _latest_segment(atsc_pts, gap_s)
     waas_pts, w_segs = _latest_segment(waas_pts, gap_s)
+    atsc_age_s = (time.time() - atsc_pts[-1][0]) if atsc_pts else None
+    if atsc_age_s is None or atsc_age_s > 60.0:
+        return None, {"pairs": 0, "window_s": window,
+                      "segments_used": {"atsc": a_segs, "waas": w_segs},
+                      "window_reset": a_segs > 1 or w_segs > 1,
+                      "stale_atsc_s": (round(atsc_age_s, 1)
+                                       if atsc_age_s is not None else None),
+                      "diff_rms_ppm": None, "diff_slope_ppm_per_min": None,
+                      "mean_diff_ppm": None}
     at = [p[0] for p in atsc_pts]
     pairs = []
     for wt, wv in waas_pts:
