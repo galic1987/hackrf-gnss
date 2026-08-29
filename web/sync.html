@@ -192,7 +192,7 @@
 </head>
 <body>
 <h1>Fused multi-satellite sync</h1>
-<div id="hint">Hover any <span class="tip" tabindex="0" data-tip-title="Tooltips" data-tip="Like this one! Every acronym, unit, metric and chart on this page has a definition: what it is, why it matters, what a good value looks like.">dotted-underlined term</span> (or press Tab to focus it) to learn what it means.</div>
+<div id="hint">Hover any <span class="tip" tabindex="0" data-tip-title="Tooltips" data-tip="Like this one! Every acronym, unit, metric and chart on this page has a definition: what it is, why it matters, what a good value looks like.">dotted-underlined term</span> (or press Tab to focus it) to learn what it means. Click any <b>&#9432; specs</b> pill &mdash; or the card title itself &mdash; for the full component description: schematic, spec sheet and datasheet links.</div>
 <div id="alerts"></div>
 <div id="tourstart"><button class="segbtn" id="tourbtn">&#9654; take the 2-minute tour</button> &mdash; nine stops, from the headline number down to the quantum definition of the second.</div>
 
@@ -3225,6 +3225,453 @@ tick();
 setInterval(tick, 5000);
 setInterval(heartbeat, 1000);
 sweepFocus();
+</script>
+
+<style id="specmodal-css">
+  .specinfo { margin-left: 0.6em; font-size: 0.6em; font-weight: 400; color: #6ec1e4;
+              cursor: pointer; border: 1px solid #2a4a5a; border-radius: 999px;
+              padding: 0.12em 0.65em; vertical-align: middle; white-space: nowrap; }
+  .specinfo:hover, .specinfo:focus { background: #18222c; }
+  .card h2.specable { cursor: pointer; }
+  .card h2.specable:hover { color: #9fd8f0; }
+  #specmodal { display: none; position: fixed; inset: 0; z-index: 300;
+               background: rgba(4, 8, 12, 0.74); overflow-y: auto;
+               padding: 4vh 16px 6vh; }
+  #specmodal .sm-card { background: var(--card); border: 1px solid #3a4a58;
+                        border-radius: 10px; max-width: 880px; margin: 0 auto;
+                        padding: 1.1em 1.4em 1.2em; box-shadow: 0 12px 48px rgba(0,0,0,0.55); }
+  #specmodal h2 { margin: 0 2.2em 0.1em 0; }
+  #specmodal .sm-sub { color: var(--dim); margin: 0 0 0.7em; font-size: 0.92em; }
+  #specmodal p { line-height: 1.5; margin: 0.5em 0; }
+  #specmodal .sm-close { float: right; background: none; border: 1px solid #3a4a58;
+                         color: var(--txt); border-radius: 6px; padding: 0.15em 0.7em;
+                         cursor: pointer; font-size: 0.95em; }
+  #specmodal .sm-close:hover { background: #18222c; }
+  #specmodal table.sm-specs { width: 100%; border-collapse: collapse; margin: 0.6em 0; }
+  #specmodal .sm-specs td, #specmodal .sm-specs th { border: 1px solid #2a3742;
+                        padding: 0.28em 0.55em; font-size: 0.85em; text-align: left; }
+  #specmodal .sm-specs th { background: #18222c; color: var(--dim); font-weight: 600; }
+  #specmodal .sm-links { margin: 0.7em 0 0; }
+  #specmodal .sm-links a { color: #6ec1e4; margin-right: 1.1em; font-size: 0.85em;
+                           text-decoration: none; border-bottom: 1px dotted #2a4a5a; }
+  #specmodal .sm-src { color: var(--dim); font-size: 0.78em; margin-top: 0.9em;
+                       border-top: 1px solid #22303a; padding-top: 0.6em; }
+  #specmodal svg { display: block; margin: 0.6em auto; max-width: 100%; height: auto; }
+</style>
+
+<script id="specmodal-js">
+// --- Component spec modals: click a card title (or its ⓘ pill) for the full
+// --- description, schematic and spec sheet. Hover comes free via .tip delegation.
+(function specModalInit() {
+  if (window.__specModal) return;
+  window.__specModal = true;
+
+  var SVG_FONT = "font-family:ui-monospace,Menlo,monospace;";
+  function svgEl(tag, attrs, inner) {
+    var s = "<" + tag;
+    for (var k in attrs) s += " " + k + '="' + attrs[k] + '"';
+    return inner === undefined ? s + "/>" : s + ">" + inner + "</" + tag + ">";
+  }
+  // Horizontal stage chain: boxes + arrows. stages: [{t:[line,...], s:sub}]
+  function chainSvg(stages, opts) {
+    opts = opts || {};
+    var bw = opts.bw || 132, bh = opts.bh || 58, gap = 30, x0 = 6, y0 = 6;
+    var W = x0 * 2 + stages.length * bw + (stages.length - 1) * gap;
+    var H = y0 * 2 + bh + (opts.extraH || 0);
+    var out = [];
+    stages.forEach(function (st, i) {
+      var x = x0 + i * (bw + gap);
+      out.push(svgEl("rect", { x: x, y: y0, width: bw, height: bh, rx: 7,
+        fill: "#10161c", stroke: st.hot ? "#6ec1e4" : "#3a4a58", "stroke-width": st.hot ? 2 : 1 }));
+      (st.t || []).forEach(function (line, li) {
+        out.push(svgEl("text", { x: x + bw / 2, y: y0 + 20 + li * 13, "text-anchor": "middle",
+          fill: "#dbe5ea", "font-size": 11, style: SVG_FONT + "font-weight:600" }, line));
+      });
+      if (st.s) out.push(svgEl("text", { x: x + bw / 2, y: y0 + bh - 7, "text-anchor": "middle",
+        fill: "#7f96a3", "font-size": 9, style: SVG_FONT }, st.s));
+      if (i < stages.length - 1)
+        out.push(svgEl("text", { x: x + bw + gap / 2, y: y0 + bh / 2 + 4, "text-anchor": "middle",
+          fill: "#6ec1e4", "font-size": 15, style: SVG_FONT }, "\u2192"));
+    });
+    return '<svg viewBox="0 0 ' + W + " " + H + '" width="' + Math.min(W, 860) + '" role="img">' +
+      out.join("") + "</svg>";
+  }
+
+  // Receive-window spectrum: why these constellations and not GLONASS (yet).
+  function spectrumSvg() {
+    var x0 = 40, x1 = 820, f0 = 1555, f1 = 1610, base = 150, H = 196;
+    function X(f) { return x0 + (f - f0) / (f1 - f0) * (x1 - x0); }
+    var out = [];
+    // old 12 MHz auto filter (was: ±6.0 around 1568.25)
+    out.push(svgEl("rect", { x: X(1568.25 - 6), y: 34, width: X(1568.25 + 6) - X(1568.25 - 6),
+      height: base - 34, fill: "rgba(229,115,115,0.10)", stroke: "#e57373", "stroke-dasharray": "4 3" }));
+    // new explicit 15 MHz filter (±7.5)
+    out.push(svgEl("rect", { x: X(1568.25 - 7.5), y: 22, width: X(1568.25 + 7.5) - X(1568.25 - 7.5),
+      height: base - 22, fill: "rgba(110,193,228,0.10)", stroke: "#6ec1e4", "stroke-width": 2 }));
+    out.push(svgEl("line", { x1: x0, y1: base, x2: x1, y2: base, stroke: "#3a4a58" }));
+    function mark(f, label, col, up) {
+      var y = up ? 44 : base;
+      out.push(svgEl("line", { x1: X(f), y1: y, x2: X(f), y2: base, stroke: col, "stroke-width": 2 }));
+      out.push(svgEl("text", { x: X(f), y: base + 16, "text-anchor": "middle", fill: col,
+        "font-size": 11, style: SVG_FONT + "font-weight:600" }, label.split("|")[0]));
+      if (label.split("|")[1])
+        out.push(svgEl("text", { x: X(f), y: base + 30, "text-anchor": "middle", fill: "#7f96a3",
+          "font-size": 9, style: SVG_FONT }, label.split("|")[1]));
+    }
+    mark(1561.098, "BeiDou B1I|1561.098", "#ce93d8");
+    mark(1568.25, "LO 1568.25|(tune centre)", "#7f96a3");
+    mark(1575.42, "GPS L1 + GAL E1 + SBAS|1575.420", "#8fc9e8");
+    mark(1602.0, "GLONASS G1|1598\u20131606", "#e57373");
+    out.push(svgEl("text", { x: X(1602), y: base + 44, "text-anchor": "middle", fill: "#e57373",
+      "font-size": 9, style: SVG_FONT }, "\u2265 +26 MHz: outside any single LO setting \u2014 needs its own pass"));
+    out.push(svgEl("text", { x: X(1568.25), y: 14, "text-anchor": "middle", fill: "#6ec1e4",
+      "font-size": 10, style: SVG_FONT }, "cyan = tonight\u2019s explicit 15 MHz filter (\u00b17.5) \u00b7 red dashed = old auto 12 MHz (\u00b16) \u2014 both signals sat at/beyond its edge"));
+    return '<svg viewBox="0 0 ' + (x1 + 10) + " " + H + '" width="820" role="img">' + out.join("") + "</svg>";
+  }
+
+  // Clock star: Bodnar feeds both radios directly.
+  function starSvg() {
+    var out = [];
+    out.push(svgEl("rect", { x: 250, y: 8, width: 300, height: 56, rx: 8, fill: "#10161c", stroke: "#6ec1e4", "stroke-width": 2 }));
+    out.push(svgEl("text", { x: 400, y: 30, "text-anchor": "middle", fill: "#dbe5ea", "font-size": 12, style: SVG_FONT + "font-weight:700" }, "Leo Bodnar LBE-1421 GPSDO"));
+    out.push(svgEl("text", { x: 400, y: 47, "text-anchor": "middle", fill: "#7f96a3", "font-size": 10, style: SVG_FONT }, "GPS-disciplined \u00b7 two low-jitter outputs \u00b7 both at 10 MHz"));
+    function branch(x2, label, note) {
+      out.push(svgEl("line", { x1: 400, y1: 64, x2: x2, y2: 104, stroke: "#6ec1e4", "stroke-width": 2 }));
+      out.push(svgEl("rect", { x: x2 - 120, y: 104, width: 240, height: 52, rx: 8, fill: "#10161c", stroke: "#3a4a58" }));
+      out.push(svgEl("text", { x: x2, y: 124, "text-anchor": "middle", fill: "#dbe5ea", "font-size": 11, style: SVG_FONT + "font-weight:600" }, label));
+      out.push(svgEl("text", { x: x2, y: 141, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9, style: SVG_FONT }, note));
+    }
+    branch(170, "HackRF Pro \u20266450 (P1 CLKIN)", "production GNSS tracker \u00b7 P2 free");
+    branch(630, "HackRF One \u2026922c (P1 CLKIN)", "ATSC phase receiver \u00b7 RF path degraded");
+    out.push(svgEl("text", { x: 400, y: 182, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9.5, style: SVG_FONT },
+      "equal-length SMA cables \u00b7 star, not cascade \u00b7 1PPS currently routed nowhere (2 outputs, 3 wanted: 10\u2009MHz \u00d7 2 + PPS)"));
+    return '<svg viewBox="0 0 800 196" width="640" role="img">' + out.join("") + "</svg>";
+  }
+
+  var SPECS = {
+    consensus: {
+      t: "Live sync \u2014 consensus of all references",
+      s: "One number answering: how fast is this station\u2019s clock, right now?",
+      b: [
+        "Every independent producer (WAAS GEO Doppler on the Pro, ATSC pilot on the One, band snapshots) measures the <i>same</i> clock its own way. The consensus is the robust combination of those votes; the sparkline is the raw FPGA tick-counter polls they are anchored to.",
+        "Read the <b>shape</b>, not the level: PC/USB poll jitter (\u00b1\u200930 ppm) dwarfs the clock\u2019s own physics, so ramps and steps matter, the absolute offset does not.",
+        "<b>Honest status:</b> since the One\u2019s ATSC RF path went starved (2026-08-27), the station runs a single voter (Pro/WAAS). With fewer than two independent voters the consensus deliberately reports null \u2014 redundancy is missed, not faked."
+      ],
+      specs: [
+        ["tick counter", "32 MHz nominal, FPGA fabric", "read via USB control poll"],
+        ["poll cadence", "1 Hz", "heartbeat chart below"],
+        ["voters today", "1 of 2 (Pro live WAAS)", "One dark \u2014 see 60 Hz phase card"],
+        ["measured drift", "\u22120.038 ns/s over 5.2 h (2026-08-28)", "Bodnar GPS-steering seen through the chain"]
+      ],
+      src: "Live: observations/state.tick.json + state.band.json (merged at /api/sync)."
+    },
+    clock: {
+      t: "Clock & discipline",
+      s: "The reference every measurement is held to \u2014 and the loop that is deliberately not closed.",
+      b: [
+        "Both radios are disciplined by the same GPSDO in a <b>star</b>: Bodnar OUT2 \u2192 Pro P1, OUT1 \u2192 One P1, equal-length cables. Each radio switches to its external 10 MHz CLKIN when streaming starts (verified with <code>hackrf_clock -i</code> after every restart).",
+        "The WAAS-GEO Doppler discipline loop runs <b>shadow-only</b>: residuals and corrections are computed, logged and published, but the hardware correction register is never written. A previous actuation era collapsed the tracking loops on 122/122 writes (the firmware write path resets the Si5351 PLL); actuation stays gated behind HACKRF_GNSS_ACTUATE=1 until a capture-boundary-safe write path exists.",
+        "1PPS is currently routed nowhere: the Bodnar has two outputs and the station wants three signals (10 MHz \u00d7 2 + PPS). The port budget and the options (splitter, P22 alternate CLKIN, or pausing the One) are documented in AGENTS.md."
+      ],
+      svg: starSvg(),
+      specs: [
+        ["LBE-1421 outputs", "2 \u00d7 low-jitter, both set 10 MHz", "PPS available on OUT1 if re-tasked"],
+        ["stability class", "~1e-11 ADEV (vendor class)", "not locally measured \u2014 flagged 2026-08-28"],
+        ["correction register", "FPGA 0x60\u20130x7F, fp_1_63 \u00b11% window", "shadow: computed, never written"],
+        ["CLKIN switch", "at RX stream start", "verify: hackrf_clock -i"]
+      ],
+      links: [
+        ["LBE-1421 product page", "https://www.leobodnar.com/shop/index.php?main_page=product_info&products_id=399"],
+        ["HackRF external clock interface", "https://hackrf.readthedocs.io/en/stable/external_clock_interface.html"],
+        ["Si5351 datasheet", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/data-sheets/Si5351-B.pdf"]
+      ],
+      src: "Live: observations/state.tracker.json \u2192 discipline block; state.tick.json."
+    },
+    heartbeat: {
+      t: "Time heartbeat",
+      s: "Time error accumulating per second, from raw tick polls.",
+      b: [
+        "Each point is one poll of the FPGA\u2019s 32 MHz tick counter, shown as deviation from the window median and converted from ppm to nanoseconds of time error per second (1 ppb = 1 ns/s; at 32 MHz, 1 Hz of tick error = 31.25 ns/s).",
+        "The poll path\u2019s own jitter sets the scale \u2014 calm flat fill is healthy; spikes mean USB congestion or producer hiccups, not a sick oscillator. The cyan dash, when a second voter is alive, is the consensus: the clock\u2019s true error, usually a hairline against the poll noise."
+      ],
+      specs: [
+        ["conversion", "1 ppb = 1 ns/s = 1\u00d710\u207b\u2079 s/s", "1 ppm = 1,000 ns/s"],
+        ["healthy look", "flat fill, no periodic spikes", "periodicity \u2248 USB congestion signature"]
+      ],
+      src: "Live: observations/state.tick.json (1 Hz polls, last hour)."
+    },
+    journey: {
+      t: "Signal journey \u2014 precision at every stage",
+      s: "From a satellite\u2019s transmit antenna to the number on this page, with honest error budgets.",
+      b: [
+        "Each stage shows its live value and the precision it can <i>honestly</i> claim \u2014 not the precision of the stage after it. Timestamp ticks, TDC bins, averaged PPS phase and carrier phase are different observables, not successive measurements of the same error.",
+        "<b>Measured on this station (2026-08-28):</b> receiver-clock drift \u22120.038 ns/s over 5.2 h; within-segment clock noise 4.5\u201325 ns RMS (code-limited, matches code/\u221an theory). The sub-ns claim is <b>not</b> yet supported \u2014 it gates on a true prompt carrier-phase residual (spec component 1).",
+        "The 499 ps TDC figure is the least-significant-bit of the internal ring-oscillator self-test only \u2014 the word \u201ccalibrated\u201d was retracted everywhere on 2026-08-28 until an external edge measures it."
+      ],
+      src: "Live: state.tracker.json + state.phase.json + TDC evidence in docs/superpowers/evidence/tdc-run2/."
+    },
+    atsc: {
+      t: "60 Hz carrier phase \u2014 ATSC ch35 pilot (diagnostic)",
+      s: "Millimetre-class relative displacement from a TV transmitter, currently dark.",
+      b: [
+        "The HackRF One tracks the ATSC ch35 pilot at 602.809 MHz; unwrapped carrier phase \u00d7 \u03bb (\u2248497.7 mm) gives sub-mm sensitivity to relative path change. Read the wiggles, not the offset \u2014 the absolute zero wanders with multipath and atmosphere.",
+        "<b>Current status: dark by design.</b> The One\u2019s whole RF path arrives starved (pilot \u221235\u201338 dB vs nominal, no LNA hump at L1 either) \u2014 physical cause unconfirmed, needs eyes on the antenna/feed/amp. All ATSC rows since 2026-08-27 18:25 are quarantined; the producer retries honestly and lets this row go STALE rather than publish noise locks (78% of its history was exactly that)."
+      ],
+      specs: [
+        ["signal", "ATSC 3.0 ch35 pilot", "602.80944 MHz, continuous carrier"],
+        ["observable", "unwrapped phase \u00d7 \u03bb", "\u03bb \u2248 497.7 mm"],
+        ["status", "dark (RF path starved)", "quarantine active \u2014 do not read old rows"]
+      ],
+      src: "Live: observations/state.phase.json (STALE while dark \u2014 intended)."
+    },
+    position: {
+      t: "Position fix \u2014 live",
+      s: "Weighted least-squares PVT with studentized RAIM, against a surveyed anchor.",
+      b: [
+        "The solver combines GPS L1, Galileo E1 and BeiDou B1I pseudoranges with elevation weighting and a studentized-residual RAIM gate (|r|/\u221a(1\u2212h); commit aeae8ec \u2014 the flat 1000 m gate that once passed 300 km slips is gone).",
+        "Fixes are shown relative to the site anchor in site.json (surveyed 2026-08-26 by the LBE-1421 GPSDO, ~2 m class). Remaining scatter is metres-class and multipath-dominated \u2014 the antennas face south, so the high-elevation satellites that pin Down and geometry are the ones the patches hear worst."
+      ],
+      src: "Live: observations/state.position.json + position_history.jsonl."
+    },
+    bands: {
+      t: "Per-band drift \u2014 every source measures the same clock",
+      s: "One LO setting, two GNSS neighbourhoods \u2014 and the band that can\u2019t fit.",
+      b: [
+        "The tracker runs 16 Msps centred at 1568.25 MHz: BeiDou B1I lands at \u22127.15 MHz and GPS L1 / Galileo E1 / SBAS at +7.17 MHz \u2014 one LO, both constellations. Tonight\u2019s change (65fc0d8) sets the baseband filter explicitly to 15 MHz: the auto-selected 12 MHz put both signals at or past the filter edge.",
+        "Rows marked STALE are fail-closed: the producer would rather show an old row dimmed than invent a fresh one. Snapshot rows (upper bands) come from band_producer\u2019s scheduled tracker-down windows; live rows come from the tracker itself.",
+        "<b>Why no GLONASS on this page:</b> G1 sits at 1598\u20131606 MHz, \u226526 MHz above the LO \u2014 unreachable on any single tuning shared with L1. It gets its own snapshot pass in the band window (next: tomorrow 11:07), not a fake presence here."
+      ],
+      svg: spectrumSvg(),
+      specs: [
+        ["GPS L1 / GAL E1 / SBAS", "1575.420 MHz", "+7.17 MHz offset \u2014 live"],
+        ["BeiDou B1I", "1561.098 MHz", "\u22127.15 MHz offset \u2014 live"],
+        ["GLONASS G1", "1598.06\u20131605.4 MHz", "own pass only"],
+        ["GPS L2C / GLONASS G2", "1227.6 / 1242\u20131248 MHz", "snapshot windows"],
+        ["GPS L5 / GAL E5 / E6", "1176.45 / 1207.14 / 1278.75 MHz", "snapshot windows"],
+        ["baseband filter", "15 MHz explicit (was auto 12)", "65fc0d8 \u00b7 C/N0 verdict lands 23:25"]
+      ],
+      src: "Live: observations/state.band.json + state.tracker.json."
+    },
+    sats: {
+      t: "Live satellites \u2014 1 Hz",
+      s: "Every tracking channel, once per second, straight from live_radio.",
+      b: [
+        "Each row is one channel: PRN, constellation, Doppler, lock age, slips, carrier phase (integrated replica cycles \u2014 continuous while locked, re-zeroed on reseed, carrying the Costas 180\u00b0 ambiguity).",
+        "<b>cn0_proxy is a proxy, not a calibrated C/N\u2080:</b> a prompt-power ratio in arbitrary units, good for comparing satellites on this receiver right now, not for absolute dB-Hz claims. The day-long medians run ~35\u201345 for healthy high-elevation locks; reseeding channels print transient nonsense values until the estimator converges."
+      ],
+      specs: [
+        ["stream", "16 Msps 8-bit I/Q @ 1568.25 MHz", "LNA 40 / VGA 46 / amp off"],
+        ["antenna", "Taoglas AA.250 active patch", "bias tee 3.3 V \u00b7 \u00d886.4 mm \u00b7 1559\u20131606 MHz"],
+        ["channels", "12 L1 + 3 B1I (typical)", "seeds from broadcast ephemeris + cache"]
+      ],
+      links: [["AA.250 datasheet", "https://www.taoglas.com/datasheets/AA.250.101111.pdf"]],
+      src: "Live: observations/state.tracker.json (1 Hz)."
+    },
+    scatter: {
+      t: "Position scatter \u2014 ENU projections & merged 3D",
+      s: "Where the fixes actually land, per constellation, with outliers refused an opinion.",
+      b: [
+        "Each pin is one fix in East/North/Up metres against the anchor; colour is solve class (pure GPS, mixed GPS+BDS, 2D alt-hold). Axes use a robust median \u00b1 8\u00d7MAD window so one bad fix can\u2019t flatten the rest \u2014 pins beyond 2 km are dropped to keep structure visible; old pins decay over 3 h in decay mode.",
+        "The inter-system strip (GPS minus BeiDou receiver clock, in km of light-travel) is the anti-spoof observable: a spoofer faking one constellation breaks the agreement the line tracks."
+      ],
+      src: "Live: observations/position_history.jsonl (last 60 fixes / 3 h)."
+    },
+    precision: {
+      t: "Precision \u2014 all bands, last 60 min",
+      s: "Every producer\u2019s drift measurement of one clock, plus who saw how many satellites.",
+      b: [
+        "Points are individual band measurements; the line is the consensus. A band leaving the pack is a fault or spoof candidate. The satellite-count panel is an alarm in itself: a constellation dropping to zero means antenna, producer or interference trouble before any number moves."
+      ],
+      src: "Live: observations/state.band.json + state.series.json."
+    },
+    sky: {
+      t: "Sky visibility \u2014 expected vs observed",
+      s: "What the ephemeris says should be hearable, against what the antenna actually hears.",
+      b: [
+        "Expected satellites come from broadcast ephemeris propagated over the station; observed ones from live tracking. Persistent expected-but-never-seen bins become learned blockage on the dome.",
+        "<b>The array\u2019s known bias:</b> the patches face south. Measured 2026-08-28: PRN 3 at 20\u00b0 elevation acquired strongest while PRN 16 at 87\u00b0 (near zenith) was weakest \u2014 exactly backwards from a sky-facing pattern. That is ideal for the WAAS GEOs (21\u201329\u00b0 south) and costly for the MEO constellations that determine position quality; re-tilting toward zenith is the cheapest upgrade on the station."
+      ],
+      src: "Live: observations/state.sky.json + sky_history.jsonl."
+    },
+    fpga: {
+      t: "FPGA clock chain \u2014 where the precision comes from",
+      s: "iCE40UP5K gateware: tick counter, correction register, TDC \u2014 and what each number really is.",
+      b: [
+        "Four FPGA images coexist on the Pro. Slot 0 hosts the 48-tap carry-chain TDC; Slot 1 a coarse trigger latch; Slot 2 the 12-bit extended-precision RX (CIC + NCO, 54% logic cells, 0% of the 128 KB SPRAM used); production runs release 0x469 on all four slots (manifest-verified today).",
+        "The tick counter is a free-running 32 MHz fabric counter \u2014 its polls feed the heartbeat chart. The clock-correction register (0x60\u20130x7F) is written by the discipline loop in shadow mode only.",
+        "<b>TDC honesty note:</b> 499 ps is the LSB of the internal ring-oscillator self-test. No external single-edge measurement exists yet (it needs the PPS port freed plus an atomic coarse+fine latch), so \u201ccalibrated\u201d was retracted from every TDC mention on 2026-08-28."
+      ],
+      svg: chainSvg([
+        { t: ["SGPIO / ADC IF"], s: "8-bit I/Q in" },
+        { t: ["CIC + NCO"], s: "Slot 2 \u00b7 12-bit" },
+        { t: ["ts nibble", "packer"], s: "12-bit + 4-bit ts" },
+        { t: ["tick ctr", "32 MHz"], s: "heartbeat source" },
+        { t: ["TDC 48-tap"], s: "Slot 0 \u00b7 499 ps LSB*" },
+        { t: ["corr reg", "0x60\u20137F"], s: "shadow-only" },
+        { t: ["SPI / USB"], s: "to host" }
+      ], { bw: 108 }),
+      specs: [
+        ["FPGA", "Lattice iCE40UP5K", "5,280 LCs \u00b7 8 DSP16 \u00b7 30 EBR (120 Kbit) \u00b7 4 SPRAM (1 Mbit)"],
+        ["SPRAM use (Slot 2)", "0 of 4 blocks", "128 KB free \u2014 reserved for frame buffer"],
+        ["TDC", "48-tap carry chain, regs 0x20\u20130x35", "499 ps LSB = self-test only*"],
+        ["tick counter", "32 MHz, regs 0x10\u20130x16", "absent on Slot 2 (LC budget) \u2014 use ts nibble"],
+        ["release", "0x469 all 4 slots (2026-08-28)", "0xE91 pin-swap build quarantined \u2014 never flash"]
+      ],
+      links: [
+        ["iCE40 UltraPlus family", "https://www.latticesemi.com/en/Products/FPGAandCPLD/iCE40UltraPlus"],
+        ["HackRF gateware docs", "https://hackrf.readthedocs.io/"]
+      ],
+      src: "Live: state.tick.json + fpga register reads; manifest: firmware/fpga/build/manifest.json."
+    },
+    wave: {
+      t: "Wave arrival \u2014 light-time & Doppler stretch",
+      s: "The physics the whole station monetises, animated.",
+      b: [
+        "Each ring is one wavefront leaving the satellite; the light-time is real (~20,000\u201336,000 km \u2248 67\u2013120 ms). A moving satellite stretches or compresses the wave (Doppler, \u00b15 kHz for MEO); the bottom strips compare transmitted vs received wavelength with the difference exaggerated \u00d7400.",
+        "That received-versus-transmitted difference, measured in Hz, is how the tracker knows each satellite\u2019s radial velocity \u2014 and, on the geostationary WAAS satellites, how the station measures its own clock."
+      ],
+      src: "Live: tracker channels feed the animation."
+    },
+    phd: {
+      t: "Phase \u2192 distance \u2014 the 19 cm ruler vs the 293 m chip",
+      s: "Why code gives metres and carrier gives millimetres.",
+      b: [
+        "The PRN code\u2019s chips are ~293 m of light-travel; the L1 carrier\u2019s cycles are 19.03 cm. The DLL says which neighbourhood; the PLL\u2019s phase_frac says where inside one 19 cm cycle \u2014 to millimetres. One chip holds ~1,540 carrier cycles, and that ratio is the entire precision story.",
+        "The carrier cannot say <i>which</i> cycle \u2014 the integer ambiguity \u2014 and the Costas loop halves the observable to [0, 0.5). This station\u2019s carrier_cycles observable carries that ambiguity openly; resolving it (not pretending it away) is what the sub-ns path requires."
+      ],
+      specs: [
+        ["L1 wavelength", "19.03 cm", "c / 1575.42 MHz"],
+        ["C/A chip", "293.1 m", "c / 1.023 MHz"],
+        ["cycles per chip", "\u22481,540", "the code\u2192carrier precision ratio"]
+      ],
+      src: "Live: one locked channel\u2019s DLL/PLL state."
+    },
+    rfpro: {
+      t: "Inside the HackRF Pro \u2014 the measurement chain",
+      s: "Every chip a sample touches, with live values bolted on.",
+      b: [
+        "RF enters at the AA.250 (powered by the Pro\u2019s 3.3 V / 50 mA bias tee). The RFFC5072 wideband mixer/synthesizer covers 100 kHz\u20136 GHz; the MAX2831 zero-IF transceiver provides LNA, quadrature mix-down, the programmable baseband filter (set to 15 MHz tonight \u2014 see per-band card) and VGA; the MAX5864 digitises I/Q at 8 bits, 16 Msps.",
+        "The iCE40UP5K FPGA runs the custom timing gateware (tick counter, TDC slot, 12-bit extended-precision CIC chain with timestamp-nibble packing); the LPC43xx Cortex-M4 shuttles samples over USB 2.0 High-Speed to the Rust host, where live_radio tracks the constellations.",
+        "Clocking is Si5351C-based, normally TCXO-referenced, here disciplined by the Bodnar 10 MHz CLKIN (star topology). Unused but on the board: a 4-bit half-precision mode up to 40 Msps (trades dynamic range for bandwidth \u2014 rejected for this station) and 16-bit extended-precision at low rates (typical ENOB 9\u201311 \u2014 the mode Slot 2 develops)."
+      ],
+      svg: chainSvg([
+        { t: ["AA.250"], s: "bias 3.3 V" },
+        { t: ["RFFC5072"], s: "mixer + LO" },
+        { t: ["MAX2831"], s: "LNA\u00b7mix\u00b715 MHz LPF\u00b7VGA", hot: true },
+        { t: ["MAX5864"], s: "8-bit ADC \u00b7 16 Msps", hot: true },
+        { t: ["iCE40UP5K"], s: "timing gateware" },
+        { t: ["LPC43xx"], s: "M4 \u00b7 USB2 HS" },
+        { t: ["Rust host"], s: "live_radio" }
+      ], { bw: 108 }),
+      specs: [
+        ["MAX2831", "2.3\u20132.6 GHz zero-IF transceiver", "LNA, mixer, prog. baseband filter, VGA \u2014 on HackRF Pro"],
+        ["MAX5864", "dual 8-bit 22 Msps ADC / 10-bit DAC", "the I/Q digitiser"],
+        ["RFFC5072", "85 MHz\u20134.2 GHz mixer/synthesizer", "extends coverage beyond the 2831"],
+        ["Si5351C", "8-output I2C clock generator", "Bodnar 10 MHz replaces TCXO as reference"],
+        ["iCE40UP5K", "5,280 LCs \u00b7 1 Mbit SPRAM", "custom timing gateware, release 0x469"],
+        ["LPC43xx", "ARM Cortex-M4F + M0", "SGPIO sample pump + USB"],
+        ["W25Q32", "32 Mbit SPI flash", "4 FPGA slots + MCU firmware"],
+        ["HackRF Pro", "100 kHz\u20136 GHz \u00b7 \u226420 Msps 8-bit", "40 Msps in 4-bit mode \u00b7 16-bit ext. precision"]
+      ],
+      links: [
+        ["MAX2831 product page", "https://www.analog.com/en/products/max2831.html"],
+        ["MAX2831/32 datasheet (PDF)", "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX2831-MAX2832.pdf"],
+        ["MAX5864 product page", "https://www.analog.com/en/products/max5864.html"],
+        ["MAX5864 datasheet (PDF)", "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX5864.pdf"],
+        ["RFFC5072 (Qorvo)", "https://www.qorvo.com/products/p/RFFC5072"],
+        ["Si5351 datasheet", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/data-sheets/Si5351-B.pdf"],
+        ["iCE40 UltraPlus", "https://www.latticesemi.com/en/Products/FPGAandCPLD/iCE40UltraPlus"],
+        ["HackRF Pro product page", "https://greatscottgadgets.com/hackrf/pro/"]
+      ],
+      src: "Live: tick rate, correction and consensus are bolted onto the stages that expose them."
+    },
+    physchain: {
+      t: "Physical chain \u2014 antenna to screen",
+      s: "The end-to-end machine: photons on the roof to pixels on this page.",
+      b: [
+        "Satellite \u2192 ionosphere & troposphere (delay, scintillation) \u2192 AA.250 patch (\u00d886.4 mm, 1559\u20131606 MHz, dual-stage LNA, fed 3.3 V bias) \u2192 coax \u2192 HackRF Pro \u2192 USB-C \u2192 this Mac \u2192 Rust producers \u2192 observations/state.*.json \u2192 the Rust server\u2019s /api/sync deep-merge \u2192 this page.",
+        "The clock plane runs beside it the whole way: Bodnar GPSDO \u2192 both radios (star) \u2192 every timestamp you see. Hover any stage for its failure modes \u2014 each tooltip carries what happens there, why it matters, and what can go wrong."
+      ],
+      src: "Live: observations/state.*.json, merged at /api/sync."
+    },
+    board: {
+      t: "Sync-method leaderboard",
+      s: "Measured \u03c3 per source over the last hour \u2014 who actually pins the clock down.",
+      b: [
+        "Bar length is the measured \u03c3 of each producer\u2019s drift series; whiskers are the uncertainty of that \u03c3; the dashed line is the consensus. Log scale \u2014 best and worst are ~100\u00d7 apart.",
+        "\u201cProven\u201d rows are live continuous references; \u201cdiagnostic\u201d rows measure their own read-path noise rather than the clock; \u201cprojected\u201d sources have no standalone drift series yet \u2014 MEO orbital Doppler (km/s of it) swamps the sub-ppm clock term until Doppler removal lands."
+      ],
+      src: "Live: state.series.json, 60 min window."
+    }
+  };
+
+  var MOUNT = {
+    live: "consensus", clock: "clock", hbread: "heartbeat", journey: "journey",
+    phase: "atsc", position: "position", rows: "bands", livetrack: "sats",
+    posenu: "scatter", scat3d: "scatter", prec: "precision", sky: "sky",
+    skydome: "sky", fpga: "fpga", wavecv: "wave", phdcv: "phd",
+    rfchain: "rfpro", physchain: "physchain", leadcv: "board"
+  };
+
+  var modal = null;
+  function specClose() { if (modal) modal.style.display = "none"; }
+  function specOpen(key) {
+    var d = SPECS[key];
+    if (!d) return;
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "specmodal";
+      modal.addEventListener("click", function (e) { if (e.target === modal) specClose(); });
+      document.body.appendChild(modal);
+    }
+    var h = '<div class="sm-card"><button class="sm-close" type="button" id="specmodal-x">\u2715 close</button>' +
+      "<h2>" + d.t + "</h2>" + (d.s ? '<div class="sm-sub">' + d.s + "</div>" : "");
+    (d.b || []).forEach(function (p) { h += "<p>" + p + "</p>"; });
+    if (d.svg) h += d.svg;
+    if (d.specs && d.specs.length) {
+      h += '<table class="sm-specs"><tr><th>parameter</th><th>value</th><th>note</th></tr>';
+      d.specs.forEach(function (r) { h += "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td><td>" + (r[2] || "") + "</td></tr>"; });
+      h += "</table>";
+    }
+    if (d.links && d.links.length) {
+      h += '<div class="sm-links">';
+      d.links.forEach(function (l) { h += '<a href="' + l[1] + '" target="_blank" rel="noopener">' + l[0] + " \u2197</a>"; });
+      h += "</div>";
+    }
+    if (d.src) h += '<div class="sm-src">' + d.src + "</div>";
+    modal.innerHTML = h + "</div>";
+    modal.style.display = "block";
+    document.getElementById("specmodal-x").addEventListener("click", specClose);
+  }
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") specClose(); });
+
+  Object.keys(MOUNT).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var card = el.closest ? el.closest(".card") : null;
+    if (!card) card = el.parentElement;
+    var h2 = card ? card.querySelector("h2") : null;
+    if (!h2 || h2.querySelector(".specinfo")) return;
+    var key = MOUNT[id];
+    h2.classList.add("specable");
+    h2.addEventListener("click", function (e) {
+      if (e.target && e.target.closest && e.target.closest(".specinfo")) return;
+      specOpen(key);
+    });
+    var b = document.createElement("span");
+    b.className = "specinfo tip";
+    b.textContent = "\u2139 specs";
+    b.setAttribute("tabindex", "0");
+    b.setAttribute("role", "button");
+    b.setAttribute("data-tip-title", SPECS[key].t);
+    b.setAttribute("data-tip", "Click for the full description \u2014 schematic, spec sheet and datasheet links for this component.");
+    b.addEventListener("click", function (e) { e.stopPropagation(); e.preventDefault(); specOpen(key); });
+    b.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); specOpen(key); }
+    });
+    h2.appendChild(b);
+  });
+})();
 </script>
 </body>
 </html>
