@@ -92,6 +92,31 @@ def main():
     check("fit: AR(1) slope stays unbiased", abs(sum(errs) / len(errs)) < emp,
           f"mean_err={sum(errs)/len(errs):.3e}")
 
+    # --- scatter_sigma: calibrated where per-window OLS is not ---------------
+    # 12 DISJOINT AR(1) windows (rho=0.95): the MAD scatter of their slopes
+    # must show the inflation the per-window OLS sigma hides (MC: ~4.8x).
+    check("scatter: needs >=5 fits",
+          pd.scatter_sigma([1.0, 2.0, 3.0, 4.0]) is None)
+    pairs = []
+    for k in range(12):
+        ar = gen_ar1(2000.0 + k * 40.0, 40, 50.0, 0.95, 0.02, seed=101 + 37 * k)
+        pairs.append(pd.fit_drift(ar))
+    sc = pd.scatter_sigma([sl for sl, _, _ in pairs])
+    med_ols = sorted(sg for _, sg, _ in pairs)[len(pairs) // 2]
+    check("scatter: exceeds per-window OLS on AR(1)",
+          sc is not None and sc > 1.5 * med_ols,
+          f"scatter={sc:.3e} med_ols={med_ols:.3e}")
+    # and it stays sane on white noise (no fake inflation)
+    wnp = []
+    for k in range(12):
+        wn = gen(2000.0 + k * 40.0, 40, 50.0, noise_cyc=0.02, seed=3 + k)
+        wnp.append(pd.fit_drift(wn))
+    sc_w = pd.scatter_sigma([sl for sl, _, _ in wnp])
+    med_ols_w = sorted(sg for _, sg, _ in wnp)[len(wnp) // 2]
+    check("scatter: ~OLS on white residuals",
+          sc_w is not None and sc_w < 2.5 * med_ols_w,
+          f"scatter={sc_w:.3e} med_ols={med_ols_w:.3e}")
+
     check("fit: <3 points -> None", pd.fit_drift(s[:2]) is None)
     check("fit: zero time span -> None",
           pd.fit_drift([(1.0, 0.0), (1.0, 1.0), (1.0, 2.0)]) is None)

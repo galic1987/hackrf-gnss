@@ -180,6 +180,23 @@ def weighted_median(values_sigmas):
     return med, max(formal, scatter)
 
 
+def scatter_sigma(slopes):
+    """Robust sigma of DISJOINT-window slope estimates: 1.4826*MAD.
+
+    The calibrated answer to the autocorrelated-residual problem
+    (fit_drift docstring, 2026-08-29): per-window OLS sigmas understate
+    ~5x on AR(1) phase residuals and a residual-based HAC is worse still;
+    the scatter of fits over non-overlapping windows is the honest slope
+    sigma because each fit is an independent draw. Real GEO drift
+    variation inside the span inflates it slightly — the conservative
+    direction. Needs >= 5 fits for a meaningful MAD."""
+    if len(slopes) < 5:
+        return None
+    med = sorted(slopes)[len(slopes) // 2]
+    mad = sorted(abs(s - med) for s in slopes)[len(slopes) // 2]
+    return 1.4826 * mad
+
+
 class SatWindow:
     """Sliding window of continuity-verified (t, cycles, cn0) samples for
     one channel. Any phase break — slip flag, reseed collapse, increment
@@ -193,6 +210,8 @@ class SatWindow:
         self.incs = []             # per-step cycle increments on the chain
         self.last = None           # last seen (t, cycles, corr)
         self.lock_s = 0.0          # lock_s of the newest report
+        self.fit_hist = []         # slopes of DISJOINT windows (<=12 kept)
+        self.last_fit_t = -1e18    # t of the last recorded disjoint fit
 
     def add(self, t, cycles, slip=False, cn0=None, lock_s=None, corr=None):
         """Ingest one 1 Hz report. Returns True if it joined the chain."""
@@ -311,11 +330,22 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples):
             continue
         ppm = ev["slope_hz"] / L1_HZ * 1e6 + corr
         sig_ppm = ev["sigma_hz"] / L1_HZ * 1e6
+        # disjoint-window fit history for the calibrated scatter sigma:
+        # record a fit only once the window has fully advanced — fits that
+        # share samples are not independent draws, and their scatter would
+        # understate just like the per-window OLS sigma does
+        if t - w.last_fit_t >= window_s:
+            w.fit_hist.append(ev["slope_hz"])
+            del w.fit_hist[:-12]
+            w.last_fit_t = t
+        sc = scatter_sigma(w.fit_hist)
         votes.append((ppm, sig_ppm, prn, t))
         diag[f"{sysname} {prn}"] = {
             "ok": True, "n": ev["n"],
             "slope_hz": round(ev["slope_hz"], 6),
             "fit_sigma_ppm": round(sig_ppm, 9),
+            "scatter_sigma_ppm": round(sc / L1_HZ * 1e6, 9) if sc else None,
+            "scatter_n": len(w.fit_hist),
             "ppm": round(ppm, 9),
         }
     rows = []
