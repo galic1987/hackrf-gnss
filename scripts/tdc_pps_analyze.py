@@ -74,6 +74,52 @@ def main(path):
         if len(slow) > 10:
             print(f"slow-phase stretches: {len(slow)} samples, popcount scatter "
                   f"sd {statistics.pstdev(slow):.2f} taps (chain quantisation dominates)")
+        # dwell/burst structure: k=48 = saturated (edge outside the ~1.3 ns
+        # measurement window), k<48 = in-window. A GPSDO-locked PPS whose
+        # phase slowly slews against adclk alternates between the two.
+        inwin = [k < 48 for k in ks]
+        runs = []
+        cur, start = inwin[0], 0
+        for i in range(1, len(ks)):
+            if inwin[i] != cur:
+                runs.append((cur, start, i - 1))
+                cur, start = inwin[i], i
+        runs.append((cur, start, len(ks) - 1))
+        bursts = [r for r in runs if r[0]]
+        dwells = [r for r in runs if not r[0]]
+        if bursts and dwells:
+            bl = [r[2] - r[1] + 1 for r in bursts]
+            dl = [r[2] - r[1] + 1 for r in dwells]
+            bstarts = [ts[r[1]] for r in bursts]
+            period = ([bstarts[i + 1] - bstarts[i] for i in range(len(bstarts) - 1)]
+                      if len(bstarts) > 2 else [])
+            line = (f"phase cycles: {len(bursts)} in-window bursts "
+                    f"(median {statistics.median(bl):.0f} s) / {len(dwells)} dwells "
+                    f"(median {statistics.median(dl):.0f} s)")
+            if period:
+                line += f" | burst period median {statistics.median(period):.1f} s"
+            print(line)
+        # comb test: if the source quantises its edges (PPS steering quantum),
+        # popcounts pile on teeth and second-to-second steps cluster at
+        # multiples of the tooth spacing. Detect via step histogram peaks.
+        steps = []
+        for r in bursts:
+            seg = ks[r[1]:r[2] + 1]
+            steps += [seg[i + 1] - seg[i] for i in range(len(seg) - 1)]
+        nz = [s for s in steps if s]
+        if len(nz) > 30:
+            from collections import Counter
+            sc = Counter(nz)
+            top = sorted(sc.items(), key=lambda x: -x[1])[:8]
+            print(f"intra-burst step histogram (top): {top}")
+            mult = sum(c for s, c in sc.items() if s % 16 == 0)
+            if mult > 0.15 * len(nz):
+                iw_cnt = Counter(k for k in ks if k < 48)
+                dom = sorted(iw_cnt.items(), key=lambda x: -x[1])[:5]
+                print(f"COMB: {mult}/{len(nz)} intra-burst steps are multiples of "
+                      f"16 taps; dominant in-window bins {dom} -> PPS source "
+                      f"quantises edges at a ~16-tap quantum (steering comb, NOT "
+                      f"chain DNL: the RO self-test histogram has no such teeth)")
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1
