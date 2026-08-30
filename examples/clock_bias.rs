@@ -403,7 +403,7 @@ fn main() {
             meas.push(m);
         }
         let meas: Vec<_> = meas.into_iter().flatten().collect();
-        if meas.len() < 5 { continue; }   // redundancy required (GPS+BDS mixed); exact 4-sat solves are unverifiable
+        if meas.len() < 4 { continue; }   // emit gate 5->4 (window pkg, UNBUILT): the n>=5 floor was the hour-gate killer (2026-08-29 bake-off: duty 24.7% -> 38.3%). ISB tension: a 2-state (clock+ISB) solve needs n>=5 with BDS present — when ISB surgery lands, re-raise the gate for mixed solves or constrain ISB from the recent estimate at n==4.
         // CAVEAT: ONE clock state for two constellations — the GPS/BDS
         // inter-system channel bias is unmodeled in this 1-state solve (a
         // weighted mean with studentized rejection; no ISB state — surgery
