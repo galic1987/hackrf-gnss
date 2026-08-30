@@ -73,7 +73,7 @@ const LAM_L1: f64 = 299_792_458.0 / 1_575_420_000.0;
 /// BDS channels integrate carrier in B1I cycles, so their prediction
 /// integral uses λ_B1I, not λ_L1 (~0.9% scale difference).
 const LAM_B1I: f64 = 299_792_458.0 / 1_561_098_000.0;
-const WINDOW_S: f64 = 100.0;
+const WINDOW_S: f64 = 20.0;
 /// BRDC refresh cadence (position_producer refetches the file hourly).
 const EPH_REFRESH_S: f64 = 900.0;
 /// A sat's carrier prediction is trusted for two staircase periods.
@@ -178,16 +178,32 @@ fn site_guess() -> [f64; 3] {
     hackrf_gnss::gps::ephemeris::geodetic_to_ecef(lla[0], lla[1], lla[2] / 1000.0)
 }
 
+fn tropo_delay_m(site_alt_m: f64, el_rad: f64) -> f64 {
+    if el_rad <= 0.0 {
+        return 0.0;
+    }
+    let ztd = 2.47 * (-site_alt_m / 7000.0).exp();
+    let sin_el = el_rad.sin();
+    let tan_el = el_rad.tan();
+    let map = 1.0 / (sin_el + 0.00143 / (tan_el + 0.0445));
+    (ztd * map).clamp(0.0, 35.0)
+}
+
 fn build_meas(
     prn: u8,
     rho_m: f64,
     t_tx: f64,
     ephs: &HashMap<u8, BrdcEph>,
     site_m: [f64; 3],
+    site_lla: [f64; 3],
+    igp_delay: &HashMap<(i16, i16), f64>,
+    sbas_prc: &HashMap<u8, (f64, f64)>,
+    sbas_lt: &HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)>,
+    sbas_dnu: &HashMap<u8, f64>,
 ) -> Option<hackrf_gnss::gps::pvt::Meas> {
-    // live_fix.rs:574-585 + :678-682 (GPS branch), verbatim except the SBAS
-    // terms: this example harvests no SBAS corrections, so prc / iono_m /
-    // daf0 are 0 — the (dt_sv + daf0) SV-clock structure is kept.
+    if sbas_dnu.contains_key(&prn) {
+        return None; // UDREI >= 14 exclusion
+    }
     let eph = ephs.get(&prn)?;
     let (_, dt0, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site_m);
     let mut a = t_tx - dt0 + 0.075;
@@ -198,10 +214,55 @@ fn build_meas(
         dt_sv = d;
         a = t_tx - d + r / 299_792_458.0;
     }
-    let (prc, iono_m, daf0) = (0.0, 0.0, 0.0); // no SBAS corrections here
+    
+    // SBAS Fast Corrections (PRC)
+    let prc = sbas_prc.get(&prn).map(|&(p, _)| p).unwrap_or(0.0);
+    
+    // SBAS Long-Term Corrections (dx, dy, dz, daf0)
+    let mut daf0 = 0.0;
+    if let Some(&(ref lt, _)) = sbas_lt.get(&prn) {
+        let lt_valid = match eph.iode {
+            Some(iode) => iode == lt.iod,
+            None => true,
+        };
+        if lt_valid {
+            let (dx, dy, dz, d_daf0) = lt.propagate(t_tx);
+            sat_m = [sat_m[0] + dx, sat_m[1] + dy, sat_m[2] + dz];
+            daf0 = d_daf0;
+        }
+    }
+    
+    let rel = [sat_m[0] - site_m[0], sat_m[1] - site_m[1], sat_m[2] - site_m[2]];
+    let (az, el) = hackrf_gnss::sbas_iono::azel(
+        site_lla[0].to_radians(),
+        site_lla[1].to_radians(),
+        rel,
+    );
+    
+    // SBAS Ionospheric Slant Delay
+    let mut iono_m = 0.0;
+    if el > 0.0 && !igp_delay.is_empty() {
+        let ((plat, plon), fp) = hackrf_gnss::sbas_iono::ion_pierce_point(
+            (site_lla[0].to_radians(), site_lla[1].to_radians()),
+            az,
+            el,
+        );
+        if let Some(d) = hackrf_gnss::sbas_iono::iono_slant_delay(
+            plat.to_degrees(),
+            plon.to_degrees(),
+            fp,
+            igp_delay,
+        ) {
+            iono_m = d;
+        }
+    }
+    
+    // Tropospheric Slant Delay
+    let tropo_m = tropo_delay_m(site_lla[2], el);
+
     Some(hackrf_gnss::gps::pvt::Meas {
         sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
-        pseudorange: (rho_m + prc - iono_m) / 1000.0 + (dt_sv + daf0) * 299_792.458, // sat clock removed
+        pseudorange: (rho_m + prc - iono_m - tropo_m) / 1000.0 + (dt_sv + daf0) * 299_792.458,
         clock_free: false,
     })
 }
@@ -209,16 +270,14 @@ fn build_meas(
 /// BDS twin of build_meas, mirroring live_fix.rs:763-780 (the "beidou"
 /// branch): the same transmit-time iteration through sat_at_txtime_bds
 /// (t_tx is GPST for both constellations — the tracker converts BDS at the
-/// anchor and the BDS ephemeris toe/toc are stored GPST-equivalent). No
-/// SBAS prc/iono terms: those are GPS-L1 products, so a BDS row carries
-/// only its own sat clock — which already includes the B1I group delay
-/// TGD1 (beidou_d1::sat_clock_bds).
+/// anchor and the BDS ephemeris toe/toc are stored GPST-equivalent).
 fn build_meas_bds(
     prn: u8,
     rho_m: f64,
     t_tx: f64,
     ephs: &HashMap<u8, BrdcEph>,
     site_m: [f64; 3],
+    site_lla: [f64; 3],
 ) -> Option<hackrf_gnss::gps::pvt::Meas> {
     let eph = ephs.get(&prn)?;
     let (_, dt0, _) = sat_at_txtime_bds(eph, t_tx, site_m);
@@ -230,9 +289,17 @@ fn build_meas_bds(
         dt_sv = d;
         a = t_tx - d + r / 299_792_458.0;
     }
+    let rel = [sat_m[0] - site_m[0], sat_m[1] - site_m[1], sat_m[2] - site_m[2]];
+    let (_, el) = hackrf_gnss::sbas_iono::azel(
+        site_lla[0].to_radians(),
+        site_lla[1].to_radians(),
+        rel,
+    );
+    let tropo_m = tropo_delay_m(site_lla[2], el);
+
     Some(hackrf_gnss::gps::pvt::Meas {
         sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
-        pseudorange: rho_m / 1000.0 + dt_sv * 299_792.458, // sat clock (incl. TGD1) removed
+        pseudorange: (rho_m - tropo_m) / 1000.0 + dt_sv * 299_792.458, // sat clock (incl. TGD1) removed
         clock_free: false,
     })
 }
@@ -292,6 +359,67 @@ fn main() {
             eph_loaded = unix_now();
         }
 
+        let mut sbas_prc: HashMap<u8, (f64, f64)> = HashMap::new();
+        let mut sbas_lt: HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)> = HashMap::new();
+        let mut sbas_dnu: HashMap<u8, f64> = HashMap::new();
+        let mut igp_delay: HashMap<(i16, i16), f64> = HashMap::new();
+
+        for s in sats {
+            if s["sys"].as_str() != Some("sbas") {
+                continue;
+            }
+            if !s["sbas_msgs"]["locked"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            for row in s["sbas_msgs"]["fast_corr"].as_array().into_iter().flatten() {
+                if let (Some(prn), Some(prc)) = (row[0].as_u64(), row[1].as_f64()) {
+                    let age = row.get(3).and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+                    if let Some(&(_, prev_age)) = sbas_prc.get(&(prn as u8)) {
+                        if age >= prev_age { continue; }
+                    }
+                    sbas_prc.insert(prn as u8, (prc, age));
+                }
+            }
+            for row in s["sbas_msgs"]["lt_corr"].as_array().into_iter().flatten() {
+                if let Ok(corr) = serde_json::from_value::<hackrf_gnss::sbas::LtCorr>(row.clone()) {
+                    let age = row["age_s"].as_f64().unwrap_or(f64::MAX);
+                    if let Some(&(_, prev_age)) = sbas_lt.get(&corr.prn) {
+                        if age >= prev_age { continue; }
+                    }
+                    sbas_lt.insert(corr.prn, (corr, age));
+                }
+            }
+            for row in s["sbas_msgs"]["dont_use"].as_array().into_iter().flatten() {
+                if let Some(prn) = row[0].as_u64() {
+                    let age = row[1].as_f64().unwrap_or(f64::MAX);
+                    if let Some(&prev_age) = sbas_dnu.get(&(prn as u8)) {
+                        if age >= prev_age { continue; }
+                    }
+                    sbas_dnu.insert(prn as u8, age);
+                }
+            }
+            for mask in s["sbas_msgs"]["igp_mask"].as_array().into_iter().flatten() {
+                let (Some(band), Some(miodi)) = (mask[0].as_u64(), mask[1].as_u64()) else { continue };
+                let Some(igps) = mask[2].as_array() else { continue };
+                for dl in s["sbas_msgs"]["iono_delay"].as_array().into_iter().flatten() {
+                    let (Some(dband), Some(block), Some(diodi)) = (dl[0].as_u64(), dl[1].as_u64(), dl[2].as_u64()) else { continue };
+                    if dband != band || diodi != miodi { continue; }
+                    let Some(rows) = dl[3].as_array() else { continue };
+                    for (i, row) in rows.iter().enumerate() {
+                        let (Some(counts), Some(givei)) = (row[0].as_u64(), row[1].as_u64()) else { continue };
+                        if counts == 511 || givei >= 15 { continue; }
+                        let j = block as usize * 15 + i;
+                        if let Some(igp_num) = igps.get(j).and_then(|v| v.as_u64()) {
+                            if let Some(coord) = hackrf_gnss::sbas_iono::igp_latlon(band as u8, igp_num as u16) {
+                                igp_delay.insert(coord, counts as f64 * 0.125);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let site_lla = site_lla();
         let mut meas = Vec::new();
         let mut slips = 0u32;
         let mut n_fresh = 0u32;
@@ -313,7 +441,7 @@ fn main() {
             let prn = s["prn"].as_u64().unwrap_or(0) as u8;
             let carr = s["carrier_cycles"].as_f64().unwrap_or(0.0);
             let slip = s["slip"].as_bool().unwrap_or(false);
-            let s_epoch = s["epoch"].as_f64().unwrap();
+            let s_epoch = s["epoch"].as_f64().unwrap_or(epoch);
             // the same staircase/carrier machinery serves both
             // constellations — only the chain maps and the carrier
             // wavelength differ (λ_B1I for BDS, λ_L1 for GPS)
@@ -355,9 +483,20 @@ fn main() {
                     // ephemeris evaluation must refer to the same epoch
                     let t_tx_used = t_tx + (s_epoch - p.last_code_epoch);
                     let m = if bds {
-                        build_meas_bds(prn, rho_used, t_tx_used, &bds_ephs, site_m)
+                        build_meas_bds(prn, rho_used, t_tx_used, &bds_ephs, site_m, site_lla)
                     } else {
-                        build_meas(prn, rho_used, t_tx_used, &ephs, site_m)
+                        build_meas(
+                            prn,
+                            rho_used,
+                            t_tx_used,
+                            &ephs,
+                            site_m,
+                            site_lla,
+                            &igp_delay,
+                            &sbas_prc,
+                            &sbas_lt,
+                            &sbas_dnu,
+                        )
                     };
                     if bds && m.is_some() { n_bds += 1; }
                     meas.push(m);
@@ -396,9 +535,20 @@ fn main() {
                 contrib_valid: true,
             });
             let m = if bds {
-                build_meas_bds(prn, rho_s, t_tx, &bds_ephs, site_m)
+                build_meas_bds(prn, rho_s, t_tx, &bds_ephs, site_m, site_lla)
             } else {
-                build_meas(prn, rho_s, t_tx, &ephs, site_m)
+                build_meas(
+                    prn,
+                    rho_s,
+                    t_tx,
+                    &ephs,
+                    site_m,
+                    site_lla,
+                    &igp_delay,
+                    &sbas_prc,
+                    &sbas_lt,
+                    &sbas_dnu,
+                )
             };
             if bds && m.is_some() { n_bds += 1; }
             meas.push(m);
@@ -430,8 +580,9 @@ fn main() {
                 "source": "clock_bias",
             });
             use std::io::Write;
-            let mut f = fs::OpenOptions::new().create(true).append(true).open(OUT).unwrap();
-            writeln!(f, "{}", row).unwrap();
+            if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(OUT) {
+                let _ = writeln!(f, "{}", row);
+            }
             // Atomic per-second state for /api/sync (tmp + rename, like
             // every other producer): the panel reads the live clock bias
             // without parsing the archive. Fail-closed by TTL: when no
@@ -451,9 +602,10 @@ fn main() {
                     "gen": gen_id,
                 },
             });
-            let tmp = format!("{}.tmp", STATE_CB);
-            fs::write(&tmp, st.to_string()).unwrap();
-            fs::rename(&tmp, STATE_CB).unwrap();
+            let tmp = format!("{STATE_CB}.tmp");
+            if fs::write(&tmp, serde_json::to_string(&st).unwrap_or_default()).is_ok() {
+                let _ = fs::rename(&tmp, STATE_CB);
+            }
         }
     }
 }

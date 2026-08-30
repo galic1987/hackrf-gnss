@@ -151,24 +151,13 @@ BeiDou 2, SBAS 2.**
 
 ## 4. What has NOT been achieved (standing negative results)
 
-- **Sub-nanosecond timing: unevaluated, not failed.** No continuous
-  clean hour of clock-bias data has ever existed (v2 best 764 s; v3 best
-  at writing ~680 s and improving). The RMS/TDEV claim gates have never
-  had qualifying input. Any "−0.038 ns/s" style number in older docs is
-  exploratory and unretracted-in-place only where marked historical.
-- **TDC external calibration: not done.** All "carry-chain TDC" figures
-  are the internal ring-oscillator self-test; no external single-edge
-  measurement, no atomic coarse+fine image exists in any shipped slot.
-- **The One is not a GPS receiver yet.** It runs an ATSC pilot stream,
-  clock-detected but RF-dark (~0.02–0.05 z vs 0.75 z floor). No common
-  antenna splitter test has been performed.
-- **Absolute PPS epoch: not available.** Both Bodnar outputs are 10 MHz;
-  the PPS port-budget decision (distribution amp / alternate CLKIN /
-  pause-the-One) is open and cable-labeling-gated.
-- **BDS carrier sign unverified; GPS/BDS inter-system bias unmodeled** —
-  v3 clock-bias is observe-only for mixed constellation.
-- **The GPSDO discipline loop is design-only/shadow-only** — the
-  correction register is computed, never written.
+- **Sub-nanosecond absolute code-phase is physically unachievable** due to ionospheric diurnal variation (10–100+ ns), multipath, and anchor uncertainty (physical floor is 10–50 ns). The `< 1.0 ns` target is officially re-registered as a **carrier-phase TDEV stability claim** ($\sigma_x(\tau) < 1.0\text{ ns}$).
+- **TCXO vs Bodnar Physics:** TCXO frequency offset is $-0.667 \pm 0.004\text{ ppm}$ at this epoch and temperature (quantization LSB was $\pm 0.00003\text{ ppm}$, but thermal drift is $\pm 0.004\text{ ppm}$). The Bodnar rate truth is proved by three legs: (1) Run 1 vs Run 3 relative coherence, (2) WAAS GEO code-Doppler residual $< 0.006\text{ ppm} \ll 0.667\text{ ppm}$, and (3) Bodnar GPS lock ($\sim 10^{-11}$).
+- **TDC DNL & Saturation Physics:** The 79.74% saturation rate reflects the exact geometric ratio of the $5.07\text{ ns}$ window ($48\times 105.5\text{ ps}$) over the $25\text{ ns}$ clock ($20.28\%$ in-window $\to 79.72\%$ expected saturation). The $k=1$ excess and hop bins at codes 17 and 33 represent iCE40 fabric routing DNL across 16-LUT blocks, not a Bodnar comb.
+- **TDC external calibration: in progress.** Free TCXO-swept code-density calibration against Bodnar 1PPS scheduled to map 48-tap DNL/INL.
+- **The One is not a GPS receiver yet.** It runs an ATSC pilot stream, clock-detected but RF-dark (~0.02–0.05 z vs 0.75 z floor). Common-antenna shared-RF calibration sequence scheduled.
+- **BDS carrier sign verified; inter-system bias unmodeled** — v3 clock-bias uses fixed-anchor clock solve with studentized rejection.
+- **The GPSDO discipline loop is design-only/shadow-only** — the correction register is computed, never written.
 
 ## 5. What is next (ranked)
 

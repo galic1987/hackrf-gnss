@@ -1383,6 +1383,8 @@ impl Channel {
         // is discontinuous across the re-acquisition, so the old grid
         // origin is meaningless — re-anchor it.
         self.sbas_reset_decoder(false);
+        self.bit_off = None;
+        self.nav_ms.clear();
     }
 
     /// Terminate the WHOLE SBAS decode generation: the decoder window, the
@@ -2363,6 +2365,7 @@ impl Band {
         self.channels.clear();
         self.clear_buf();
         self.hist.clear();
+        self.epoch0 += self.t_s;
         self.t_s = 0.0;
         self.next_report_s = 1;
         self.align_fails = 0;

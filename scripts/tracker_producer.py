@@ -201,8 +201,8 @@ def publish(sats, now, disc=None):
         
         sum_d = 0.0
         for s in waas:
-            # subtract satellite LOS motion and clock drift from the raw Doppler
-            geo_d = geocorrector_helper.calc_geo_doppler_hz(s.get("sbas_geonav"), site_ecef, L1_HZ)
+            # subtract satellite LOS motion and clock drift from the raw Doppler (MT9 GeoCorrector)
+            geo_d = geocorrector_helper.calc_geo_doppler_hz(s.get("sbas_geonav"), site_ecef, L1_HZ, t_unix=now)
             sum_d += (s["doppler_hz"] - geo_d)
             
         mean_d = sum_d / len(waas)
@@ -222,13 +222,9 @@ def publish(sats, now, disc=None):
             ppm += corr
         srcs.append({
             "band": MY_BAND,
-            "name": "WAAS GEO live Doppler + corr register · Pro+AA.250, 1 Hz tracker",
+            "name": "WAAS GEO Doppler (MT9 GeoCorrected) · Pro+AA.250, 1 Hz tracker",
             "kind": "ClockDriftPpm",
-            # sigma floors at GEO motion Doppler (+-0.025 ppm — covers the
-            # +-0.01 ppm range-rate bound: +-0.5-3 m/s line of sight / c,
-            # plus inter-source margin), not the PLL's
-            # short-term precision — path systematics dominate inter-source
-            # comparison
+            # Conservative sigma bound (0.03 ppm) until full common-mode calibration is complete
             "value": round(ppm, 4), "sigma": 0.03,
             "ref_hz": L1_HZ, "epoch": round(now, 2),
             "sats": [f"PRN {s['prn']}" for s in waas],
