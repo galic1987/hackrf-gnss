@@ -880,12 +880,22 @@ impl Channel {
             if self.nav_ms.len() < 2000 || !self.locked {
                 return;
             }
+            // Sync on the NEWEST 6000 ms, not the oldest: the buffer caps
+            // at 200_000 ms and front-drains, so the first-6000 window is
+            // pinned to the noisy pull-in transient for the first ~200 s
+            // of channel life — B26 sat at 0 nav bits for 301 s at CN0
+            // 35-40 (the "b30/b36 zero nav bits" signature) until the
+            // window slid past the transient, then synced immediately.
             let n = self.nav_ms.len().min(6000);
-            match crate::beidou_d1::nh_sync(&self.nav_ms[..n]) {
+            let tail = &self.nav_ms[self.nav_ms.len() - n..];
+            match crate::beidou_d1::nh_sync(tail) {
                 Some(off) => {
-                    self.bit_off = Some(off);
-                    self.nav_ms.drain(..off);
-                    self.nav_abs_ms += off as u64;
+                    // off is relative to the tail slice; convert to an
+                    // absolute drain count.
+                    let skip = self.nav_ms.len() - n + off;
+                    self.bit_off = Some(0);
+                    self.nav_ms.drain(..skip);
+                    self.nav_abs_ms += skip as u64;
                 }
                 None => return,
             }
