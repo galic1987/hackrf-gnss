@@ -13,6 +13,12 @@ Evidence: `gnss/observations/tdc_pps_run1.jsonl` (3,658 events),
 `scripts/tdc_pps_analyze.py` (extended, fc08d0d) and
 `scripts/tdc_ts_latch_run.sh`.
 
+*Amended same night (23:55 EDT): sections 3–5 rewritten. The latch number
+is a ratio; the tracker clock-drift breaks the tie. First reading
+("timestamp domain slow") was wrong — the bias is on the PPS side. The
+Pro's clock tree is coherent. Correction propagated before any downstream
+use.*
+
 ## 1. Run 1 — first external single-edge TDC dataset
 
 3,658 external 1PPS edges captured into the slot-0 48-tap carry-chain TDC
@@ -36,57 +42,77 @@ prior numbers were ring-oscillator self-tests.
   samples) has **no** teeth at 1/17/33 → the comb is a property of the
   PPS source, not of the chain (not DNL).
 
-Conclusion: the Bodnar's 1PPS edges are placed/steered at a quantum of
-~16 taps. Absolute size awaits tap calibration (≈400 ps at the provisional
-25 ps/tap). This resolves the reviewer's sawtooth flag: present, but a
-*fine* quantum — not a coarse u-blox-style ~8 ns sawtooth. Practical
-consequence: **code-density DNL from this PPS source is impossible** —
-edges land on three teeth, so intermediate bins can never accumulate
-counts. DNL/INL needs a swept-delay source or the RO self-test with the
-CDC window fix landed.
+Conclusion: the Bodnar's 1PPS edges are placed on a grid with a quantum of
+~16 taps (≈400 ps at the provisional 25 ps/tap) — consistent with edges
+synthesised/dithered on an internal multi-GHz VCO grid, not a coarse
+u-blox-style ~8 ns sawtooth. Practical consequence: **code-density DNL
+from this PPS source is impossible** — edges land on three teeth, so
+intermediate bins can never accumulate counts. DNL/INL needs a swept-delay
+source or the RO self-test with the CDC window fix landed.
 
-## 3. Ticks per GPS second — the sample-epoch measurement
+## 3. Ticks per PPS interval — and what it is a ratio *of*
 
 900 s of slot-1 48-bit trigger-latch deltas
 (`ts_latch_run1.jsonl`, 900/900 seconds captured):
 
 | metric | value |
 |---|---|
-| mean | 39,999,973.31 ticks/GPS-second |
-| offset vs 40.000 MHz claimed | **−0.667 ppm** |
-| trend over 900 s | +0.0003 ticks/s² — static, not convergence slew |
+| mean | 39,999,973.31 ticks/PPS-interval |
+| trend over 900 s | +0.0003 ticks/s² — static |
 | jitter | sd 0.69 ticks (≈17 ns); second-to-second sd 1.18 ticks (≈30 ns) |
 
-So the nominal 25.00 ns tick counts 40 MHz but the domain runs 0.667 ppm
-slow against GPS, and it is *statically* slow — a synthesis-ratio or
-local-oscillator offset, not GPSDO discipline transient.
+The latch counts adclk ticks between consecutive PPS edges. The number is
+a *ratio* of two clocks: adclk (CLKIN→Si5351→AFE 40 MHz) against the
+Bodnar's PPS interval. Standing alone it cannot say which side is off.
 
-## 4. Cross-domain finding: the latch clock is not the sample clock
+## 4. Tie-break: the bias is on the PPS, not the Pro
 
-Post-restart tracker clock-drift (326 s, RMS<200 m rows): **+1.08 ns/s**
-— the ADC/sample clock sits in the GPSDO band (pre-window era: +0.885
-ns/s; the TCXO band is +530 ns/s, three orders away).
+Post-restart tracker clock-drift (326 s of RMS<200 m rows): **+1.08 ns/s**
+— the ADC sample clock (= the same adclk domain; gateware source puts the
+timestamp counter in `adclk`, and has since the counter was introduced in
+9db94343) sits in the GPSDO band, GPS-true to ~1 ppb. The Mac host clock
+only scales the drift by ~ppm of itself and cannot move a −667 ns/s
+signal to +1.08 ns/s.
 
-The latch domain runs at −667 ns/s against the same GPS. Disagreement
-≈ 668 ns/s (27 ticks/s; 2.4 ms/hour): **the slot-1 trigger timestamp
-counter and the ADC sample clock are different clock domains.** Using
-latch ticks directly as sample indices would inject 668 ns/s of epoch
-error. Before epoch anchoring: either re-clock the timestamp counter from
-adclk, or carry the measured rate correction (39,999,973.31 ticks/s) and
-accept that the two domains can drift independently. Mechanism (Si5351
-rounding vs fabric on local osc) is distinguishable by long-baseline
-temperature correlation — queued.
+Therefore adclk is GPS-true and the ratio in §3 belongs to the PPS:
+
+> **Bodnar output-1 "1PPS" runs +0.667 ppm fast** (interval 0.999999333 s),
+> statically, with edges confined to a ~400 ps comb (§2).
+
+Interpretation (ranked): (a) output 1 generates its "1PPS" as a
+*synthesised 1 Hz* from the disciplined VCO — finite fractional-divider
+resolution gives the static rate rounding, fractional-N dither gives the
+VCO-grid comb; (b) a GPS-timing-engine PPS with a pathological steering
+loop — disfavoured, a phase-steered loop would hold zero mean rate error.
+Discriminator queued: query the device config (lbe-1420 CLI) in a window —
+the USB serial port is busy with gpsdo_probe outside windows — and compare
+against the DCD-pin PPS, which the vendor documents as a second 1PPS
+source and which is likely the GPS engine's own.
+
+Station consequences:
+
+- The Pro's clock tree is **coherent**: CLKIN→Si5351→adclk→sample clock,
+  one domain, GPS-true. No re-clocking needed. (Supersedes the
+  cross-domain reading in the first draft of this section.)
+- The wired PPS is a valid *coarse trigger*: 1 Hz nominal, one edge per
+  GPS second, identity of seconds preserved. Rate bias is irrelevant for
+  epoch anchoring (we count seconds, not phase) and for the TDC runs.
+- The wired PPS is **not** a precision time/phase reference: +0.667 ppm
+  rate bias, ~400 ps comb, ~10 s / ~7 ns phase wobble. Any jitter or
+  phase claim against it must say so.
 
 ## 5. Coherence verdict
 
 - Pro #2 sample clock: GPS-coherent, +1.08 ns/s (GPSDO band). Star feed
   through the splitter is healthy post-replug.
-- Latch/TDC timestamp domain: −0.667 ppm vs GPS — **not** coherent with
-  the sample clock (finding 4).
+- Latch/TDC path: works, counts the GPS-true adclk; measured ratio is
+  dominated by the PPS-side bias (§4).
 - HackRF One: still dark. ATSC producer publishes fresh `lock:false`
   tombstones; pilot ~37 dB starved, 0.03 z vs 0.75 floor. Physical
   ClearStream feed check remains owner-owed. No cross-radio coherence
-  pairs possible until it locks.
+  pairs possible until it locks — and with it dark, the tie-break above
+  rests on the Pro's tracker alone (noted for honesty: a second-radio
+  CLKIN-side measurement would independently confirm the 10 MHz path).
 
 ## 6. Standing gaps (unchanged)
 
@@ -95,7 +121,7 @@ temperature correlation — queued.
   join only.
 - 499 ps stays provisional; "calibrated" stays retracted. Run 1 is the
   first external evidence, not a calibration — no swept delay, and the
-  comb (finding 2) blocks code-density from this source.
+  comb (§2) blocks code-density from this source.
 - clock_bias v3 keeps the known session-provenance gap (gen straddles the
   23:22 restart; analyzer segments on it).
 
@@ -103,8 +129,7 @@ temperature correlation — queued.
 
 1. Tap-size calibration path that bypasses the comb: swept-delay source,
    or RO self-test after the `meas_gate_ro` CDC fix lands.
-2. Long-baseline latch series to separate Si5351-rounding (constant) from
-   local-oscillator (temperature-wandering) for the −0.667 ppm.
-3. Re-clock or rate-correct the timestamp domain before any sample-zero
-   anchoring (finding 4).
-4. One RF path physical check → splitter test → cross-radio coherence.
+2. Query the Bodnar's output-1 configuration in a window; test the DCD
+   PPS as a candidate GPS-engine-grade reference (§4).
+3. One RF path physical check → splitter test → cross-radio coherence
+   (also gives the second CLKIN-side confirmation of the 10 MHz path).
