@@ -122,7 +122,7 @@ fn main() {
         if reports.is_empty() {
             return;
         }
-        for r in &reports {
+        for r in reports.iter() {
             if let Ok(line) = serde_json::to_string(r) {
                 let _ = writeln!(out, "{}", line);
             }
