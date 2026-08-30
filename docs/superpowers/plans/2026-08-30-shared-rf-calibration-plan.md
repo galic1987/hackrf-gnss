@@ -16,7 +16,9 @@ The next phase of station operation targets true sub-nanosecond receiver delay c
 3. **Shared-RF Captures**: Run same-band (L1), same-rate (16 Msps) shared-AA.250 captures.
 4. **Fractional Lag Check**: Measure integer/fractional phase lag between the two boards.
 5. **ABBA Swaps**: Repeat measurements doing PPS-leg and RF-leg ABBA swaps (and cold starts) to establish deterministic physical biases vs hardware reset races.
-6. **TDC Code-Density DNL**: Calibrate the 48-tap TDC using an external swept delay source to map the FPGA fabric routing non-linearities (resolving the 16-tap comb artifact).
+6. **Free TDC Code-Density DNL Calibration**: Break the TDC coherence trap using zero new hardware. Run the Pro on the TCXO clock (free-running) while feeding the Bodnar PPS to the trigger. The -0.667 ppm offset sweeps the PPS phase across the full 48-tap window at ~667 ns/s, giving a free, incoherent code-density calibration source.
+   - *Requirement*: Add a $5 USB temperature logger to the bench before running this.
+   - *Cross-check*: Compare the DNL results against the ring-oscillator self-test already sitting in the gateware at registers `0x30–0x35`.
 7. **Atomic Coarse+Fine**: Eventually deploy a single atomic coarse (32 MHz tick) + fine (TDC carry chain) FPGA image.
 8. **Restore Geometry**: Only after receiver-chain delays are perfectly mapped, restore the dual separate antennas for the nominal 6 cm baseline test.
 

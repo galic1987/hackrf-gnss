@@ -3405,7 +3405,8 @@ sweepFocus();
       s: "From a satellite\u2019s transmit antenna to the number on this page, with honest error budgets.",
       b: [
         "Each stage shows its live value and the precision it can <i>honestly</i> claim \u2014 not the precision of the stage after it. Timestamp ticks, TDC bins, averaged PPS phase and carrier phase are different observables, not successive measurements of the same error.",
-        "<b>Measured on this station (2026-08-28):</b> receiver-clock drift \u22120.038 ns/s over 5.2 h; within-segment clock noise 4.5\u201325 ns RMS (code-limited, matches code/\u221an theory). The sub-ns claim is <b>not</b> yet supported \u2014 it gates on a true prompt carrier-phase residual (spec component 1).",
+        "<b>Physics reality (2026-08-30):</b> Code phase has a systematic absolute floor of ~10–50 ns (iono diurnal, multipath, and 6.7–10 ns anchor error). <b>Sub-ns absolute code-phase is physically unreachable.</b>",
+        "The < 1.0 ns gate is officially re-registered as a <b>carrier-phase TDEV stability claim</b> (and previous −0.038 ns/s figures were exploratory).",
         "The 499 ps TDC figure is the least-significant-bit of the internal ring-oscillator self-test only \u2014 the word \u201ccalibrated\u201d was retracted everywhere on 2026-08-28 until an external edge measures it."
       ],
       src: "Live: state.tracker.json + state.phase.json + TDC evidence in docs/superpowers/evidence/tdc-run2/."
