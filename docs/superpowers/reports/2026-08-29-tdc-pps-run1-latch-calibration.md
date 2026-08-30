@@ -133,3 +133,48 @@ Station consequences:
    PPS as a candidate GPS-engine-grade reference (§4).
 3. One RF path physical check → splitter test → cross-radio coherence
    (also gives the second CLKIN-side confirmation of the 10 MHz path).
+
+## 7. Overnight addendum (2026-08-30)
+
+Collection after the 23:22 tracker restart: **12,838 clock_bias rows over
+6.9 h** (duty ~52%), one generation (v3-1788031519-tb1788031136, which
+straddles the restart — the known v3 session-provenance gap; the analyzer
+segments on it). n_sat mean 5.83 (p10 = 5); **n_bds mean 1.08, present in
+74% of rows** — the mixed GPS+BDS solve is doing the availability job it
+was built for. File-wide quality gates: 38,804 rows pass, 11 poison-class
+rows excluded under the pre-registered 500 m gate (itself still
+exploratory — data-derived, per the analyzer's own caveat).
+
+**Verdict: INSUFFICIENT DATA.** Longest clean segment 312 s / 306 rows
+against the 3,600 s / 3,400-row continuous-hour gate (8.7%). No qualifying
+hour exists, so the RMS and TDEV claim gates were not evaluated. The
+fail-closed pipeline behaved as designed.
+
+Events: no tracker wedge overnight (03:10 autonomous health check:
+healthy, no action). One clock_bias emission gap (~06:20–06:45) at sky
+rotation: the setting PRN set's ephemeris coverage ended before the
+rising set finished self-decode; self-recovered (ephemeris for GPS
+5/12/21 and B14 landed, rows resumed, currently prediction-led while
+fresh code updates refill).
+
+Diagnosis — the hour gate now binds on three mechanisms, in order:
+1. ephemeris-coverage gaps at sky rotation (the 537 s / 1232 s holes);
+2. single-epoch emission holes (2 s) that split segments at the 1.5×
+   median-dt boundary even inside good stretches — best observed stretch
+   rate was 57.3 rows/min against the 56.7/min threshold, so the gate is
+   within reach when the sky is stable;
+3. the n≥5 emit floor during rotations — the staged window-package change
+   (5→4, branch `window-pkg-UNBUILT` 647e6b8, UNBUILT) directly targets
+   this, and the nh_sync newest-window fix in the same branch removes the
+   B26-class delayed-decode drain on fresh channels.
+
+Queue state this morning:
+- `window-pkg-UNBUILT` 647e6b8: nh_sync newest-window + emit gate 5→4 —
+  build/test/deploy at the next tracker window (window law).
+- Gateware RO window-gate CDC fix (mac-archive/hackrf 8433748e, 30/30 sim
+  tests) — flash pending window; prerequisite for RO-based tap
+  calibration now that the PPS comb blocks code-density from OUT1 (§2).
+- Bodnar OUT1 configuration query + DCD-PPS comparison (§4) — pending
+  window (USB serial busy with gpsdo_probe).
+- HackRF One RF path physical check — owner-owed; still dark.
+- Session UUID, BDS ISB state, deaf-band watchdog — queued for design.
