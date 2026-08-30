@@ -40,3 +40,27 @@ The conclusions drawn in commit 893526c regarding the Bodnar's output-1 synthesi
 
 1. Code-density DNL/INL calibration for the TDC to map the true tap delays, bypassing the routing-boundary artifacts.
 2. HackRF One RF path physical check → splitter test → cross-radio coherence.
+
+## 6. Midday addendum (2026-08-30) — Leg 1 hour-gate retry verdict
+
+(Numbering restarts at 6: the da5c02d restructure dropped the f706d62 overnight addendum, which survives in git history. Verdict below supersedes it with fresh numbers.)
+
+**Verdict: INSUFFICIENT DATA. No qualifying continuous hour has ever existed on this station.**
+
+Collection timeline on the window-package build (nh_sync newest-window + emit gate 5→4, deployed 06:56):
+
+- 06:56–08:20: gen `v3-1788087599` (3,498 rows). ~08:20 full-cohort wedge — tracker log and clock_bias both froze. The new supervisor (launchd `com.hormuz.tracker`, da5c02d) restarted the cohort at 09:35:09. 75-min hole.
+- 09:38–12:25: gen `v3-1788096912-tb1788086830`, 4,683 rows / 2.77 h. Inside it, a **65-min clock_bias emission hole 10:56:39–12:01:32** while the tracker held 7–12 locked throughout and `clock_bias_shadow` — reading the same `state.tracker.json` — produced 1,369 rows continuously. Same pid, same gen, self-recovered: a producer-side stall, root cause open (candidate: per-sat ephemeris/freshness gate collapse below the emit floor; the `parse_rinex_gps … rejected (unit Radians)` spam in clock_bias.log is untimestamped, unproven). Second distinct stall signature of the day.
+
+Analyzer on the current gen (12:25):
+
+- n_sat distribution: 4 → 2,539 rows (54%), 5 → 1,901, 6 → 243. n_bds=1 on 2,309 rows.
+- Quality gate (n_sat≥5, slips=0) keeps 2,144 rows → **12.9 quality rows/min vs the 56.7/min** the 3,400-row/3,600-s gate requires. Total emission duty 28.2/min — half of required even counting n_sat=4 rows.
+- Segmentation (split at >1.5× median dt 1.03 s): **longest clean segment 142 s / 138 rows** vs the 3,600 s / 3,400-row gate.
+- Structurally impossible today regardless: the gen began 09:38, so a qualifying hour could not exist before ~10:38 even under perfect continuity; the 65-min hole removed it.
+
+Comparison vs overnight (f706d62: 12,838 rows/6.9 h, best segment 312 s):
+
+- The window package did **not** move the hour gate (142 s vs 312 s; both >20× below the gate — different sky, not evidence of regression).
+- **New structural finding — emit/analyzer mismatch:** the emit gate was lowered to 4 but the analyzer quality floor stayed at 5, so 54% of emitted rows are discarded before TDEV. The change raised emission volume, not analyzable density. Either the analyzer floor moves to 4 with a documented ISB caveat, or the emit gate returns to 5; as-is they work against each other.
+- Binding constraints, ranked: (1) producer emission duty (~half of required); (2) single-epoch 2-s holes shattering segments under the 1.5× median-dt split; (3) producer-side stalls (two signatures in one day — full-cohort freeze at 08:20, silent consumer hole 10:57–12:01).
