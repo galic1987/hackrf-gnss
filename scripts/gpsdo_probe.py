@@ -129,22 +129,60 @@ def publish(doc):
     os.rename(tmp, OUT)
 
 
+def validate_checksum(sentence):
+    if "*" not in sentence or not sentence.startswith("$"):
+        return False
+    body, csum = sentence[1:].rsplit("*", 1)
+    if len(csum) != 2:
+        return False
+    try:
+        expected = int(csum, 16)
+    except ValueError:
+        return False
+    calc = 0
+    for char in body:
+        calc ^= ord(char)
+    return calc == expected
+
+
 def main():
-    port, fd = open_port()
-    if fd is None:
-        publish({"epoch": time.time(), "ttl_s": TTL_S,
-                 "gpsdo": {"port": None, "lock": False,
-                           "error": "no /dev/cu.usbmodem* (GPSDO absent)"}})
-        sys.exit("no GPSDO serial port found")
-    print(f"gpsdo_probe: reading {port}", flush=True)
+    port, fd = None, None
     st = {}
     buf = b""
     last_pub = 0.0
+
     while True:
+        if fd is None:
+            port, fd = open_port()
+            if fd is None:
+                publish({"epoch": time.time(), "ttl_s": TTL_S,
+                         "gpsdo": {"port": None, "lock": False,
+                                   "error": "no /dev/cu.usbmodem* (GPSDO absent)"}})
+                print("gpsdo_probe: no GPSDO serial port found, waiting...", flush=True)
+                time.sleep(5)
+                continue
+            print(f"gpsdo_probe: reading {port}", flush=True)
+            buf = b""
+            st = {}
+
         try:
             chunk = os.read(fd, 4096)
+            if not chunk:  # EOF
+                os.close(fd)
+                fd = None
+                continue
         except BlockingIOError:
             chunk = b""
+        except OSError as e:
+            print(f"gpsdo_probe: read error: {e}, reconnecting...", flush=True)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            fd = None
+            time.sleep(1)
+            continue
+
         if chunk:
             buf += chunk
             while b"\n" in buf:
@@ -153,7 +191,7 @@ def main():
                     s = line.decode("ascii", "replace").strip()
                 except Exception:
                     continue
-                if not s.startswith("$"):
+                if not validate_checksum(s):
                     continue
                 f = s.split(",")
                 if GGA.match(s):

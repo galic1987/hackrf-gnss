@@ -45,6 +45,11 @@ def read_state(name, now):
     ttl = d.get("ttl_s", DEFAULT_TTL)
     if now - d.get("epoch", now) > ttl:
         return None                # tombstone: dead producer's values expire
+        
+    # Prevent laundering of fresh but unlocked tombstones into the archive
+    if name == "phase" and d.get("phase", {}).get("lock") is False:
+        return None
+        
     return d
 
 

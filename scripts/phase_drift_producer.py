@@ -388,12 +388,12 @@ class GeoCorrector:
                 return
             jump = old_term - new_term
             if abs(jump) > GEO_STITCH_MAX_CYCLES:
-                self.rejected_swaps += 1
-                self._rejected_id = rej_id
-                print(f"p0b: REJECTED geonav swap, stitch {jump:.1f} cycles "
+                print(f"p0b: REJECTED oversized geonav swap {jump:.1f} cycles "
                       f"> {GEO_STITCH_MAX_CYCLES:.0f} "
                       f"(iodn {self.geo.get('iodn')} -> "
                       f"{geonav.get('iodn')})", flush=True)
+                self.rejected_swaps += 1
+                self._rejected_id = (geonav.get("iodn"), geonav.get("t0_s"))
                 return
             self.offset_cycles += jump
             self._rejected_id = None

@@ -87,6 +87,7 @@ def main(path):
         runs.append((cur, start, len(ks) - 1))
         bursts = [r for r in runs if r[0]]
         dwells = [r for r in runs if not r[0]]
+
         if bursts and dwells:
             bl = [r[2] - r[1] + 1 for r in bursts]
             dl = [r[2] - r[1] + 1 for r in dwells]
@@ -99,9 +100,7 @@ def main(path):
             if period:
                 line += f" | burst period median {statistics.median(period):.1f} s"
             print(line)
-        # comb test: if the source quantises its edges (PPS steering quantum),
-        # popcounts pile on teeth and second-to-second steps cluster at
-        # multiples of the tooth spacing. Detect via step histogram peaks.
+        # comb test: check for 16-tap FPGA logic routing DNL artifacts
         steps = []
         for r in bursts:
             seg = ks[r[1]:r[2] + 1]
@@ -116,10 +115,10 @@ def main(path):
             if mult > 0.15 * len(nz):
                 iw_cnt = Counter(k for k in ks if k < 48)
                 dom = sorted(iw_cnt.items(), key=lambda x: -x[1])[:5]
-                print(f"COMB: {mult}/{len(nz)} intra-burst steps are multiples of "
-                      f"16 taps; dominant in-window bins {dom} -> PPS source "
-                      f"quantises edges at a ~16-tap quantum (steering comb, NOT "
-                      f"chain DNL: the RO self-test histogram has no such teeth)")
+                print(f"DNL ARTIFACT: {mult}/{len(nz)} intra-burst steps are multiples of "
+                      f"16 taps; dominant in-window bins {dom}. This is a TDC Differential "
+                      f"Non-Linearity (DNL) artifact from FPGA fabric hop boundaries, NOT a "
+                      f"Bodnar property.")
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1

@@ -2,7 +2,7 @@
 """Sub-ns claim analyzer (Leg 1 v2): detrend clock_bias.jsonl, RMS + TDEV, gates.
 
 Usage: python3 scripts/clock_bias_analyzer.py [path] [--min-rows 3400] [--all-gens]
-Gates (spec 2026-08-27): RMS < 1 ns and TDEV < 1 ns for tau in 10..1000 s.
+Gates (spec 2026-08-27): RMS < 1.0 ns and TDEV < 1.0 ns for tau in 10..1000 s.
 Exit 0 = claim supported, 1 = not (or insufficient data).
 
 v2 (2026-08-28 amendment) fixes v1 defects:
