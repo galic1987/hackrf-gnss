@@ -5,6 +5,22 @@ wired, what it has verifiably achieved, and what it has not. Every number
 here was re-checked against live state at writing time; where a figure is
 provisional or retracted, it says so.
 
+> **Evening addendum (2026-08-29 22:10):** three updates. (1) The v3
+> bake-off: no clean hour (best 684 s raw / 312 s quality-filtered) but
+> the failure mechanism is identified — the constellation hovers at
+> exactly 5–6 measurements and the inherited n≥5 emission gate turns
+> every dip into a 3–60 s stall; relaxing it to n≥4 for the 1-state
+> solver is the queued fix. (2) A clock-cable interruption wedged the
+> nav pipeline (zero subframe validations for ~1 h, surviving two
+> relocks and an MCU reset); root-caused as FPGA-side state that only a
+> USB power cycle clears — the reset law now includes it. (3) **First
+> external TDC PPS capture**: 1PPS via P28 pin 16 (the Pro's TRIGGER.IN,
+> same header as the One — an "SMA-only" doc claim was corrected), one
+> valid-toggle per pulse, thermometer codes across the full 48-tap
+> window; a 3600-pulse jitter dataset is being collected. Topology is
+> now: single Bodnar output → matched splitter → both CLKINs; second
+> output → 1PPS → both TRIGGER.INs, matched cables.
+
 ## TL;DR
 
 A HackRF Pro, disciplined by a GPSDO in a star topology, autonomously
