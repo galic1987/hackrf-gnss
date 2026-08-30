@@ -36,15 +36,22 @@ continuous clean hour of clock-bias data exists yet.
 ## 1. Physical setup
 
 ```
-                Leo Bodnar LBE-1421 GPSDO (GPS-disciplined 10 MHz ref)
-                 OUT1 (10 MHz)                OUT2 (10 MHz)
-                   | matched-length             | matched-length
-                   | 50 ohm SMA                 | 50 ohm SMA
-                   v                            v
-        HackRF One P1 (CLKIN)          HackRF Pro #2 P1 (CLKIN)
-        …922c63dc21748847              …645061de252d6613
-        whip antenna (RF-dark)         AA.250 active GNSS patch
-                                       P2 SMA free (CLKOUT off in sw)
+                Leo Bodnar LBE-1421 GPSDO (GPS-disciplined reference)
+             OUT2 (10 MHz)                        OUT1 (1PPS)
+                   |                                   |
+            [ SMA Power Splitter ]              [ SMA Power Splitter ]
+            /                    \              /                    \
+           / matched cables       \            / matched cables       \
+          v                        v          v                        v
+ HackRF One P1 (CLKIN)   HackRF Pro P1      HackRF One P28 pin 16   HackRF Pro P28 pin 16
+ …922c63dc21748847       …645061de252d6613      (TRIGGER.IN)            (TRIGGER.IN)
+ 
+                       [ Shared RF via Power Splitter ]
+                       AA.250 active GNSS patch
+                   /                              \
+          (DC-block leg)                    (DC-pass leg)
+       HackRF One RF IN                     HackRF Pro RF IN
+       *Safe gains (0/0/0)*
 
   HackRF Pro #1 (…977c…) — DEAD, out of the station. Never target it.
 ```

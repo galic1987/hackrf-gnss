@@ -34,14 +34,13 @@ HackRFs. Read this before touching anything that talks to the radios.
   2000000 -n 2000 -r /tmp/p.iq`), verify `hackrf_clock -d <serial> -i`,
   and re-check the chain.
 
-## Clock topology (since 2026-08-27; GPSDO-referenced STAR)
+## Clock & PPS topology (since 2026-08-29; GPSDO-referenced SPLIT STAR)
 
-**Star, not a cascade** (2026-08-28 audit correction — an earlier revision of
-this file invented a "Pro#2 P2 CLKOUT → One" link that does not exist):
-Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → Pro#2 `…6450…` P1 CLKIN, and
-Bodnar OUT1 (**reconfigured to 10 MHz**, was 1PPS) → One `…922c…` P1 CLKIN,
-equal-length cables. Both radios hang directly off the GPSDO; Pro#2's P2
-CLKOUT SMA is FREE, and the One sees no HackRF upstream. Hardware proof:
+**Split Star**:
+- **10 MHz**: Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) → SMA Power Splitter → Pro#2 `…6450…` P1 CLKIN & HackRF One `…922c…` CLKIN (matched cables).
+- **1PPS**: Bodnar OUT1 (1PPS, GPS-locked) → SMA Power Splitter → Pro#2 P28 pin 16 (TRIGGER.IN) & HackRF One P28 pin 16 (TRIGGER.IN) (matched cables).
+
+Both radios hang directly off the GPSDO for both syntonization (10 MHz) and synchronization (1PPS). Hardware proof:
 `hackrf_clock -d …922c… -i` reads "clock signal detected" at the One's
 CLKIN (checked 2026-08-28 with the One free) — NOT the ATSC row: the
 phase_history ppm "eras" (−3 / +0.53 / −1.7 ppm) are noise-lock artifacts

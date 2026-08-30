@@ -188,7 +188,7 @@ def open_stream():
     except FileExistsError:
         pass
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", ONE, "-f", str(int(F_TUNE)),
-           "-s", str(int(FS)), "-l", "40", "-g", "44", "-a", "0", "-r", FIFO]
+           "-s", str(int(FS)), "-l", "0", "-g", "0", "-a", "0", "-r", FIFO]
     log("launching: " + " ".join(cmd))
     proc = subprocess.Popen(cmd, env=ENV,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
