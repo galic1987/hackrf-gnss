@@ -242,3 +242,9 @@ Both repos push to PRIVATE remotes: `galic1987/hackrf-gnss` (this crate),
 fork is PUBLIC (forks of public repos can't be private) — never push
 there. Large captures are gitignored (`*.iq *.f32 *.rawiq`); /tmp is the
 boot SSD — no unbounded captures there.
+
+## ⚠️ Firmware Provenance Warning
+The `mac-archive/hackrf/firmware` tree **provably cannot produce the deployed behavior** on this station:
+- The archived `clock_gen.c` predicts AFE = fs (e.g., 16 MHz at 16 Msps), but the station demonstrably observes AFE = 2×fs (32 MHz).
+- The archived images tie the trigger latch off, yet the station hardware cleanly executes the external TDC latch.
+Conclusion: The paper trail does not match the bench. Agents must rely strictly on empirically derived data from the hardware (like the measured `32000000.000834` ticks/s) rather than unverified constants in the C/Verilog source.

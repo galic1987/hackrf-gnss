@@ -56,7 +56,7 @@ while true; do
     fi
     
     # Throttle daemon for acquisition workers
-    for p in $(pgrep -f "(_acq|acq_)"); do 
+    for p in $(pgrep -f "(_acq|acq_)" || true); do 
         taskpolicy -b -p $p 2>/dev/null || true
     done
     

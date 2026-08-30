@@ -193,7 +193,19 @@ def publish(sats, now, disc=None):
         })
     waas = [s for s in sats_out if s["sys"] == "sbas" and s["lock_s"] > 0]
     if waas:
-        mean_d = sum(s["doppler_hz"] for s in waas) / len(waas)
+        import sys
+        if "/Volumes/Radiator 8TB/gnss/hackrf_gnss/scripts" not in sys.path:
+            sys.path.append("/Volumes/Radiator 8TB/gnss/hackrf_gnss/scripts")
+        import geocorrector_helper
+        site_ecef = geocorrector_helper.get_site_ecef()
+        
+        sum_d = 0.0
+        for s in waas:
+            # subtract satellite LOS motion and clock drift from the raw Doppler
+            geo_d = geocorrector_helper.calc_geo_doppler_hz(s.get("sbas_geonav"), site_ecef, L1_HZ)
+            sum_d += (s["doppler_hz"] - geo_d)
+            
+        mean_d = sum_d / len(waas)
         ppm = mean_d / L1_HZ * 1e6
         # doppler_hz is measured AFTER the hardware clock-correction register
         # (resid = raw - corr, per the discipline march). Every other drift
