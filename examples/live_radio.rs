@@ -599,13 +599,11 @@ fn main() {
     eprintln!("live_radio: stream ended — exiting");
 }
 
-fn emit(mut reports: Vec<hackrf_gnss::live::SatReport>, out: &mut BufWriter<io::StdoutLock>) {
+fn emit(reports: Vec<hackrf_gnss::live::SatReport>, out: &mut BufWriter<io::StdoutLock>) {
     if reports.is_empty() {
         return;
     }
-    let now = now_f64();
-    for r in reports.iter_mut() {
-        r.epoch = now;
+    for r in &reports {
         if let Ok(line) = serde_json::to_string(r) {
             let _ = writeln!(out, "{}", line);
         }

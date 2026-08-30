@@ -122,12 +122,7 @@ fn main() {
         if reports.is_empty() {
             return;
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        for r in reports.iter_mut() {
-            r.epoch = now;
+        for r in &reports {
             if let Ok(line) = serde_json::to_string(r) {
                 let _ = writeln!(out, "{}", line);
             }

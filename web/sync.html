@@ -3329,22 +3329,22 @@ sweepFocus();
     return '<svg viewBox="0 0 ' + (x1 + 10) + " " + H + '" width="820" role="img">' + out.join("") + "</svg>";
   }
 
-  // Clock star: Bodnar feeds both radios directly.
+  // Clock star: Bodnar feeds both radios via splitters (10 MHz + 1PPS).
   function starSvg() {
     var out = [];
-    out.push(svgEl("rect", { x: 250, y: 8, width: 300, height: 56, rx: 8, fill: "#10161c", stroke: "#6ec1e4", "stroke-width": 2 }));
+    out.push(svgEl("rect", { x: 230, y: 8, width: 340, height: 56, rx: 8, fill: "#10161c", stroke: "#6ec1e4", "stroke-width": 2 }));
     out.push(svgEl("text", { x: 400, y: 30, "text-anchor": "middle", fill: "#dbe5ea", "font-size": 12, style: SVG_FONT + "font-weight:700" }, "Leo Bodnar LBE-1421 GPSDO"));
-    out.push(svgEl("text", { x: 400, y: 47, "text-anchor": "middle", fill: "#7f96a3", "font-size": 10, style: SVG_FONT }, "GPS-disciplined \u00b7 two low-jitter outputs \u00b7 both at 10 MHz"));
+    out.push(svgEl("text", { x: 400, y: 47, "text-anchor": "middle", fill: "#7f96a3", "font-size": 10, style: SVG_FONT }, "OUT2 (10 MHz \u2192 Splitter) \u00b7 OUT1 (1PPS \u2192 Splitter)"));
     function branch(x2, label, note) {
       out.push(svgEl("line", { x1: 400, y1: 64, x2: x2, y2: 104, stroke: "#6ec1e4", "stroke-width": 2 }));
-      out.push(svgEl("rect", { x: x2 - 120, y: 104, width: 240, height: 52, rx: 8, fill: "#10161c", stroke: "#3a4a58" }));
+      out.push(svgEl("rect", { x: x2 - 130, y: 104, width: 260, height: 52, rx: 8, fill: "#10161c", stroke: "#3a4a58" }));
       out.push(svgEl("text", { x: x2, y: 124, "text-anchor": "middle", fill: "#dbe5ea", "font-size": 11, style: SVG_FONT + "font-weight:600" }, label));
       out.push(svgEl("text", { x: x2, y: 141, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9, style: SVG_FONT }, note));
     }
-    branch(170, "HackRF Pro \u20266450 (P1 CLKIN)", "production GNSS tracker \u00b7 P2 free");
-    branch(630, "HackRF One \u2026922c (P1 CLKIN)", "ATSC phase receiver \u00b7 RF path degraded");
+    branch(170, "HackRF Pro \u20266450", "CLKIN (10 MHz) + P28.16 (1PPS) \u00b7 AA.250");
+    branch(630, "HackRF One \u2026922c", "CLKIN (10 MHz) + P28.16 (1PPS) \u00b7 Safe 0/0/0");
     out.push(svgEl("text", { x: 400, y: 182, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9.5, style: SVG_FONT },
-      "equal-length SMA cables \u00b7 star, not cascade \u00b7 1PPS currently routed nowhere (2 outputs, 3 wanted: 10\u2009MHz \u00d7 2 + PPS)"));
+      "matched-length SMA split star \u00b7 syntonized (10 MHz) & synchronized (1PPS) \u00b7 Pro P2 SMA free"));
     return '<svg viewBox="0 0 800 196" width="640" role="img">' + out.join("") + "</svg>";
   }
 
@@ -3369,16 +3369,16 @@ sweepFocus();
       t: "Clock & discipline",
       s: "The reference every measurement is held to \u2014 and the loop that is deliberately not closed.",
       b: [
-        "Both radios are disciplined by the same GPSDO in a <b>star</b>: Bodnar OUT2 \u2192 Pro P1, OUT1 \u2192 One P1, equal-length cables. Each radio switches to its external 10 MHz CLKIN when streaming starts (verified with <code>hackrf_clock -i</code> after every restart).",
+        "Both radios are disciplined by the same GPSDO in a <b>Split Star</b>: Bodnar OUT2 (10 MHz) \u2192 Power Splitter \u2192 Pro P1 & One CLKIN. Each radio switches to its external 10 MHz CLKIN when streaming starts (verified with <code>hackrf_clock -i</code> after stream kick).",
         "The WAAS-GEO Doppler discipline loop runs <b>shadow-only</b>: residuals and corrections are computed, logged and published, but the hardware correction register is never written. A previous actuation era collapsed the tracking loops on 122/122 writes (the firmware write path resets the Si5351 PLL); actuation stays gated behind HACKRF_GNSS_ACTUATE=1 until a capture-boundary-safe write path exists.",
-        "1PPS is currently routed nowhere: the Bodnar has two outputs and the station wants three signals (10 MHz \u00d7 2 + PPS). The port budget and the options (splitter, P22 alternate CLKIN, or pausing the One) are documented in AGENTS.md."
+        "1PPS Synchronization is active via Bodnar OUT1 (1PPS) \u2192 Power Splitter \u2192 Pro P28 pin 16 & One P28 pin 16 (TRIGGER.IN). Both radios are syntonized and synchronized across matched-length cables."
       ],
       svg: starSvg(),
       specs: [
-        ["LBE-1421 outputs", "2 \u00d7 low-jitter, both set 10 MHz", "PPS available on OUT1 if re-tasked"],
-        ["stability class", "~1e-11 ADEV (vendor class)", "not locally measured \u2014 flagged 2026-08-28"],
+        ["LBE-1421 outputs", "OUT2 (10 MHz) + OUT1 (1PPS)", "both split to Pro + One via matched cables"],
+        ["stability class", "~1e-11 ADEV (vendor class)", "GPS-disciplined reference"],
         ["correction register", "radio.h idx 23, fp_1_63 \u00b11% window \u2014 MCU/Si5351C, not FPGA", "shadow: computed, never written"],
-        ["CLKIN switch", "at RX stream start", "verify: hackrf_clock -i"]
+        ["CLKIN switch", "at RX stream start", "verify: hackrf_clock -i (after stream start)"]
       ],
       links: [
         ["LBE-1421 product page", "https://www.leobodnar.com/shop/index.php?main_page=product_info&products_id=399"],
@@ -3868,17 +3868,17 @@ sweepFocus();
       det: { h3: "P1 (CLKIN) — where the Bodnar enters the board",
         paras: ["P1 is one of the Pro's two configurable SMA ports; by default it is CLKIN. A detected 10 MHz, 3.3 V square wave overrides the TCXO — but the switch happens ONLY when an RX/TX stream starts, which is why this station's law says: attach the clock first, then start the tracker.",
           "The green status is live and double-sourced: the gpsdo_probe reads the Bodnar's own NMEA (fix quality, satellites, HDOP), and the station separately verifies the effect of the clock on the air (soft drift-lock between the two radios' series). A reference can be electrically present and still unhealthy — both views matter.",
-          "Wired today: Bodnar OUT2 → this port, matched-length cable against the One's feed. The cable ends are awaiting user labels before any PPS reconfiguration — the labeling hold is written into AGENTS.md."],
+          "Wired today: Bodnar OUT2 (10 MHz) \u2192 SMA Power Splitter \u2192 this port & One CLKIN over matched-length cables."],
         specs: [["Expects", "10 MHz, 3.3 V square, high impedance — never exceed 3.3 V / go below 0 V"], ["Detection", "hackrf_clock -i → 'clock signal detected' (valid only after a stream has started)"], ["Alternate", "P22 pin 2 is a SECOND, independent CLKIN on Pro (hackrf_clock -c p22)"], ["Verify on air", "soft drift-lock vs the One's series — fail-closed when the One is dark"]],
         links: [["External clock interface", DOC_CLK]] } },
-    { id: "p2", x: 700, y: 92, w: 132, h: 66, t: ["P2 = CLKOUT/TRIG"], s: "configurable",
+    { id: "p2", x: 700, y: 92, w: 132, h: 66, t: ["P2 = CLKOUT (idle)"], s: "configurable",
       lv: function () { return "free · uncabled"; },
-      tip: ["P2 — the spare port with three careers", "Default CLKOUT (10 MHz out). Reassignable via hackrf_clock to carry trigger signals instead — this is the port reserved for the TDC/PPS experiments once the Bodnar port budget is solved."],
-      det: { h3: "P2 — CLKOUT today, trigger tomorrow",
-        paras: ["P2 mirrors P1: by default it outputs a 10 MHz square from the Si5351C (PLL-B — note: NOT the corrected PLL-A clock, a subtlety that killed the old cascade design). hackrf_clock -2 reassigns it to other internal signals, including the trigger input the TDC experiments need.",
-          "Current state: physically free. The tracker historically enabled CLKOUT at startup (a cascade leftover); the deploy bundle disables that, leaving P2 genuinely idle.",
-          "The port-budget problem, stated plainly: the station wants THREE signals from the Bodnar (10 MHz to the Pro, 10 MHz to the One, 1PPS to this port) but the GPSDO has TWO outputs. The documented escape is a 10 MHz distribution amplifier on OUT2, freeing OUT1 for PPS. Until the user photographs and labels the cable ends, PPS stays unrouted."],
-        specs: [["Default", "CLKOUT — 10 MHz, 3.3 V square, high-impedance load"], ["Reassign", "hackrf_clock -2 <signal> — including trigger_in for the TDC work"], ["PLL note", "CLKOUT is PLL-B; clock correction steers PLL-A — correction never reaches P2"], ["Station plan", "10 MHz dist-amp on OUT2 → both radios; OUT1 → 1PPS → this port (blocked on labeling)"]],
+      tip: ["P2 — spare configurable SMA port", "Default CLKOUT (10 MHz out). In this station's Split Star topology, P2 is deliberately unused/idle to prevent near-field clock leakage. External 1PPS trigger is routed via internal header P28 pin 16 (TRIGGER.IN)."],
+      det: { h3: "P2 — Spare SMA (Idle)",
+        paras: ["P2 mirrors P1: by default it outputs a 10 MHz square from the Si5351C (PLL-B). hackrf_clock -2 reassigns it to other internal signals if needed.",
+          "Current state: physically free and disabled (set_clkout_enable(false)). Both radios receive 10 MHz from Bodnar OUT2 via a power splitter, leaving P2 idle.",
+          "External 1PPS synchronization is fed directly to internal header P28 pin 16 (TRIGGER.IN), keeping the P2 SMA free."],
+        specs: [["Default", "CLKOUT — 10 MHz, 3.3 V square, high-impedance load"], ["Current State", "Disabled (set_clkout_enable(false)) — P2 SMA free"], ["PPS Trigger", "Routed via P28 pin 16 (TRIGGER.IN) from Bodnar OUT1 splitter"]],
         links: [["External clock interface", DOC_CLK], ["Hardware triggering", DOC_TRIG]] } },
     { id: "flash", x: 864, y: 92, w: 152, h: 66, t: ["W25Q32 flash"], s: "4 FPGA slots + MCU fw",
       tip: ["SPI flash — the board's memory", "32 Mbit on Pro (8 Mbit on One). Holds the MCU firmware and FOUR FPGA image slots — how this station carries a production image plus experiments on one board."],
@@ -4055,12 +4055,12 @@ sweepFocus();
         links: [["Datasheet", DS_SI5351]] } },
     { id: "clkin", x: 30, y: 92, w: 112, h: 66, t: ["CLKIN SMA"], s: "10 MHz in",
       lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO fix · " + g.n_sat + " sats (NMEA, not oscillator telemetry)" : "ref DEGRADED") : null; },
-      tip: ["CLKIN — One's reference ear", "High-impedance input expecting a 3.3 V, 10 MHz square wave. Shared with header P22 pin 2 — feed ONE of them, never both. Wired today: Bodnar OUT1."],
+      tip: ["CLKIN — One's reference ear", "High-impedance input expecting a 3.3 V, 10 MHz square wave. Shared with header P22 pin 2 — feed ONE of them, never both. Wired today: Bodnar OUT2 via 10 MHz power splitter."],
       det: { h3: "CLKIN (One) — second star branch lands here",
-        paras: ["The One's CLKIN is electrically the same idea as the Pro's P1: a detected 10 MHz square wave replaces the local crystal at stream start. Wired today from Bodnar OUT1 with a cable matched in length to the Pro's OUT2 feed — relative frequency drift between the radios is thereby ~0 by construction.",
+        paras: ["The One's CLKIN is electrically the same idea as the Pro's P1: a detected 10 MHz square wave replaces the local crystal at stream start. Wired today from Bodnar OUT2 via an SMA power splitter with a cable matched in length to the Pro's feed — relative frequency drift between the radios is thereby ~0 by construction.",
           "One-sharing caveat from the official docs: this SMA and header P22 pin 2 are the SAME signal on a One (unlike the Pro, where they're independent). Feed exactly one of them.",
           "Green status: the live GPSDO health — if this ever reads DEGRADED while the tracker looks fine, suspect this cable first."],
-        specs: [["Expects", "10 MHz, 3.3 V square, high-Z — 0 V to 3.3 V only"], ["Sharing", "same signal as P22 pin 2 — never feed both"], ["Source today", "Bodnar OUT1, matched-length vs the Pro feed"]],
+        specs: [["Expects", "10 MHz, 3.3 V square, high-Z — 0 V to 3.3 V only"], ["Sharing", "same signal as P22 pin 2 — never feed both"], ["Source today", "Bodnar OUT2 via 10 MHz SMA splitter (matched length)"]],
         links: [["External clock interface", DOC_CLK]] } },
     { id: "clkout", x: 700, y: 92, w: 132, h: 66, t: ["CLKOUT SMA"], s: "10 MHz out",
       lv: function () { return "unused (star)"; },
@@ -4070,13 +4070,13 @@ sweepFocus();
           "It remains the zero-cost way to add a third receiver to the reference family if a distribution amplifier isn't available — one cable, CLKOUT→CLKIN, done. Trade-offs are documented in the 'connect a third board' tab."],
         specs: [["Output", "10 MHz, 3.3 V square, high-Z load"], ["Enable", "hackrf_clock -o 1 (off by default)"], ["Station", "idle — star topology"]],
         links: [["External clock interface", DOC_CLK]] } },
-    { id: "p28", x: 864, y: 92, w: 152, h: 66, t: ["P28 header"], s: "trig out 15 · in 16 · GND 2",
-      tip: ["P28 — the One's trigger pins (inside the case)", "Pin 15 = trigger output, pin 16 = trigger input, pin 2 = ground. Requires opening the case. The route to sample-aligned dual-radio captures."],
-      det: { h3: "P28 — trigger out (15), trigger in (16), ground (2)",
-        paras: ["HackRF One keeps its trigger signals on an internal 0.1\" header: pin 15 is the trigger OUTPUT (fires when this board starts an operation), pin 16 is the trigger INPUT (arm with hackrf_transfer -H or hackrf_sync_start), pin 2 is ground. The trigger is a 3.3 V pulse, rising edge, synchronizing starts to better than one sample period.",
+    { id: "p28", x: 864, y: 92, w: 152, h: 66, t: ["P28 header"], s: "trig in 16 · GND 2",
+      tip: ["P28 — the One's trigger pins (inside the case)", "Pin 16 = trigger input (1PPS), pin 15 = trigger output, pin 2 = ground. Wired to Bodnar OUT1 1PPS splitter for synchronous capture starts."],
+      det: { h3: "P28 — trigger in (16), trigger out (15), ground (2)",
+        paras: ["HackRF One keeps its trigger signals on an internal 0.1\" header: pin 16 is the trigger INPUT (arm with hackrf_transfer -H or hackrf_sync_start), pin 15 is the trigger OUTPUT, pin 2 is ground. The trigger is a 3.3 V pulse, rising edge, synchronizing starts to better than one sample period.",
           "Physical access requires opening the case — clips may crack; the official docs link a how-to video.",
-          "Station plan for the dual-GPS coherence work: Pro P2 (reassigned to trigger-out) → this header's pin 16, with common ground carried by the clock cables. Arm the One first, then start the Pro."],
-        specs: [["Pin 15", "trigger output"], ["Pin 16", "trigger input (arm: hackrf_transfer -H / hackrf_sync_start, API ≥ 1.14)"], ["Pin 2", "ground — jumper to the other board's pin 2 if clock cables don't already common it"], ["Access", "internal — case must be opened"]],
+          "Station wiring: Bodnar OUT1 (1PPS) \u2192 SMA Power Splitter \u2192 Pro P28 pin 16 & One P28 pin 16, with common ground carried by the clock cables. Arm both boards within the same 1-second PPS epoch."],
+        specs: [["Pin 16", "trigger input (1PPS from Bodnar OUT1 splitter)"], ["Pin 15", "trigger output"], ["Pin 2", "ground"], ["Access", "internal — case must be opened"]],
         links: [["Hardware triggering", DOC_TRIG]] } },
     { id: "flash1", x: 1044, y: 92, w: 106, h: 66, t: ["W25Q80BV"], s: "8 Mbit flash",
       tip: ["SPI flash (One)", "8 Mbit — MCU firmware and the CPLD needs nothing (it's non-volatile). A quarter of the Pro's capacity, which mattered when custom MCU images grew."],
@@ -4164,25 +4164,23 @@ sweepFocus();
     function row(k, v) { return "<div style='margin:0.3em 0'><b style='color:#8fc9e8'>" + k + "</b> — " + v + "</div>"; }
     var h = "";
     h += "<div style='margin-bottom:0.7em;font-size:0.95em'>Live reference: " + refLine + " (gpsdo_probe, 5 s cadence, TTL 30 s — a dead probe reads as degraded, never as healthy)</div>";
-    h += card("① CLOCK — 10 MHz frequency reference (the one cable every added board needs)",
-      row("What it is", "A 10 MHz, 3.3 V square wave shared by all boards so every sample clock and LO derives from the SAME oscillator. Frequency coherence — not phase alignment, not sample zero — comes from this wire alone.")
-      + row("HackRF Pro", "P1 SMA = CLKIN (default) · P22 pin 2 = second independent CLKIN (<code>hackrf_clock -c p22</code>) · P2 SMA = CLKOUT (default; reassignable)")
-      + row("HackRF One", "CLKIN SMA (SHARED with P22 pin 2 — feed exactly one) · CLKOUT SMA (<code>hackrf_clock -o 1</code>)")
-      + row("Rules that bite", "Detection happens ONLY at RX/TX stream start — clock first, start second. Verify with <code>hackrf_clock -i</code> after starting a stream. Never exceed 3.3 V or go below 0 V.")
-      + row("Ways to feed a third board", "best: GPSDO/distribution-amp branch of its own (star) · cheap: any board's CLKOUT → new board's CLKIN (inherits that board's boot/reset fate — the cascade this station abandoned)")
-      + row("This station today", "Bodnar OUT2 → Pro P1 · Bodnar OUT1 → One CLKIN · matched-length cables · Bodnar 1PPS split to both radios' P28 pin 16 (TRIGGER.IN)"));
-    h += card("② TRIGGER — sample-zero alignment (the second cable, when starts must coincide)",
-      row("What it is", "A 3.3 V rising-edge pulse that releases sample capture in the ADC clock domain: all armed boards start within ONE SAMPLE PERIOD of each other (62.5 ns @ 16 Msps, 167 ns @ 6 Msps). Sub-sample/phase alignment is NOT included — measure the residual lag with a common RF signal afterwards.")
-      + row("HackRF Pro", "trigger signals available on the configurable P1/P2 SMA ports (<code>hackrf_clock -1/-2</code> to assign) — no case opening")
-      + row("HackRF One", "P28 header INSIDE the case: <b>pin 15 = trigger out · pin 16 = trigger in · pin 2 = GND</b> (male-to-male 0.1\" jumper wires)")
-      + row("Procedure", "arm the triggered board(s) FIRST (<code>hackrf_transfer -H …</code> or <code>hackrf_sync_start(dev, RX)</code>, API ≥ 1.14), then start the master — no special flag needed on the master. Disarm a stale trigger with <code>hackrf_sync_start(dev, OFF)</code> or <code>hackrf_set_hw_sync_mode(0)</code>.")
-      + row("This station's plan", "Pro P2 (reassigned trigger-out) → One P28 pin 16, ground via the clock cables; arm One, fire Pro. Blocked behind the GPSDO port budget (①) and the cable-labeling hold."));
-    h += card("③ GROUND & RF — the unglamorous third that decides whether ① and ② mean anything",
-      row("Common ground", "the clock cable's shield usually commons the boards; if not, jumper P28 pin 2 ↔ P28 pin 2 (One) before any trigger work — a floating trigger is a random-number generator")
-      + row("Same-signal RF (coherence tests)", "ONE antenna → power splitter → all boards. Exactly ONE DC-pass branch may power the active antenna (normally the Pro's); DC-block every other leg or the bias supplies fight")
-      + row("Gain discipline", "start the new board at amp/LNA/VGA = 0 on a split, externally-amplified path; walk gain up while watching for clipping — the current One config (LNA 40/VGA 44 into a starved path) is the counter-example under review")
-      + row("USB budget", "2 B per complex sample: Pro 32 + One 12 MB/s already exceeds one USB 2.0 bus's safe envelope — separate root controllers, lower rates, or sequential captures; record expected-vs-received sample counts every run")
-      + row("Geometry honesty", "record electrical phase-center coordinates (not enclosure-edge gaps) and cable lengths before any phase math — the '3 cm baseline' review taught that lesson. Scale check: 3 cm of geometry is up to ~100 ps of delay and ~57° of L1 carrier phase — small, but NOT negligible at this station's ambitions; and the AA.250 is Ø86.4 mm, so '3 cm' was never a center-to-center spacing anyway"));
+    h += card("① CLOCK — 10 MHz frequency reference (Split Star)",
+      row("What it is", "A 10 MHz, 3.3 V square wave from Bodnar OUT2 split to both boards via an SMA power splitter so every sample clock and LO derives from the SAME oscillator.")
+      + row("HackRF Pro", "P1 SMA = CLKIN (10 MHz from splitter) · P2 SMA = idle")
+      + row("HackRF One", "CLKIN SMA = 10 MHz from splitter · CLKOUT SMA = idle")
+      + row("Rules that bite", "Detection happens ONLY at RX/TX stream start. Verify with <code>hackrf_clock -i</code> after starting a stream.")
+      + row("This station today", "Bodnar OUT2 \u2192 10 MHz Splitter \u2192 Pro P1 & One CLKIN (matched-length cables)"));
+    h += card("② TRIGGER — 1PPS sample synchronization",
+      row("What it is", "A 1PPS pulse from Bodnar OUT1 split to internal header P28 pin 16 (TRIGGER.IN) on both radios.")
+      + row("HackRF Pro", "P28 pin 16 = TRIGGER.IN (TDC external latch)")
+      + row("HackRF One", "P28 pin 16 = TRIGGER.IN (1PPS hardware arming)")
+      + row("Procedure", "Arm both boards within the same 1PPS second to align capture start without 1-second sample skew.")
+      + row("This station today", "Bodnar OUT1 \u2192 1PPS Splitter \u2192 Pro P28.16 & One P28.16 (matched-length cables)"));
+    h += card("③ GROUND & RF — Shared AA.250 Active Antenna",
+      row("Same-signal RF", "Taoglas AA.250 active antenna \u2192 Power Splitter \u2192 Pro RF IN (DC-pass, bias-T on) & One RF IN (DC-blocked, bias-T off).")
+      + row("Gain discipline", "HackRF One initialized at amp/LNA/VGA = 0/0/0 (safe mode) on the split active path to avoid front-end burnout or clipping.")
+      + row("USB budget", "Pro (32 MB/s) + One (32 MB/s) = 64 MB/s aggregate throughput — must reside on SEPARATE USB root controllers.")
+      + row("Geometry", "Common-RF calibration eliminates baseline spatial delay (~200 ps on 6 cm) before resuming carrier-phase baseline experiments."));
     h += "<div class='hw-src'>Sources: official docs — <a href='" + DOC_CLK + "'>external clock interface</a> · <a href='" + DOC_TRIG + "'>hardware triggering</a> · <a href='" + DOC_COMP + "'>hardware components</a> · station laws in AGENTS.md (star topology, labeling hold, USB roots).</div>";
     return h;
   }

@@ -13,8 +13,8 @@ HackRFs. Read this before touching anything that talks to the radios.
   contention that overflows the tracker's stream queue (the 2026-08-24
   churn: 115 ms FIFO overflows → full channel realigns).
 - **HackRF One** `…922c63dc21748847` — owned by `scripts/phase_producer.py`
-  (ATSC ch35 carrier-phase track). CLKIN fed DIRECTLY by Bodnar OUT1
-  (10 MHz) in the star topology — not by any HackRF; no CLKOUT assertion
+  (ATSC ch35 carrier-phase track). CLKIN fed by Bodnar OUT2 (10 MHz splitter)
+  in the Split Star topology — not by any HackRF; no CLKOUT assertion
   on the Pro is needed for the One's reference. Classification
   (2026-08-28 review): **clock-detected, RF-dark, GPS-unproven** — CLKIN
   reads "clock signal detected"; the ATSC RF path arrives starved
@@ -72,25 +72,11 @@ proof. NOTE: the Pro's local clock-correction register acts on PLL-A
 correction never propagates off-radio, and in GPSDO-referenced operation
 the shadow loop's intent is ~0 by construction.
 
-**Port budget (2 outputs, 3 wanted signals).** The star consumes BOTH Bodnar
-outputs for 10 MHz, so 1PPS is currently emitted nowhere. Before any PPS/
-TDC window, pick ONE: (a) 10 MHz distribution amp/splitter on OUT2 feeding
-both radios, OUT1 restored to 1PPS; (b) the Pro's P22 alternate CLKIN path
-to free a front-panel port; (c) pause the One for the window — OUT1 back
-to 1PPS → Pro#2 P2 (the One then free-runs on its TCXO and its downstream
-attestation for that window is void). Pro#2 P2 is genuinely free today:
-`hackrf_clock -2 trigger_in` on the Pro severs no clock link — but exactly
-one trigger master per experiment, and never mid-collection.
-
-**Physical labeling hold (2026-08-28 review, USER-PHYSICAL):** every repo
-document agrees OUT2→Pro, OUT1→One, but external-clock detection cannot
-identify WHICH physical Bodnar output feeds a radio, and one external
-report claimed a reversed mapping exists somewhere on paper. Until both
-cable ends are photographed and labeled (Bodnar output, mode, radio serial,
-port, cable length, timestamp), do NOT reconfigure OUT1 or OUT2 to PPS —
-the port-budget options above stay on hold. P2 CLKOUT is configured OFF in
-the deployed tracker build (`live_radio` calls `set_clkout_enable(false)`,
-live since the 2026-08-29 16:44 restart).
+**Clock & 1PPS Distribution (Deployed 2026-08-29):**
+- **10 MHz Syntonization:** Bodnar OUT2 (10 MHz) \u2192 SMA Power Splitter \u2192 Pro P1 (CLKIN) & One P1 (CLKIN) over matched cables.
+- **1PPS Synchronization:** Bodnar OUT1 (1PPS) \u2192 SMA Power Splitter \u2192 Pro P28.16 (TRIGGER.IN) & One P28.16 (TRIGGER.IN) over matched cables.
+- **Pro P2 SMA:** Physically free and disabled (`set_clkout_enable(false)` in `live_radio`).
+- **Trigger Inputs:** Both Pro and One trigger via internal header **P28 pin 16 (TRIGGER.IN)**.
 
 **Trigger input is P28 pin 16 (2026-08-29 correction, user-verified against
 the official expansion-interface pinout):** on BOTH the Pro and the One,
