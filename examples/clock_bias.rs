@@ -313,6 +313,7 @@ fn main() {
             let prn = s["prn"].as_u64().unwrap_or(0) as u8;
             let carr = s["carrier_cycles"].as_f64().unwrap_or(0.0);
             let slip = s["slip"].as_bool().unwrap_or(false);
+            let s_epoch = s["epoch"].as_f64().unwrap();
             // the same staircase/carrier machinery serves both
             // constellations — only the chain maps and the carrier
             // wavelength differ (λ_B1I for BDS, λ_L1 for GPS)
@@ -336,14 +337,14 @@ fn main() {
                     smoothers.remove(&prn);
                     if let Some(p) = prev.get_mut(&prn) {
                         p.lock_s = lock_s;
-                        p.file_epoch = epoch;
+                        p.file_epoch = s_epoch;
                         p.contrib_valid = false;
                     }
                     slips += 1;
                     continue;
                 }
                 let p = prev.get_mut(&prn).unwrap();
-                if p.contrib_valid && epoch - p.last_code_epoch < PRED_WINDOW_S {
+                if p.contrib_valid && s_epoch - p.last_code_epoch < PRED_WINDOW_S {
                     // right-signed carrier integral since the last code
                     // update: Δrho = −λ·Δcarr (sign verified live
                     // 2026-08-28 on the GPS channels; inherited for BDS —
@@ -352,7 +353,7 @@ fn main() {
                     // t_tx froze WITH rho (verified live), so project it by
                     // the same interval — the predicted range and the
                     // ephemeris evaluation must refer to the same epoch
-                    let t_tx_used = t_tx + (epoch - p.last_code_epoch);
+                    let t_tx_used = t_tx + (s_epoch - p.last_code_epoch);
                     let m = if bds {
                         build_meas_bds(prn, rho_used, t_tx_used, &bds_ephs, site_m)
                     } else {
@@ -363,7 +364,7 @@ fn main() {
                     n_pred += 1;
                 }
                 p.lock_s = lock_s;
-                p.file_epoch = epoch;
+                p.file_epoch = s_epoch;
                 continue;
             }
 
@@ -390,8 +391,8 @@ fn main() {
                 rho_m: rho,
                 base_smoothed: rho_s,
                 base_carr: carr,
-                last_code_epoch: epoch,
-                file_epoch: epoch,
+                last_code_epoch: s_epoch,
+                file_epoch: s_epoch,
                 contrib_valid: true,
             });
             let m = if bds {
