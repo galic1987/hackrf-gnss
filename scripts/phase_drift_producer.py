@@ -332,7 +332,95 @@ class GeoCorrector:
         self._last_applied_t = None  # last seen geonav["applied_t"] value
         self._msg_refresh_unix = None  # t_unix when applied_t last advanced
         self.rejected_swaps = 0     # malformed/oversized swap rejections
-        self._rejected_id = None    # (iodn, t0_s) of the rejected vector
+        self._rejected_fingerprint = None
+
+    @staticmethod
+    def _fingerprint(geo):
+        """Identity of every correction-bearing field in a GEO vector.
+
+        `iodn` and `t0_s` alone are not enough: a corrected retry can retain
+        both while changing a malformed position/velocity/clock term. The
+        decode timestamp is deliberately excluded so repeated publication of
+        the same bad vector stays quiet without refreshing accepted data.
+        """
+        if not isinstance(geo, dict):
+            return ("not-a-dict", repr(geo))
+
+        def atom(value):
+            if isinstance(value, float) and not math.isfinite(value):
+                return ("nonfinite", repr(value))
+            return value
+
+        def vector(name):
+            value = geo.get(name)
+            return (tuple(atom(item) for item in value)
+                    if isinstance(value, (list, tuple)) else atom(value))
+
+        return (
+            atom(geo.get("iodn")), atom(geo.get("t0_s")), atom(geo.get("ura")),
+            vector("pos_m"), vector("vel_mps"), vector("acc_mps2"),
+            atom(geo.get("agf0_s")), atom(geo.get("agf1_sps")),
+        )
+
+    @staticmethod
+    def _normalize_geo(geo):
+        """Return (normalized vector, error) for a plausible MT9 vector."""
+        if not isinstance(geo, dict):
+            return None, "not-an-object"
+        try:
+            iodn = geo["iodn"]
+            ura = geo["ura"]
+            if type(iodn) is not int or type(ura) is not int:
+                raise ValueError("integer field is not an exact JSON integer")
+
+            def number(value):
+                if type(value) not in (int, float):
+                    raise ValueError("not a JSON number")
+                value = float(value)
+                if not math.isfinite(value):
+                    raise ValueError("nonfinite")
+                return value
+
+            t0_s = number(geo["t0_s"])
+            applied_t = number(geo["applied_t"])
+            if not all(isinstance(geo[name], (list, tuple))
+                       for name in ("pos_m", "vel_mps", "acc_mps2")):
+                raise ValueError("vector is not an array")
+            pos = [number(x) for x in geo["pos_m"]]
+            vel = [number(x) for x in geo["vel_mps"]]
+            acc = [number(x) for x in geo["acc_mps2"]]
+            agf0 = number(geo["agf0_s"])
+            agf1 = number(geo["agf1_sps"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None, "missing-or-nonnumeric-field"
+        if any(len(v) != 3 for v in (pos, vel, acc)):
+            return None, "vector-length"
+        radius = math.sqrt(sum(v * v for v in pos))
+        if not (0 <= iodn <= 255 and 0.0 <= t0_s < 86400.0
+                and 0 <= ura <= 15 and applied_t >= 0.0):
+            return None, "scalar-range"
+        # Generous physics bounds, intended to catch corruption rather than
+        # police valid SBAS quantization at its edge.
+        if not (20e6 <= radius <= 60e6):
+            return None, "position-range"
+        if max(abs(v) for v in vel) > 10_000.0:
+            return None, "velocity-range"
+        if max(abs(v) for v in acc) > 100.0:
+            return None, "acceleration-range"
+        if abs(agf0) > 1.0 or abs(agf1) > 1e-4:
+            return None, "clock-range"
+        return {
+            "iodn": iodn, "t0_s": t0_s, "ura": ura,
+            "applied_t": applied_t, "pos_m": tuple(pos),
+            "vel_mps": tuple(vel), "acc_mps2": tuple(acc),
+            "agf0_s": agf0, "agf1_sps": agf1,
+        }, None
+
+    @classmethod
+    def _validate_geo(cls, geo):
+        """Compatibility helper: None means the vector normalizes cleanly."""
+        _, error = cls._normalize_geo(geo)
+        return error
 
     def _term(self, geo, t_unix):
         """Correction term rho/lambda_L1 - f_L1*dt_geo (cycles) and the
@@ -348,7 +436,10 @@ class GeoCorrector:
         dx, dy, dz = px - self.site[0], py - self.site[1], pz - self.site[2]
         rho = math.sqrt(dx * dx + dy * dy + dz * dz)
         clk = geo["agf0_s"] + geo["agf1_sps"] * dt
-        return rho / LAM_L1_M - L1_HZ * clk, dt
+        term = rho / LAM_L1_M - L1_HZ * clk
+        if not all(math.isfinite(v) for v in (term, dt, rho, clk)):
+            raise ValueError("nonfinite geonav correction")
+        return term, dt
 
     def update(self, geonav, t_unix, slip=False):
         """Accept the tracker's latest sbas_geonav (called each cycle;
@@ -358,49 +449,74 @@ class GeoCorrector:
             self.offset_cycles = 0.0
         if geonav is None:
             return
-        # message freshness: applied_t advances only when the tracker
-        # (re)applies the vector on a decode event; watch it here so
-        # correct() can tell a live vector from a frozen one
-        at = geonav.get("applied_t")
-        if at is not None and at != self._last_applied_t:
-            self._last_applied_t = at
-            self._msg_refresh_unix = t_unix
-        if (not slip and self.geo is not None
-                and (geonav.get("iodn") != self.geo.get("iodn")
-                     or geonav.get("t0_s") != self.geo.get("t0_s"))):
+        # Message freshness is committed only after this candidate is
+        # accepted. A rejected vector must never keep the old accepted vector
+        # alive by advancing applied_t.
+        fingerprint = self._fingerprint(geonav)
+        normalized, invalid = self._normalize_geo(geonav)
+        try:
+            finite_t = (type(t_unix) in (int, float)
+                        and math.isfinite(float(t_unix)))
+        except (TypeError, ValueError, OverflowError):
+            finite_t = False
+        if not finite_t:
+            invalid = invalid or "nonfinite-update-time"
+        if invalid is not None:
+            if fingerprint == self._rejected_fingerprint:
+                return
+            self.rejected_swaps += 1
+            self._rejected_fingerprint = fingerprint
+            print(f"p0b: REJECTED malformed geonav ({invalid})", flush=True)
+            return
+        geonav = normalized
+        t_unix = float(t_unix)
+        fingerprint = self._fingerprint(geonav)
+        at = geonav["applied_t"]
+        if (self._last_applied_t is not None and at < self._last_applied_t):
+            if fingerprint != self._rejected_fingerprint:
+                self.rejected_swaps += 1
+                self._rejected_fingerprint = fingerprint
+                print("p0b: REJECTED regressed geonav applied_t", flush=True)
+            return
+        correction_changed = (self.geo is not None
+                              and fingerprint != self._fingerprint(self.geo))
+        if not slip and correction_changed:
             # ephemeris swap mid-chain: VALIDATE the new vector before it
             # may replace the old one, then stitch the corrected series
             # step-free at t_swap — offset += old_term(t) - new_term(t)
-            rej_id = (geonav.get("iodn"), geonav.get("t0_s"))
-            if rej_id == self._rejected_id:
+            if fingerprint == self._rejected_fingerprint:
                 return      # already rejected this exact vector; stay quiet
             try:
                 old_term, _ = self._term(self.geo, t_unix)
                 new_term, _ = self._term(geonav, t_unix)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, IndexError, OverflowError):
                 # malformed vector: reject it outright — keep the
                 # known-good vector rather than swapping in garbage
                 self.rejected_swaps += 1
-                self._rejected_id = rej_id
+                self._rejected_fingerprint = fingerprint
                 print(f"p0b: REJECTED malformed geonav swap "
                       f"(iodn {self.geo.get('iodn')} -> "
                       f"{geonav.get('iodn')})", flush=True)
                 return
             jump = old_term - new_term
-            if abs(jump) > GEO_STITCH_MAX_CYCLES:
+            if not math.isfinite(jump) or abs(jump) > GEO_STITCH_MAX_CYCLES:
                 print(f"p0b: REJECTED oversized geonav swap {jump:.1f} cycles "
                       f"> {GEO_STITCH_MAX_CYCLES:.0f} "
                       f"(iodn {self.geo.get('iodn')} -> "
                       f"{geonav.get('iodn')})", flush=True)
                 self.rejected_swaps += 1
-                self._rejected_id = (geonav.get("iodn"), geonav.get("t0_s"))
+                self._rejected_fingerprint = fingerprint
                 return
             self.offset_cycles += jump
-            self._rejected_id = None
+            self._rejected_fingerprint = None
             print(f"p0b: stitched geonav swap, {jump:+.2f} cycles "
                   f"(iodn {self.geo.get('iodn')} -> {geonav.get('iodn')})",
                   flush=True)
         self.geo = geonav
+        self._rejected_fingerprint = None
+        if at is not None and at != self._last_applied_t:
+            self._last_applied_t = at
+            self._msg_refresh_unix = t_unix
 
     def correct(self, t_unix, cycles):
         """-> (corrected_cycles, applied, reason). Fail-closed gates: the
@@ -410,23 +526,35 @@ class GeoCorrector:
         geo = self.geo
         if geo is None:
             return cycles, False, "no-geonav"
+        try:
+            t_unix = float(t_unix)
+            cycles_value = float(cycles)
+        except (TypeError, ValueError, OverflowError):
+            return cycles, False, "nonfinite-input"
+        if not math.isfinite(t_unix) or not math.isfinite(cycles_value):
+            return cycles, False, "nonfinite-input"
         ura = geo.get("ura")
         if ura is None or ura > GEO_MAX_URA:
             return cycles, False, "ura"
-        if (self._msg_refresh_unix is None
-                or t_unix - self._msg_refresh_unix > GEO_MSG_FRESH_S):
+        message_age = (None if self._msg_refresh_unix is None
+                       else t_unix - self._msg_refresh_unix)
+        if (message_age is None or not math.isfinite(message_age)
+                or not 0.0 <= message_age <= GEO_MSG_FRESH_S):
             # the tracker stopped refreshing this vector (MT9 decode
             # outage or frozen publication) — propagation age from t0 is
             # not evidence the message itself is still current
             return cycles, False, "msg-stale"
         try:
             term, dt = self._term(geo, t_unix)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, IndexError, OverflowError):
             return cycles, False, "bad-geonav"
         if abs(dt) > GEO_MAX_DT_S:
             return cycles, False, "stale"
         self.last_dt = dt
-        return cycles + term + self.offset_cycles, True, None
+        corrected = cycles_value + term + self.offset_cycles
+        if not math.isfinite(corrected):
+            return cycles, False, "nonfinite-correction"
+        return corrected, True, None
 
 
 class SatWindow:
@@ -444,9 +572,43 @@ class SatWindow:
         self.lock_s = 0.0          # lock_s of the newest report
         self.fit_hist = []         # slopes of DISJOINT windows (<=12 kept)
         self.last_fit_t = -1e18    # t of the last recorded disjoint fit
+        self.generation = 0        # increments at every phase-chain break
+
+    def _break_chain(self):
+        """Start a new statistical generation after a phase discontinuity."""
+        self.samples = []
+        self.incs = []
+        self.last = None
+        # Fits on opposite sides of a slip/reseed/retune are not draws from
+        # one continuous phase process. Never carry their scatter estimate
+        # across the boundary.
+        self.fit_hist = []
+        self.last_fit_t = -1e18
+        self.generation += 1
 
     def add(self, t, cycles, slip=False, cn0=None, lock_s=None, corr=None):
         """Ingest one 1 Hz report. Returns True if it joined the chain."""
+        def finite_number(value, *, optional=False):
+            if optional and value is None:
+                return None
+            if type(value) not in (int, float):
+                raise ValueError("not a JSON number")
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError("nonfinite")
+            return value
+
+        try:
+            t = finite_number(t)
+            cycles = finite_number(cycles)
+            cn0 = finite_number(cn0, optional=True)
+            lock_s = finite_number(lock_s, optional=True)
+            corr = finite_number(corr, optional=True)
+            if type(slip) is not bool:
+                raise ValueError("slip is not boolean")
+        except (TypeError, ValueError, OverflowError):
+            self._break_chain()
+            return False
         if lock_s is not None:
             self.lock_s = lock_s
         if self.last is not None:
@@ -467,11 +629,10 @@ class SatWindow:
                 med = sorted(self.incs)[len(self.incs) // 2]
                 broken = abs((cycles - pc) - med * gap) > BREAK_CYC
             if broken:
-                self.samples = []
-                self.incs = []
-                self.last = None
+                self._break_chain()
                 return False         # the breaking sample joins no chain
         elif slip:
+            self._break_chain()
             return False             # first sighting is a break — drop it
         if self.last is not None:
             self.incs.append((cycles - pc) / (t - pt))
@@ -567,6 +728,13 @@ class P0bShadow:
             frag["_ev"] = ev
         return frag
 
+    def break_chain(self, key):
+        """Fail closed for one malformed/missing channel epoch."""
+        if key in self.windows:
+            self.windows[key]._break_chain()
+        if key in self.correctors:
+            self.correctors[key].offset_cycles = 0.0
+
     def append(self, line):
         """One evidence line per sbas sat per cycle. Shadow I/O must never
         take the published path down — log and drop on failure."""
@@ -609,27 +777,97 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
     # offset and the cached correction must NOT be added back. Use it
     # only when this live_radio process verifiably wrote it (actuate +
     # corr_applied); otherwise the applied correction is 0.
-    disc_d = state.get("discipline") or {}
-    corr = disc_d.get("correction_ppm") or 0.0
-    corr_applied = bool(disc_d.get("actuate") and disc_d.get("corr_applied"))
-    if not corr_applied:
-        corr = 0.0
-    sats = (state.get("tracker") or {}).get("sats") or []
-    file_epoch = state.get("epoch") or time.time()
+    if not isinstance(state, dict):
+        return [], {"input": {"ok": False, "reason": "state-not-object"}}
+
+    def number(value):
+        if type(value) not in (int, float):
+            raise ValueError("not a JSON number")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("nonfinite")
+        return value
+
+    disc_d = state.get("discipline")
+    if disc_d is None:
+        disc_d = {}
+    if not isinstance(disc_d, dict):
+        return [], {"input": {"ok": False,
+                               "reason": "discipline-not-object"}}
+    corr_applied = (disc_d.get("actuate") is True
+                    and disc_d.get("corr_applied") is True)
+    try:
+        corr = number(disc_d["correction_ppm"]) if corr_applied else 0.0
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return [], {"input": {"ok": False,
+                               "reason": "invalid-applied-correction"}}
+
+    tracker = state.get("tracker")
+    if tracker is None:
+        tracker = {}
+    if not isinstance(tracker, dict):
+        return [], {"input": {"ok": False, "reason": "tracker-not-object"}}
+    sats = tracker.get("sats")
+    if sats is None:
+        sats = []
+    if not isinstance(sats, list):
+        return [], {"input": {"ok": False, "reason": "sats-not-array"}}
+    try:
+        file_epoch = (number(state["epoch"]) if "epoch" in state
+                      else time.time())
+    except (TypeError, ValueError, OverflowError):
+        return [], {"input": {"ok": False, "reason": "invalid-state-epoch"}}
+
+    def break_key(key):
+        if key in windows:
+            windows[key]._break_chain()
+        if p0b is not None:
+            p0b.break_chain(key)
+
     votes = []
     diag = {}
-    for s in sats:
+    for index, s in enumerate(sats):
+        if not isinstance(s, dict):
+            diag[f"invalid[{index}]"] = {
+                "ok": False, "reason": "sat-not-object"
+            }
+            continue
         sysname = s.get("sys")
         prn = s.get("prn")
         cycles = s.get("carrier_cycles")
         if sysname is None or prn is None or cycles is None:
             continue               # pre-dcfcfaa row: no carrier phase
-        t = s.get("epoch") or file_epoch
+        key = (sysname, prn)
+        reason = None
+        try:
+            if not isinstance(sysname, str) or not sysname:
+                raise ValueError("invalid-system")
+            if type(prn) is not int or prn < 0:
+                raise ValueError("invalid-prn")
+            key = (sysname, prn)
+            cycles = number(cycles)
+            t = number(s["epoch"]) if s.get("epoch") is not None else file_epoch
+            cn0 = number(s["cn0_proxy"])
+            lock_s = number(s["lock_s"])
+            slip = s.get("slip", False)
+            if type(slip) is not bool:
+                raise ValueError("invalid-slip")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            reason = str(exc) or "invalid-satellite-field"
+        if reason is not None:
+            if (isinstance(sysname, str) and sysname
+                    and type(prn) is int and prn >= 0):
+                key = (sysname, prn)
+                break_key(key)
+                label = f"{sysname} {prn}"
+            else:
+                label = f"invalid[{index}]"
+            diag[label] = {"ok": False, "reason": reason}
+            continue
         key = (sysname, prn)
         w = windows.setdefault(key, SatWindow(window_s))
         w.window_s = window_s
-        w.add(t, cycles, slip=bool(s.get("slip")),
-              cn0=s.get("cn0_proxy"), lock_s=s.get("lock_s"), corr=corr)
+        w.add(t, cycles, slip=slip, cn0=cn0, lock_s=lock_s, corr=corr)
         if sysname != "sbas":
             continue               # MEO slope is orbit-dominated; GEOs only
         # P0b (promoted 2026-08-29): feed the corrected chain; its fit is
@@ -667,7 +905,9 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
         if emit_ev is None:
             d = {"ok": False, "lock_s": w.lock_s,
                  "n": len(emit_w.samples) if emit_w is not None
-                 else len(w.samples)}
+                 else len(w.samples),
+                 "phase_generation": (emit_w.generation if emit_w is not None
+                                      else w.generation)}
             if uncorr_ppm is not None:
                 d["uncorr_ppm"] = round(uncorr_ppm, 9)
             d.update(frag)
@@ -681,7 +921,15 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
         # understate just like the per-window OLS sigma does. PROMOTED:
         # runs on the CORRECTED window when the corrector is active (the
         # uncorrected fit_hist is no longer needed for emission).
-        if t - emit_w.last_fit_t >= window_s:
+        # Do not seed the cross-window scatter from the first merely
+        # min_samples-long fit.  It is not comparable with the later full
+        # windows and would make the history look mature one interval too
+        # early.  A history entry requires a full continuous window in the
+        # current phase generation as well as non-overlap with the previous
+        # entry.
+        full_window = (bool(emit_w.samples)
+                       and t - emit_w.samples[0][0] >= window_s)
+        if full_window and t - emit_w.last_fit_t >= window_s:
             emit_w.fit_hist.append(emit_ev["slope_hz"])
             del emit_w.fit_hist[:-12]
             emit_w.last_fit_t = t
@@ -699,9 +947,11 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
         else:
             sig_emit, sig_prov = 5.0 * sig_ppm, True
         votes.append((ppm, sig_emit, prn, t,
-                      round(uncorr_ppm, 9) if uncorr_ppm is not None else None))
+                      round(uncorr_ppm, 9) if uncorr_ppm is not None else None,
+                      emit_w.generation))
         diag[f"{sysname} {prn}"] = {
             "ok": True, "n": emit_ev["n"],
+            "phase_generation": emit_w.generation,
             "slope_hz": round(emit_ev["slope_hz"], 6),
             "fit_sigma_ppm": round(sig_ppm, 9),
             "scatter_sigma_ppm": round(sc_ppm, 9) if sc_ppm else None,
@@ -727,10 +977,11 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
                             "p0b_ppm": frag["p0b_ppm"],
                             "p0b_sigma_ppm": frag["p0b_sigma_ppm"],
                             "uncorr_ppm": round(uncorr_ppm, 9),
-                            "iodn": frag.get("p0b_iodn"), "n": emit_ev["n"]})
+                            "iodn": frag.get("p0b_iodn"), "n": emit_ev["n"],
+                            "phase_generation": emit_w.generation})
     p0b_tag = " · P0b" if p0b is not None else ""
     rows = []
-    for ppm, sig_ppm, prn, t, uc in votes:
+    for ppm, sig_ppm, prn, t, uc, generation in votes:
         # components are NOT "ClockDriftPpm": one instrument must vote
         # once in series_producer's cross-producer consensus — N near-
         # identical per-sat rows from the same phase chain would outvote
@@ -741,6 +992,7 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
             # the emitted value is the GEO-corrected observable; the raw
             # range-rate-contaminated value stays on the row as evidence
             extra.update({"p0b": True, "uncorr_ppm": uc})
+        extra["phase_generation"] = generation
         rows.append(row(f"L1 / WAAS {prn} (phase)",
                         f"WAAS PRN {prn} carrier-phase slope {window_s:.0f} s "
                         f"+ corr register · Pro+AA.250{p0b_tag}",
@@ -750,8 +1002,8 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
                         extra=extra,
                         kind="ClockDriftPpmComponent"))
     if votes:
-        med, sig = weighted_median([(v, s) for v, s, _, _, _ in votes])
-        t = max(t for _, _, _, t, _ in votes)
+        med, sig = weighted_median([(v, s) for v, s, _, _, _, _ in votes])
+        t = max(t for _, _, _, t, _, _ in votes)
         # Consensus is a component too (systems review 2026-08-25 #6):
         # observe-only until the correlated-residual uncertainty lands;
         # it must not double-vote the radio it shares with the WAAS code
@@ -761,9 +1013,13 @@ def process_state(state, windows, window_s, min_lock_s, min_cn0, min_samples,
                         f"{window_s:.0f} s slope) + corr register · Pro+AA.250 "
                         f"· observe-only{p0b_tag}",
                         med, sig, t,
-                        [f"PRN {prn}" for _, _, prn, _, _ in votes],
+                        [f"PRN {prn}" for _, _, prn, _, _, _ in votes],
                         extra={"n_sats": len(votes),
-                               "corr_applied": corr_applied},
+                               "corr_applied": corr_applied,
+                               "phase_generations": {
+                                   str(prn): generation
+                                   for _, _, prn, _, _, generation in votes
+                               }},
                         kind="ClockDriftPpmComponent"))
     return rows, diag
 
@@ -815,8 +1071,19 @@ def main():
             except Exception:
                 time.sleep(0.2)    # mid-replace read; retry next tick
                 continue
-            rows, diag = process_state(state, windows, window_s,
-                                       min_lock_s, MIN_CN0, min_samples, p0b)
+            try:
+                rows, diag = process_state(state, windows, window_s,
+                                           min_lock_s, MIN_CN0, min_samples,
+                                           p0b)
+            except Exception as e:
+                # Last-resort containment: malformed/unexpected tracker state
+                # must age this producer out, never terminate it or preserve a
+                # frozen vote. Field-level failures are handled inside
+                # process_state; this guards programming/shape surprises.
+                log(f"tracker state rejected: {e}")
+                rows = []
+                diag = {"input": {"ok": False,
+                                   "reason": "state-processing-error"}}
             try:
                 publish(rows, diag, now)
                 last_pub = now

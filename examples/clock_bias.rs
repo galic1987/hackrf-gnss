@@ -1,4 +1,4 @@
-//! 1 Hz receiver clock-bias series for the sub-ns precision claim (Leg 1, v3).
+//! 1 Hz receiver clock-bias series for the sub-ns precision claim (Leg 1, v4).
 //!
 //! Reads state.tracker.json once per second (the tracker owns the radio; we
 //! never touch it), Hatch-smooths each locked GPS+BDS satellite's pseudorange
@@ -6,10 +6,14 @@
 //! innovation), solves CLOCK-ONLY with the position fixed at the surveyed site
 //! anchor (weighted AND unweighted — the paired A/B), and appends one row to
 //! observations/clock_bias.jsonl. Rows:
-//! {epoch, clock_ns, clock_ns_uw, residual_rms_m, residual_rms_m_uw, n_sat,
-//!  n_bds, n_fresh, n_pred, slips, gen, source}
+//! {schema, epoch, clock_ns, clock_ns_uw, residual_rms_m,
+//!  residual_rms_m_uw, n_sat, n_gps, n_bds, n_bds_pre_reject, n_fresh,
+//!  n_pred, slips, gen, source}. n_gps/n_bds describe the weighted solver's
+//!  accepted post-rejection set.
 //!
-//! v3 (2026-08-29): GPS+BDS measurement vector. The motivation is
+//! v4 (2026-08-30): post-rejection constellation identity and a strict
+//! paired-A/B membership gate. v3 (2026-08-29) added the GPS+BDS vector.
+//! The motivation is
 //! AVAILABILITY: the GPS-only build rode the >=5-measurement gate at exactly
 //! n = 5 for 63% of rows — one bird dropping killed every clean run
 //! (2026-08-29 diagnosis: 75.9% outage time, best clean run 764 s = 21% of
@@ -27,8 +31,8 @@
 //!  - CAVEAT: ONE clock state for two constellations — the GPS/BDS
 //!    inter-system channel bias is UNMODELED in this 1-state solve (the
 //!    solver is a weighted mean with studentized rejection; ISB surgery is
-//!    out of scope). Rows carry n_bds so the analyzer can quantify
-//!    mix-dependence; a structurally-biased BDS row that trips the 1000 m
+//!    out of scope). Rows carry accepted n_gps/n_bds so the analyzer can
+//!    quantify mix-dependence; a structurally-biased BDS row that trips the 1000 m
 //!    studentized gate is legitimately DROPPED — fail-closed, not silent.
 //!  - BDS carrier prediction uses the B1I wavelength (1561.098 MHz) under
 //!    the same staircase rules; the negated-carrier sign is inherited from
@@ -331,7 +335,7 @@ fn main() {
                 .as_secs()
         })
         .unwrap_or(0);
-    let gen_id = format!("v3-{}-tb{}", unix_now() as u64, trk_build);
+    let gen_id = format!("v4-{}-tb{}", unix_now() as u64, trk_build);
     let mut smoothers: HashMap<u8, Hatch> = HashMap::new();
     let mut prev: HashMap<u8, PrevSat> = HashMap::new();
     // BDS channels keep SEPARATE smoother/prediction chains: the maps are
@@ -424,7 +428,7 @@ fn main() {
         let mut slips = 0u32;
         let mut n_fresh = 0u32;
         let mut n_pred = 0u32;
-        let mut n_bds = 0u32;
+        let mut n_bds_pre_reject = 0u32;
         for s in sats {
             // Constellation split FIRST — before any smoother-map access
             // (the chains are per-constellation; see the map decls above).
@@ -498,8 +502,12 @@ fn main() {
                             &sbas_dnu,
                         )
                     };
-                    if bds && m.is_some() { n_bds += 1; }
-                    meas.push(m);
+                    if let Some(m) = m {
+                        if bds {
+                            n_bds_pre_reject += 1;
+                        }
+                        meas.push((m, bds));
+                    }
                     n_pred += 1;
                 }
                 p.lock_s = lock_s;
@@ -550,10 +558,14 @@ fn main() {
                     &sbas_dnu,
                 )
             };
-            if bds && m.is_some() { n_bds += 1; }
-            meas.push(m);
+            if let Some(m) = m {
+                if bds {
+                    n_bds_pre_reject += 1;
+                }
+                meas.push((m, bds));
+            }
         }
-        let meas: Vec<_> = meas.into_iter().flatten().collect();
+        let (meas, meas_is_bds): (Vec<_>, Vec<_>) = meas.into_iter().unzip();
         if meas.len() < 4 { continue; }   // emit gate 5->4 (window pkg, UNBUILT): the n>=5 floor was the hour-gate killer (2026-08-29 bake-off: duty 24.7% -> 38.3%). ISB tension: a 2-state (clock+ISB) solve needs n>=5 with BDS present — when ISB surgery lands, re-raise the gate for mixed solves or constrain ISB from the recent estimate at n==4.
         // CAVEAT: ONE clock state for two constellations — the GPS/BDS
         // inter-system channel bias is unmodeled in this 1-state solve (a
@@ -561,11 +573,26 @@ fn main() {
         // out of scope). Rows carry n_bds so the analyzer can quantify
         // mix-dependence; a structurally-biased BDS row that trips the
         // 1000 m studentized gate is legitimately DROPPED by the rejection
-        // — fail-closed, not silent.
+        // — fail-closed, not silent. The solver returns accepted input
+        // indices so the row reports post-rejection constellation counts.
         let fw = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, true);
         let fu = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, false);
         if let (Some(a), Some(b)) = (fw, fu) {
+            // A/B means weighting only. Independent rejection sets would mix
+            // weighting with satellite composition, so publish nothing unless
+            // both solves retained the exact same caller rows in the same
+            // order.
+            if a.accepted_indices != b.accepted_indices {
+                continue;
+            }
+            let n_bds = a
+                .accepted_indices
+                .iter()
+                .filter(|&&index| meas_is_bds[index])
+                .count();
+            let n_gps = a.n_sat - n_bds;
             let row = json!({
+                "schema": "clock_bias-v4",
                 "epoch": epoch,
                 "clock_ns": a.clock_km * 1e9 / 299_792.458,
                 "clock_ns_uw": b.clock_km * 1e9 / 299_792.458,
@@ -573,6 +600,9 @@ fn main() {
                 "residual_rms_m_uw": b.residual_rms_m,
                 "n_sat": a.n_sat,
                 "n_bds": n_bds,
+                "n_gps": n_gps,
+                "n_bds_pre_reject": n_bds_pre_reject,
+                "ab_membership_match": true,
                 "n_fresh": n_fresh,
                 "n_pred": n_pred,
                 "slips": slips,
@@ -588,6 +618,7 @@ fn main() {
             // without parsing the archive. Fail-closed by TTL: when no
             // clean solve exists the file simply expires.
             let st = json!({
+                "schema": "clock_bias-v4",
                 "epoch": epoch,
                 "ttl_s": 10,
                 "clock_bias": {
@@ -596,6 +627,9 @@ fn main() {
                     "residual_rms_m": row["residual_rms_m"],
                     "n_sat": row["n_sat"],
                     "n_bds": row["n_bds"],
+                    "n_gps": row["n_gps"],
+                    "n_bds_pre_reject": row["n_bds_pre_reject"],
+                    "ab_membership_match": true,
                     "n_fresh": row["n_fresh"],
                     "n_pred": row["n_pred"],
                     "slips": row["slips"],

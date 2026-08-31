@@ -7,7 +7,10 @@ re-registered Leg 1 claim gate is carrier-phase TDEV).
 
 Usage: python3 scripts/clock_bias_analyzer.py [path] [--min-rows 3400] [--all-gens]
 Gates (spec 2026-08-27): RMS < 1.0 ns and TDEV < 1.0 ns for tau in 10..1000 s.
-Exit 0 = claim supported, 1 = not (or insufficient data).
+Exit 0 is reserved for claim-grade support, 1 means failed/insufficient, and
+2 means an explicitly exploratory screen passed.  The current data-derived
+poison threshold makes every pass exploratory until that gate is replaced by
+a held-out or pre-registered measurement-error bound.
 
 v2 (2026-08-28 amendment) fixes v1 defects:
 - TDEV is now the textbook MODIFIED-Allan-based statistic (NIST SP 1065):
@@ -32,7 +35,7 @@ v2 (2026-08-28 amendment) fixes v1 defects:
   LATEST gen only (restarts can't silently mix); --all-gens pools for
   forensics (pooled TDEV across sessions is not claim-grade).
 """
-import json, math, sys
+import json, math, os, sys
 
 GATES_TAU = [10, 100, 1000]
 POISON_RMS_M = 500.0     # residual_rms_m >= this is a poison-class row.
@@ -61,7 +64,31 @@ GAP_FACTOR = 1.5         # segmentation split: gap > GAP_FACTOR * median dt.
                          # index-based TDEV spacing is physically right
                          # (round-14 review: the 2x rule still let one
                          # missed epoch through with the wrong spacing).
+CADENCE_TOL_FRAC = 0.02  # index-based TDEV requires a near-uniform grid. The
+                         # live v3 cadence is ~1.01-1.03 s; 2% covers that
+                         # measured scheduler spread but rejects materially
+                         # different physical tau spacing.
+REQUIRED_SCHEMA = "clock_bias-v4"
+POISON_GATE_CLAIM_GRADE = False
 DEFAULT_PATH = "/Volumes/Radiator 8TB/gnss/observations/clock_bias.jsonl"
+
+
+def _json_int(value):
+    if type(value) is not int:
+        raise ValueError("expected JSON integer")
+    return value
+
+
+def _json_number(value):
+    if type(value) not in (int, float):
+        raise ValueError("expected JSON number")
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("expected finite JSON number") from exc
+    if not math.isfinite(value):
+        raise ValueError("expected finite JSON number")
+    return value
 
 
 def detrend(epochs, clock_ns):
@@ -131,8 +158,9 @@ def _median(xs):
     return s[mid] if n % 2 else 0.5 * (s[mid - 1] + s[mid])
 
 
-def split_segments(epochs, gap_factor=GAP_FACTOR):
-    """Split (sorted) epochs at inter-row gaps > gap_factor x median dt.
+def split_segments(epochs, gap_factor=GAP_FACTOR,
+                   cadence_tol_frac=CADENCE_TOL_FRAC):
+    """Split epochs at gaps or intervals inconsistent with a uniform grid.
 
     Returns (segments, holes, dt_median): segments as inclusive index pairs
     (i0, i1); holes as {"at_epoch", "gap_s"} records, one per split."""
@@ -147,9 +175,14 @@ def split_segments(epochs, gap_factor=GAP_FACTOR):
     segs, holes = [], []
     start = 0
     for i, g in enumerate(gaps):
-        if g > thresh:
+        cadence_bad = (dt_med > 0.0
+                       and abs(g - dt_med) > cadence_tol_frac * dt_med)
+        if g <= 0.0 or g > thresh or cadence_bad:
             segs.append((start, i))
-            holes.append({"at_epoch": epochs[i], "gap_s": g})
+            reason = "nonpositive" if g <= 0.0 else (
+                "gap" if g > thresh else "cadence")
+            holes.append({"at_epoch": epochs[i], "gap_s": g,
+                          "reason": reason})
             start = i + 1
     segs.append((start, n - 1))
     return segs, holes, dt_med
@@ -175,7 +208,8 @@ def continuity_gates(span_s, n_rows, max_gap_s, min_rows=MIN_ROWS):
     return fails
 
 
-def analyze(rows, min_rows=MIN_ROWS, all_gens=False):
+def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
+            snapshot_changed=False):
     """Full v2 pipeline on parsed jsonl rows -> report dict (main() prints it).
 
     Quality gate (n_sat>=5, slips==0) -> poison-class exclusion -> gen
@@ -184,27 +218,119 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False):
     carries gate_fails and verdict None (main prints INSUFFICIENT DATA)."""
     rep = {"all_gens": all_gens, "min_rows": min_rows,
            "n_in": len(rows), "gens": {}, "gen": None, "n_gen": 0,
+           "n_schema": 0, "n_gen_raw": 0, "n_quality": 0,
+           "n_poison": 0,
+           "n_identity_invalid": 0, "n_parse_errors": parse_errors,
+           "snapshot_changed": bool(snapshot_changed),
            "segments": [], "holes": [], "dt_median": 0.0,
-           "chosen_seg": None, "gate_fails": [], "verdict": None}
-    rows = [r for r in rows if r.get("n_sat", 0) >= 5 and r.get("slips", 1) == 0]
-    rep["n_quality"] = len(rows)
-    sane = [r for r in rows if r.get("residual_rms_m", 1e9) < POISON_RMS_M]
-    rep["n_poison"] = len(rows) - len(sane)
-    rows = sane
+           "chosen_seg": None, "gate_fails": [], "verdict": None,
+           "claim_grade": False, "exploratory_reasons": []}
+
+    # Select session identity using parseable epoch alone, before schema,
+    # quality, or poison filters. Otherwise a malformed/new-schema latest
+    # generation can disappear and an old passing generation looks current.
+    identity_rows = []
     for r in rows:
+        if not isinstance(r, dict):
+            rep["n_identity_invalid"] += 1
+            continue
+        try:
+            epoch = _json_number(r["epoch"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            rep["n_identity_invalid"] += 1
+            continue
         g = r.get("gen")
+        if not isinstance(g, str) or not g.strip():
+            g = "<malformed-or-missing-gen>"
+        identity_rows.append((r, epoch, g))
+    if parse_errors or rep["n_identity_invalid"] or snapshot_changed:
+        reasons = []
+        if snapshot_changed:
+            reasons.append(
+                "input changed while it was read; analyze an immutable snapshot"
+            )
+        if parse_errors:
+            reasons.append(f"{parse_errors} unparseable JSON row(s)")
+        if rep["n_identity_invalid"]:
+            reasons.append(
+                f"{rep['n_identity_invalid']} row(s) lack a finite numeric epoch identity"
+            )
+        rep["gate_fails"] = reasons
+        return rep
+    for _, _, g in identity_rows:
         rep["gens"][g] = rep["gens"].get(g, 0) + 1
     if all_gens:
-        sel = rows
+        selected_identity = identity_rows
     else:  # latest gen by its most recent epoch
         last = {}
-        for r in rows:
-            g, e = r.get("gen"), r.get("epoch", 0.0)
+        for _, e, g in identity_rows:
             if g not in last or e > last[g]:
                 last[g] = e
         rep["gen"] = max(last, key=lambda g: last[g]) if last else None
-        sel = [r for r in rows if r.get("gen") == rep["gen"]]
+        selected_identity = [entry for entry in identity_rows
+                             if entry[2] == rep["gen"]]
+    rep["n_gen_raw"] = len(selected_identity)
+
+    schema_rows = []
+    for r, epoch, _ in selected_identity:
+        try:
+            clock_ns = _json_number(r["clock_ns"])
+            clock_ns_uw = _json_number(r["clock_ns_uw"])
+            rms = _json_number(r["residual_rms_m"])
+            rms_uw = _json_number(r["residual_rms_m_uw"])
+            n_sat = _json_int(r["n_sat"])
+            n_gps = _json_int(r["n_gps"])
+            n_bds = _json_int(r["n_bds"])
+            n_fresh = _json_int(r["n_fresh"])
+            n_pred = _json_int(r["n_pred"])
+            slips = _json_int(r["slips"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if (r.get("schema") != REQUIRED_SCHEMA
+                or r.get("source") != "clock_bias"
+                or not isinstance(r.get("gen"), str)
+                or not r["gen"].strip()
+                or r.get("ab_membership_match") is not True
+                or min(n_sat, n_gps, n_bds, n_fresh, n_pred, slips) < 0
+                or n_gps + n_bds != n_sat):
+            continue
+        normalized = dict(r)
+        normalized.update({"epoch": epoch, "clock_ns": clock_ns,
+                           "clock_ns_uw": clock_ns_uw,
+                           "residual_rms_m": rms,
+                           "residual_rms_m_uw": rms_uw,
+                           "n_sat": n_sat, "n_gps": n_gps,
+                           "n_bds": n_bds, "n_fresh": n_fresh,
+                           "n_pred": n_pred, "slips": slips})
+        schema_rows.append(normalized)
+    rep["n_schema"] = len(schema_rows)
+    schema_invalid = len(selected_identity) - len(schema_rows)
+    if schema_invalid:
+        rep["gate_fails"] = [
+            f"{schema_invalid} row(s) in selected generation fail {REQUIRED_SCHEMA} schema/identity/membership checks"
+        ]
+        return rep
+
+    quality = [r for r in schema_rows
+               if r["n_sat"] >= 5 and r["slips"] == 0]
+    rep["n_quality"] = len(quality)
+    sel = [r for r in quality
+           if r.get("residual_rms_m", 1e9) < POISON_RMS_M]
+    rep["n_poison"] = len(quality) - len(sel)
     rep["n_gen"] = len(sel)
+
+    # Input order is part of the measurement provenance. Refuse duplicate or
+    # backwards epochs instead of sorting them into an apparently uniform
+    # claim-grade series. (--all-gens is explicitly forensic and may contain
+    # session restarts, so its later sorting remains descriptive only.)
+    if not all_gens:
+        epochs_in = [float(r["epoch"]) for r in sel]
+        bad_order = sum(b <= a for a, b in zip(epochs_in, epochs_in[1:]))
+        if bad_order:
+            rep["gate_fails"] = [
+                f"{bad_order} duplicate/nonmonotonic epoch interval(s)"
+            ]
+            return rep
     sel = sorted(sel, key=lambda r: r["epoch"])
     ep = [r["epoch"] for r in sel]
     segs, holes, dt_med = split_segments(ep)
@@ -230,6 +356,10 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False):
     rep["rms_ns"] = math.sqrt(sum(r * r for r in res) / len(res))
     rep["dt_s"] = _median([b - a for a, b in zip(seg_ep, seg_ep[1:]) if b > a])
     rep["tdev"] = tdev(res, rep["dt_s"], GATES_TAU)
+    rep["tau_effective_s"] = {
+        tau: max(1, int(round(tau / rep["dt_s"]))) * rep["dt_s"]
+        for tau in rep["tdev"]
+    }
     if not rep["tdev"]:
         rep["gate_fails"] = ["no gate tau evaluable (span < 3*tau)"]
         return rep
@@ -243,13 +373,28 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False):
          if "residual_rms_m_uw" in r]
     rep["ab_median_m"] = _median(d) if d else None
     rep["ab_n"] = len(d)
+    if all_gens:
+        rep["exploratory_reasons"].append(
+            "--all-gens pools independent sessions"
+        )
+    if not POISON_GATE_CLAIM_GRADE:
+        rep["exploratory_reasons"].append(
+            "poison threshold is data-derived, not held-out/pre-registered"
+        )
+    rep["claim_grade"] = not rep["exploratory_reasons"]
     return rep
 
 
 def load_rows(path):
-    """Parse a jsonl observations file; unparseable (torn-tail) lines skipped."""
+    """Parse JSONL; report every unparseable line to the fail-closed gate."""
     rows, bad = [], 0
-    for line in open(path):
+    with open(path, encoding="utf-8") as source:
+        before = os.fstat(source.fileno())
+        payload = source.read()
+        after = os.fstat(source.fileno())
+    changed = (before.st_size != after.st_size
+               or before.st_mtime_ns != after.st_mtime_ns)
+    for line in payload.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -257,11 +402,18 @@ def load_rows(path):
             rows.append(json.loads(line))
         except json.JSONDecodeError:
             bad += 1
-    return rows, bad
+    return rows, bad, changed
 
 
 def _gen_label(g):
     return "<none>" if g is None else str(g)
+
+
+def report_exit_status(rep):
+    """0=claim support, 1=failed/insufficient, 2=exploratory pass."""
+    if not rep.get("verdict"):
+        return 1
+    return 0 if rep.get("claim_grade") else 2
 
 
 def main():
@@ -276,10 +428,11 @@ def main():
         del argv[i:i + 2]
     path = argv[0] if argv and not argv[0].startswith("-") else DEFAULT_PATH
     try:
-        rows, bad = load_rows(path)
+        rows, bad, changed = load_rows(path)
     except FileNotFoundError:
-        rows, bad = [], 0
-    rep = analyze(rows, min_rows=min_rows, all_gens=all_gens)
+        rows, bad, changed = [], 0, False
+    rep = analyze(rows, min_rows=min_rows, all_gens=all_gens,
+                  parse_errors=bad, snapshot_changed=changed)
 
     print(f"file: {path} ({rep['n_in']} rows read"
           + (f", {bad} unparseable lines skipped" if bad else "") + ")")
@@ -300,13 +453,16 @@ def main():
     else:
         print(f"gen analyzed: {_gen_label(rep['gen'])} "
               f"(latest; --all-gens to pool)")
-    print(f"segments (split at inter-row gap > {GAP_FACTOR:.1f}x median dt "
+    print(f"segments (split at nonpositive intervals, gaps > "
+          f"{GAP_FACTOR:.1f}x median dt, or cadence error > "
+          f"{CADENCE_TOL_FRAC*100:.0f}%; median dt "
           f"{rep['dt_median']:.2f} s):")
     for i, st in enumerate(rep["segments"]):
         print(f"  seg {i}: span {st['span_s']:.0f} s, {st['rows']} rows, "
               f"max gap {st['max_gap_s']:.1f} s")
     for h in rep["holes"]:
-        print(f"  hole: {h['gap_s']:.0f} s gap after epoch {h['at_epoch']:.0f}")
+        print(f"  split ({h.get('reason', 'gap')}): {h['gap_s']:.3f} s "
+              f"after epoch {h['at_epoch']:.3f}")
     if rep["chosen_seg"] is not None:
         st = rep["segments"][rep["chosen_seg"]]
         print(f"analyzing longest segment: seg {rep['chosen_seg']} — "
@@ -323,21 +479,29 @@ def main():
           f"(median dt {rep['dt_s']:.2f} s)")
     for t in GATES_TAU:
         v = rep["tdev"].get(t)
-        print(f"  TDEV(tau={t:>4}s): "
+        tau_eff = rep.get("tau_effective_s", {}).get(t)
+        label = (f"requested {t:>4}s, effective {tau_eff:.3f}s"
+                 if tau_eff is not None else f"requested {t:>4}s")
+        print(f"  TDEV({label}): "
               + (f"{v:.3f} ns" if v is not None else "n/a (span < 3*tau)"))
     ok = rep["verdict"]
     # The 1 ns gates screen STABILITY only. The observable is code-phase
     # pseudorange: iono/multipath/anchor systematics floor it at ~10-50 ns
     # absolute regardless of averaging, so a pass here must never be read
     # as an absolute sub-ns claim (re-registered gate: carrier-phase TDEV).
-    print("VERDICT:", "SUB-NS STABILITY GATES PASSED (code-phase observable; "
-          "absolute floor ~10-50 ns — not an absolute sub-ns claim)"
-          if ok else "stability gates not passed")
+    if ok and not rep["claim_grade"]:
+        print("VERDICT: EXPLORATORY STABILITY SCREEN PASSED; CLAIM NOT SUPPORTED")
+        for reason in rep["exploratory_reasons"]:
+            print(f"  - {reason}")
+    else:
+        print("VERDICT:", "SUB-NS STABILITY GATES PASSED (code-phase observable; "
+              "absolute floor ~10-50 ns — not an absolute sub-ns claim)"
+              if ok else "stability gates not passed")
     if rep.get("ab_median_m") is not None:
         print(f"paired A/B: median (weighted-raw RMS) = "
               f"{rep['ab_median_m']:+.2f} m over {rep['ab_n']} epochs "
               f"(negative = weighting helps)")
-    sys.exit(0 if ok else 1)
+    sys.exit(report_exit_status(rep))
 
 
 if __name__ == "__main__":

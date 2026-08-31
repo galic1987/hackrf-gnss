@@ -6,32 +6,33 @@
 //!
 //! The gateware freezes a raw 48-tap thermometer code per event (the rev3c
 //! chain; the 6-byte register block 0x20-0x25 holds taps 0-47, LSB-first).
-//! Single-registered sampling means the code contains occasional
-//! metastability bubbles (e.g. 0b10111), so the fine value is the POPCOUNT,
-//! not an edge position — a bubble moves a bit but never changes the count.
+//! A2 accepts only nonzero tap-0-anchored words. Exact strict prefixes 1..47
+//! are interior codes, all ones is composite full scale, and an anchored word
+//! with internal holes is bubbled. Preserve a bubbled raw word and its
+//! popcount for diagnostics, but do not use that popcount as a timing bin.
 //!
 //! Code-density calibration: the on-chip ring oscillator is asynchronous to
 //! the sampling clock, so selftest event phases are uniform over the adclk
-//! period. Each popcount bin's share of the total hits is therefore
-//! proportional to its width in seconds; `lut_ps` turns a popcount into a
-//! phase offset within the clock period. IMPORTANT: bin widths are only
-//! meaningful relative to the adclk rate the histogram was captured at —
-//! record which rate applied (32 MHz at std 8 Msps, ~32.8 MHz idle,
-//! 40 MHz ext) alongside the calibration.
+//! period. Code-density input must first exclude bubbled and tap-0-clear raw
+//! words; `TdcCal::ingest` cannot perform that validation because it receives
+//! only a scalar. Bin widths are also meaningful only relative to the adclk
+//! rate recorded with the capture.
 
-/// Popcount of the frozen thermometer code (bubble-tolerant fine value).
+/// Descriptive popcount of the frozen raw word.
 ///
 /// `bytes` is the register block at 0x20: 6 bytes / 48 taps in the shipped
 /// rev3c image (the legacy 64-tap/16-byte variant works too — a popcount
-/// does not care about the block length).
+/// does not care about the block length). This function does not classify A2
+/// words; its result must not be ingested as a timing code when the raw word
+/// is bubbled or tap 0 is clear.
 pub fn popcount_thermo(bytes: &[u8]) -> u32 {
     bytes.iter().map(|b| b.count_ones()).sum()
 }
 
 /// Code-density calibration accumulator.
 ///
-/// `hist[pop]` = number of observed codes with that popcount. Grows on
-/// ingest; bins never observed keep count 0 and get zero width.
+/// `hist[pop]` = number of prevalidated strict-prefix codes with that value.
+/// Grows on ingest; bins never observed keep count 0 and get zero width.
 pub struct TdcCal {
     pub hist: Vec<u64>,
     pub clk_period_s: f64,
@@ -42,7 +43,10 @@ impl TdcCal {
         TdcCal { hist: Vec::new(), clk_period_s }
     }
 
-    /// Record one observed popcount.
+    /// Record one already-validated strict-prefix code.
+    ///
+    /// The caller must reject tap-0-clear words and exclude bubbled words;
+    /// passing a bubbled raw-word popcount here creates an invalid LUT.
     pub fn ingest(&mut self, pop: u32) {
         let idx = pop as usize;
         if idx >= self.hist.len() {

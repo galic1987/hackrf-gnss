@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""dual_radio_coherence.py — Shared-RF Coherence and Receiver Delay Calibration Tool.
+"""Offline shared-RF correlation math prototype.
 
-Implements the calibration protocol from docs/superpowers/plans/2026-08-30-shared-rf-calibration-plan.md:
-1. Verifies USB root controller separation between HackRF Pro and HackRF One.
-2. Enforces safe gain staging (amp/LNA/VGA = 0/0/0) on HackRF One during shared-RF tests.
-3. Verifies post-stream CLKIN detection.
-4. Computes sub-sample cross-correlation lag and carrier phase offset between dual-radio captures.
-5. Performs ABBA matrix separation of cable/splitter delay vs receiver front-end delay.
+This module does not open a radio, set gains, verify CLKIN, or validate capture
+provenance. `check_usb_separation` is a best-effort macOS inventory heuristic.
+The three-point peak interpolation is descriptive and does not establish
+picosecond uncertainty; a claim-grade path still needs manifest-bound captures,
+GCC-PHAT/known-signal validation, bandwidth/SNR gates, and Monte Carlo or
+repeatability uncertainty. ABBA separation is algebra only.
 """
 
 import math
@@ -53,18 +53,42 @@ def compute_cross_correlation(
     s1: np.ndarray,
     s2: np.ndarray,
     sample_rate_hz: float = 16.0e6,
-    oversample: int = 16,
-) -> Dict[str, float]:
-    """Compute high-precision sub-sample cross-correlation lag and carrier phase.
+) -> Dict[str, Any]:
+    """Compute a descriptive sub-sample correlation peak and carrier phase.
 
     s1, s2: complex64/complex128 baseband I/Q arrays.
+
+    Lag convention: a delayed ``s2`` produces a negative lag.  The reported
+    carrier phase is the phase of ``sum(s1 * conj(s2_aligned))`` at the
+    integer peak (so ``s2 = s1 * exp(+j*phi)`` reports ``-phi``).  It is not
+    phase-compensated to the parabolic fractional-lag estimate.
     """
+    try:
+        sample_rate_hz = float(sample_rate_hz)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("sample_rate_hz must be finite and > 0") from None
+    if not math.isfinite(sample_rate_hz) or sample_rate_hz <= 0.0:
+        raise ValueError("sample_rate_hz must be finite and > 0")
+
+    s1 = np.asarray(s1)
+    s2 = np.asarray(s2)
+    if s1.ndim != 1 or s2.ndim != 1:
+        raise ValueError("cross-correlation inputs must be one-dimensional")
     n = min(len(s1), len(s2))
     if n < 128:
         raise ValueError(f"Sample length {n} is too short for cross-correlation")
+    if not np.all(np.isfinite(s1[:n])) or not np.all(np.isfinite(s2[:n])):
+        raise ValueError("cross-correlation inputs must be finite")
 
     x = s1[:n] - np.mean(s1[:n])
     y = s2[:n] - np.mean(s2[:n])
+    ex = float(np.sum(np.abs(x) ** 2))
+    ey = float(np.sum(np.abs(y) ** 2))
+    sx = max(float(np.max(np.abs(s1[:n]))), 1.0)
+    sy = max(float(np.max(np.abs(s2[:n]))), 1.0)
+    eps = np.finfo(float).eps * n
+    if ex <= eps * sx * sx or ey <= eps * sy * sy:
+        raise ValueError("cross-correlation inputs must have positive AC energy")
 
     # FFT cross-correlation
     n_fft = 1 << (2 * n - 1).bit_length()
@@ -76,8 +100,12 @@ def compute_cross_correlation(
     R_xy = np.fft.fftshift(R_xy)
     lags = np.arange(-n_fft // 2, n_fft // 2)
 
-    # Peak index
-    peak_idx = int(np.argmax(np.abs(R_xy)))
+    # Only -(n-1)..(n-1) are linear-correlation lags. The rest of the padded
+    # FFT contains numerical zero and must not participate in peak selection.
+    valid_indices = np.flatnonzero((lags >= -(n - 1)) & (lags <= n - 1))
+    valid_mag = np.abs(R_xy[valid_indices])
+    peak_local = int(np.argmax(valid_mag))
+    peak_idx = int(valid_indices[peak_local])
     coarse_lag_samples = lags[peak_idx]
 
     # Sub-sample peak refinement using parabolic interpolation on magnitude
@@ -87,7 +115,7 @@ def compute_cross_correlation(
         beta = float(mag[peak_idx])
         gamma = float(mag[peak_idx + 1])
         denom = 2.0 * (2.0 * beta - alpha - gamma)
-        delta = (alpha - gamma) / denom if abs(denom) > 1e-12 else 0.0
+        delta = (gamma - alpha) / denom if abs(denom) > 1e-12 else 0.0
     else:
         delta = 0.0
 
@@ -95,22 +123,48 @@ def compute_cross_correlation(
     fine_lag_sec = fine_lag_samples / sample_rate_hz
     fine_lag_ps = fine_lag_sec * 1e12
 
-    # Carrier phase difference at peak
+    # Carrier phase difference at the COARSE peak; see the convention in the
+    # docstring.  The fractional-delay parabola refines only the lag estimate.
     carrier_phase_rad = float(np.angle(R_xy[peak_idx]))
     carrier_phase_deg = math.degrees(carrier_phase_rad)
 
-    # Peak correlation coefficient (coherence)
-    norm = np.sqrt(np.sum(np.abs(x) ** 2) * np.sum(np.abs(y) ** 2))
-    coherence = float(np.abs(R_xy[peak_idx]) / norm) if norm > 0 else 0.0
+    # Normalized peak correlation over the samples that actually overlap at
+    # the selected lag. This is not spectral coherence.
+    lag = int(coarse_lag_samples)
+    if lag < 0:
+        x_overlap, y_overlap = x[:n + lag], y[-lag:]
+    else:
+        x_overlap, y_overlap = x[lag:], y[:n - lag]
+    overlap_norm = math.sqrt(float(np.sum(np.abs(x_overlap) ** 2))
+                             * float(np.sum(np.abs(y_overlap) ** 2)))
+    if overlap_norm <= 0.0:
+        raise ValueError("selected peak has zero-energy overlap")
+    peak_correlation = min(1.0, float(np.abs(R_xy[peak_idx]) / overlap_norm))
+
+    # A simple ambiguity diagnostic: strongest valid sidelobe outside the
+    # peak and its immediate interpolation neighbours.
+    sidelobes = valid_mag.copy()
+    sidelobes[max(0, peak_local - 1):peak_local + 2] = 0.0
+    second_peak = float(np.max(sidelobes)) if sidelobes.size else 0.0
+    peak_to_sidelobe = (float(valid_mag[peak_local]) / second_peak
+                        if second_peak > 0.0 else math.inf)
 
     return {
         "coarse_lag_samples": float(coarse_lag_samples),
         "fine_lag_samples": float(fine_lag_samples),
         "lag_sec": float(fine_lag_sec),
         "lag_ps": float(fine_lag_ps),
+        "lag_uncertainty_ps": None,
+        "lag_claim_grade": False,
+        "lag_method": "FFT correlation + three-point magnitude parabola",
         "carrier_phase_rad": float(carrier_phase_rad),
         "carrier_phase_deg": float(carrier_phase_deg),
-        "coherence": float(coherence),
+        "carrier_phase_method": "coarse integer correlation peak",
+        "carrier_phase_convention": "arg(sum(s1 * conj(s2_aligned)))",
+        "peak_correlation": float(peak_correlation),
+        # Compatibility alias; callers should migrate to peak_correlation.
+        "coherence": float(peak_correlation),
+        "peak_to_sidelobe_ratio": float(peak_to_sidelobe),
     }
 
 
@@ -128,6 +182,7 @@ def abba_delay_separation(delay_ab_ps: float, delay_ba_ps: float) -> Tuple[float
 
 
 if __name__ == "__main__":
-    print("=== Dual-Radio Shared-RF Coherence Tool ===")
+    print("=== Dual-Radio Offline Math Prototype ===")
     usb_info = check_usb_separation(PRO_SERIAL, ONE_SERIAL)
-    print("USB Topology Check:", usb_info)
+    print("USB inventory heuristic:", usb_info)
+    print("No radios were configured or captured; no delay calibration was performed.")

@@ -2,12 +2,11 @@
 """60 Hz carrier-phase producer for the /sync panel ("phase producer").
 
 Tracks the ATSC ch35 pilot (true 602.30944 MHz, GPS-disciplined Tx,
-~+43 dB over noise on the ClearStream) on the HackRF One, which is
-cabled CLKOUT→CLKIN to the Pro's 10 MHz. The cable is in, but the lock
-is NOT verified: this producer holds the One full-time, so the
-CLKIN-detection read can't open it (clkin_signal_present stays null).
-Until a verified lock exists, ATSC rows are labeled cabled-but-unverified
-and excluded from the clock consensus vote. One continuous
+~+43 dB over noise on the ClearStream) on the HackRF One. The deployed
+Split Star feeds the One's CLKIN directly from the Bodnar 10 MHz splitter;
+the Pro's CLKOUT is idle. CLKIN presence was checked while the One was free,
+but this producer cannot re-read it while holding the radio, and the soft
+common-rate check is not topology proof. One continuous
 hackrf_transfer is held for the producer's whole lifetime, tuned
 500 kHz above the pilot so the line sits at -500 kHz (off the DC spike).
 Samples arrive over a FIFO (mkfifo) — never a spooling file — so disk
@@ -100,17 +99,15 @@ SERIES_STATE = "/Volumes/Radiator 8TB/gnss/observations/state.series.json"
 
 
 def _clkin_label():
-    """Anchor label from series_producer's drift-lock verdict (round-14):
-    true -> measured drift-lock; false -> evidence AGAINST the chain; null/
-    unreadable -> unverified. This producer never opens a radio for it."""
+    """Common-rate liveness label; never physical CLKIN/topology proof."""
     try:
         with open(SERIES_STATE) as f:
             v = json.load(f).get("clkin_soft_verified")
     except Exception:
         v = None
-    return ("drift-locked (soft-verified)" if v is True
-            else "chain drift evidence NEGATIVE" if v is False
-            else "lock unverified")
+    return ("common-rate soft check positive" if v is True
+            else "common-rate soft check negative" if v is False
+            else "common-rate check unavailable")
 MY_BAND = "ATSC ch35"
 EST_SAMPLES = 1 << 24             # 2.8 s coherent FFT @ 6 Msps for initial freq
 AMP_DROP = 0.35                   # epoch low-flag: amp < 35% of running median
@@ -660,12 +657,11 @@ def main():
                         "value": round(ppm, 4), "sigma": 0.005,
                         "ref_hz": F_PILOT, "epoch": round(t, 2),
                         "sats": ["GPS-disciplined Tx"],
-                        # honesty (round-13): the One is CABLED to the Pro's
-                        # CLKOUT. Round-14 added the soft proof: when
-                        # series_producer's drift-lock verifier (state.series
-                        # .json clkin_soft_verified) reads true, the ATSC−WAAS
-                        # series move 1:1 — the chain is measured, not assumed.
-                        "anchor": "One ← Pro CLKOUT cable (" + _clkin_label() + ")",
+                        # The Split Star feeds this radio directly from the
+                        # Bodnar. clkin_soft_verified is only a common-rate
+                        # liveness check; it cannot prove physical topology.
+                        "anchor": "One ← Bodnar 10 MHz split star ("
+                                  + _clkin_label() + ")",
                         "ns_per_s": round(ppm * 1000.0, 1),
                         "m_per_s": round(ppm * 1e-6 * C_MPS, 2),
                     }

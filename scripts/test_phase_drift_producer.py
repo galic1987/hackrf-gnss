@@ -155,10 +155,16 @@ def main():
     for t, c in gen(1000.0, 40, slope_hz=-100.0):
         w2.add(t, c, slip=False, cn0=40.0, lock_s=500.0,
                corr=0.5)
+    w2.fit_hist = [-100.1, -99.9]
+    w2.last_fit_t = 1039.0
     joined = w2.add(1040.0, 0.0, slip=True, cn0=40.0,
                     lock_s=0.0, corr=0.5)
     check("slip: sample rejected", joined is False)
     check("slip: window flushed", len(w2.samples) == 0)
+    check("slip: starts a new statistical generation",
+          w2.generation == 1 and not w2.fit_hist
+          and w2.last_fit_t < -1e17,
+          f"generation={w2.generation} hist={w2.fit_hist}")
     check("slip: no fit right after", w2.evaluate(40.0, 30.0, 28) is None)
     for t, c in gen(1041.0, 40, slope_hz=-100.0, phase0=0.0):
         w2.add(t, c, slip=False, cn0=40.0, lock_s=500.0,
@@ -327,25 +333,64 @@ def main():
     rows3, _ = pd.process_state({"epoch": 3000.0}, {}, 40.0, 40.0, 30.0, 28)
     check("legacy: no tracker key -> no rows", rows3 == [])
 
+    # Malformed live state is rejected per channel and cannot poison a fit or
+    # terminate process_state. A bad sample breaks that channel's generation.
+    bad_window = pd.SatWindow(40.0)
+    bad_window.add(1.0, 2.0, cn0=40.0, lock_s=100.0, corr=0.0)
+    check("finite gate: NaN C/N0 breaks the chain",
+          bad_window.add(2.0, 3.0, cn0=float("nan"), lock_s=100.0,
+                         corr=0.0) is False
+          and bad_window.samples == [])
+    malformed_windows = {("sbas", 133): pd.SatWindow(40.0)}
+    malformed_windows[("sbas", 133)].add(
+        1.0, 2.0, cn0=40.0, lock_s=100.0, corr=0.0)
+    bad_state = {"epoch": 2.0, "tracker": {"sats": [
+        {"sys": "sbas", "prn": 133, "epoch": 2.0,
+         "carrier_cycles": 3.0, "cn0_proxy": float("nan"),
+         "lock_s": 101.0, "slip": False},
+        "not-an-object",
+    ]}}
+    bad_rows, bad_diag = pd.process_state(
+        bad_state, malformed_windows, 40.0, 40.0, 30.0, 28)
+    check("finite gate: malformed sats fail closed without exception",
+          bad_rows == [] and bad_diag["sbas 133"]["ok"] is False
+          and bad_diag["invalid[1]"]["ok"] is False
+          and malformed_windows[("sbas", 133)].samples == [])
+    bad_rows, bad_diag = pd.process_state(
+        {"epoch": float("inf"), "tracker": {"sats": []}}, {},
+        40.0, 40.0, 30.0, 28)
+    check("finite gate: nonfinite state epoch rejected",
+          bad_rows == [] and bad_diag["input"]["ok"] is False)
+    bad_rows, bad_diag = pd.process_state(
+        {"epoch": 1.0, "tracker": []}, {}, 40.0, 40.0, 30.0, 28)
+    check("shape gate: malformed tracker rejected",
+          bad_rows == [] and bad_diag["input"]["ok"] is False)
+
     # --- emitted GEO sigma: calibrated, never optimistic OLS (round 16) ---
-    # Six disjoint windows whose TRUE slope wanders ±0.4 Hz across windows:
+    # Six consecutive, non-overlapping fits on one continuous phase
+    # generation whose TRUE slope wanders ±0.4 Hz across windows:
     # the cross-window scatter must dominate each window's tiny OLS sigma,
     # and the emitted row sigma must carry it (not the raw OLS value).
     def feed(n_win, win_s=60.0):
         windows = {}
         rows, diag = [], {}
-        for k in range(n_win):
-            base = 100000.0 + k * (win_s + 10.0)
-            wander = 0.4 * math.sin(k * 2.1)
-            for i in range(int(win_s) + 1):
-                t = base + i
-                nz = 0.004 * (((i * 37 + k * 11) % 11) - 5) / 5.0
-                cyc = (-500.0 + wander) * i + nz
-                st = {"epoch": t, "tracker": {"sats": [
-                    {"sys": "sbas", "prn": 131, "carrier_cycles": cyc,
-                     "slip": False, "cn0_proxy": 40.0,
-                     "lock_s": 5000.0 + i, "epoch": t}]}}
-                rows, diag = pd.process_state(st, windows, win_s, 10.0, 25.0, 20)
+        base = 100000.0
+        span = int(win_s)
+        phase = 0.0
+        for i in range(n_win * span + 1):
+            if i:
+                interval = min((i - 1) // span, n_win - 1)
+                phase += -500.0 + 0.4 * math.sin(interval * 2.1)
+            block = min(i // span, n_win - 1)
+            t = base + i
+            nz = 0.004 * (((i * 37 + block * 11) % 11) - 5) / 5.0
+            cyc = phase + nz
+            st = {"epoch": t, "tracker": {"sats": [
+                {"sys": "sbas", "prn": 131, "carrier_cycles": cyc,
+                 "slip": False, "cn0_proxy": 40.0,
+                 "lock_s": 5000.0 + i, "epoch": t}]}}
+            rows, diag = pd.process_state(
+                st, windows, win_s, 10.0, 25.0, 20)
         return rows, diag
 
     rows, diag = feed(6)
@@ -366,8 +411,12 @@ def main():
     d = diag["sbas 131"]
     check("sigma: provisional 5x inflation before 5 windows",
           d["sigma_provisional"] is True
-          and abs(d["emitted_sigma_ppm"] - 5.0 * d["fit_sigma_ppm"]) < 1e-12,
-          f"emitted={d['emitted_sigma_ppm']} ols={d['fit_sigma_ppm']}")
+          and d["scatter_n"] == 2
+          and math.isclose(d["emitted_sigma_ppm"],
+                           5.0 * d["fit_sigma_ppm"],
+                           rel_tol=0.1, abs_tol=1.1e-9),
+          f"emitted={d['emitted_sigma_ppm']} ols={d['fit_sigma_ppm']} "
+          f"n={d['scatter_n']}")
 
     # --- P0b GeoCorrector: synthetic GEO, sign, stitch, gates, wrap -------
     # Synthetic GEO over the real site-anchor coordinates. TRUTH is one
@@ -478,7 +527,13 @@ def main():
     g4.update(geo1, unix_of(t0_s + 3700))
     _, a, r = g4.correct(unix_of(t0_s + 3700), 0.0)
     check("p0b gate: |dt|>3600 -> stale", not a and r == "stale", f"{a} {r}")
-    _, a, r = g4.correct(unix_of(t0_s + 3599), 0.0)
+    # Use a separately refreshed vector at that evaluation epoch: querying
+    # g4 backwards in time would now correctly fail the nonnegative message-
+    # age gate rather than test propagation age.
+    g4b = pd.GeoCorrector(site)
+    geo_3599 = dict(geo1, applied_t=1.0)
+    g4b.update(geo_3599, unix_of(t0_s + 3599))
+    _, a, r = g4b.correct(unix_of(t0_s + 3599), 0.0)
     check("p0b gate: |dt|=3599 still applies", a, f"{a} {r}")
 
     # message freshness: applied_t frozen -> stale after GEO_MSG_FRESH_S,
@@ -505,32 +560,106 @@ def main():
     # retry of the same vector stays rejected without double-counting
     g8 = pd.GeoCorrector(site)
     g8.update(geo1, unix_of(t0_s))
+    accepted_refresh = g8._msg_refresh_unix
     bad = mk_geo(t0_s + 128, [p + 5000.0 for p in prop(geo1, 128.0)],
                  geo1["vel_mps"], geo1["acc_mps2"], iodn=99)
+    bad["applied_t"] = 10.0
     g8.update(bad, unix_of(t0_s + 1))
     check("p0b swap: oversized stitch rejected, old vector kept",
-          g8.rejected_swaps == 1 and g8.geo is geo1,
+          g8.rejected_swaps == 1
+          and g8._fingerprint(g8.geo) == g8._fingerprint(geo1),
           f"rej={g8.rejected_swaps}")
+    check("p0b swap: rejected vector cannot refresh accepted message age",
+          g8._msg_refresh_unix == accepted_refresh
+          and g8._last_applied_t == geo1["applied_t"],
+          f"refresh={g8._msg_refresh_unix} applied={g8._last_applied_t}")
     g8.update(bad, unix_of(t0_s + 2))     # same vector retried: quiet
     check("p0b swap: rejected vector not double-counted",
           g8.rejected_swaps == 1, f"rej={g8.rejected_swaps}")
     _, a, r = g8.correct(unix_of(t0_s + 3), 0.0)
     check("p0b swap: correction still applies from the kept vector",
           a, f"{a} {r}")
+    repaired = mk_geo(
+        t0_s + 128, prop(geo1, 128.0),
+        [geo1["vel_mps"][i] + geo1["acc_mps2"][i] * 128.0
+         for i in range(3)], geo1["acc_mps2"], iodn=99)
+    repaired["applied_t"] = 11.0
+    g8.update(repaired, unix_of(t0_s + 3.5))
+    check("p0b swap: corrected retry with same iodn/t0 is reconsidered",
+          g8._fingerprint(g8.geo) == g8._fingerprint(repaired)
+          and g8._last_applied_t == 11.0,
+          f"iodn={g8.geo.get('iodn')} applied={g8._last_applied_t}")
     ok_geo = mk_geo(t0_s + 128, prop(geo1, 128.0),
                     [geo1["vel_mps"][i] + geo1["acc_mps2"][i] * 128.0
                      for i in range(3)], geo1["acc_mps2"], iodn=100)
+    ok_geo["applied_t"] = 12.0
     g8.update(ok_geo, unix_of(t0_s + 4))
     check("p0b swap: sane vector accepted after a rejection",
-          g8.geo is ok_geo and g8.rejected_swaps == 1,
+          g8._fingerprint(g8.geo) == g8._fingerprint(ok_geo)
+          and g8.rejected_swaps == 1,
           f"rej={g8.rejected_swaps}")
     # malformed swap candidate: rejected, old vector kept
     g9 = pd.GeoCorrector(site)
     g9.update(geo1, unix_of(t0_s))
     g9.update({"iodn": 7, "t0_s": t0_s + 5}, unix_of(t0_s + 1))
     check("p0b swap: malformed vector rejected, old kept",
-          g9.rejected_swaps == 1 and g9.geo is geo1,
+          g9.rejected_swaps == 1
+          and g9._fingerprint(g9.geo) == g9._fingerprint(geo1),
           f"rej={g9.rejected_swaps}")
+
+    # Correction-bearing fields can change under the same iodn/t0. That is
+    # still a model swap and must be validated + stitched, not assigned raw.
+    same_id = dict(geo1)
+    same_id["pos_m"] = list(geo1["pos_m"])
+    same_id["pos_m"][0] += 0.25
+    same_id["applied_t"] = 1.0
+    gs = pd.GeoCorrector(site)
+    ts = unix_of(t0_s + 20)
+    gs.update(geo1, ts)
+    old_term, _ = gs._term(geo1, ts)
+    new_term, _ = gs._term(same_id, ts)
+    gs.update(same_id, ts)
+    check("p0b same-id: correction mutation is stitched",
+          gs._fingerprint(gs.geo) == gs._fingerprint(same_id)
+          and abs(gs.offset_cycles - (old_term - new_term)) < 1e-9,
+          f"offset={gs.offset_cycles}")
+
+    # Non-finite/malformed vectors never become the initial or replacement
+    # model, and a regressed decode timestamp cannot refresh accepted data.
+    nan_geo = dict(geo1)
+    nan_geo["pos_m"] = [float("nan"), *geo1["pos_m"][1:]]
+    gn = pd.GeoCorrector(site)
+    gn.update(nan_geo, ts)
+    check("p0b finite: NaN initial vector rejected",
+          gn.geo is None and gn.rejected_swaps == 1)
+    gi = pd.GeoCorrector(site)
+    gi.update(geo1b, ts)
+    inf_geo = dict(geo1b)
+    inf_geo["agf0_s"] = float("inf")
+    inf_geo["applied_t"] = 6.0
+    gi.update(inf_geo, ts + 1.0)
+    check("p0b finite: Inf replacement keeps accepted vector",
+          gi._fingerprint(gi.geo) == gi._fingerprint(geo1b)
+          and gi.rejected_swaps == 1)
+    regressed = dict(geo1b, applied_t=4.0)
+    gi.update(regressed, ts + 2.0)
+    check("p0b freshness: regressed applied_t rejected",
+          gi._fingerprint(gi.geo) == gi._fingerprint(geo1b)
+          and gi._last_applied_t == 5.0
+          and gi.rejected_swaps == 2)
+    _, a, r = gi.correct(ts + 3.0, float("nan"))
+    check("p0b finite: nonfinite carrier input fails closed",
+          not a and r == "nonfinite-input", f"{a} {r}")
+    bad_integer_geo = dict(geo1, iodn=47.5)
+    gj = pd.GeoCorrector(site)
+    gj.update(bad_integer_geo, ts)
+    check("p0b types: fractional IODN is rejected",
+          gj.geo is None and gj.rejected_swaps == 1)
+    gfuture = pd.GeoCorrector(site)
+    gfuture.update(geo1, ts + 10.0)
+    _, a, r = gfuture.correct(ts, 0.0)
+    check("p0b freshness: future refresh time is rejected",
+          not a and r == "msg-stale", f"{a} {r}")
 
     # GPS-day wrap: t0 at 86384 (16 s grid), evaluation 60 s past
     # midnight -> dt wraps to +76 s and the correction still applies

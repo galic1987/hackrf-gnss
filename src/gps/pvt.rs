@@ -166,12 +166,16 @@ pub(crate) fn solve_w(meas: &[Meas], guess: [f64; 3], weighted: bool) -> Option<
 
 /// Clock-only solve result (sub-ns Leg 1 v2) — position held fixed at the
 /// surveyed site anchor, the receiver clock is the single unknown.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ClockFix {
     pub clock_km: f64,
     /// RAW (unweighted) RMS of the final residuals, metres.
     pub residual_rms_m: f64,
     pub n_sat: usize,
+    /// Indices into the caller's input slice that survived clock_free
+    /// filtering and studentized rejection. Consumers use this to report the
+    /// accepted constellation composition rather than pre-rejection counts.
+    pub accepted_indices: Vec<usize>,
     /// max hat-matrix diagonal of the final set (1-unknown weighted design,
     /// h_i = w_i/Σw) — how close the set came to the untestable h→1 limit.
     pub max_leverage: f64,
@@ -196,17 +200,18 @@ pub struct ClockFix {
 pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool) -> Option<ClockFix> {
     // (y, w) per row. y is anchor-fixed, so it is constant across the
     // rejection loop — only the surviving set changes on a drop.
-    let mut rows: Vec<(f64, f64)> = meas
+    let mut rows: Vec<(f64, f64, usize)> = meas
         .iter()
-        .filter(|m| !m.clock_free)
-        .map(|m| {
+        .enumerate()
+        .filter(|(_, m)| !m.clock_free)
+        .map(|(input_index, m)| {
             let g = norm3([
                 anchor_ecef_km[0] - m.sat[0],
                 anchor_ecef_km[1] - m.sat[1],
                 anchor_ecef_km[2] - m.sat[2],
             ]);
             let w = if weighted { el_w(anchor_ecef_km, m.sat) } else { 1.0 };
-            (m.pseudorange - g, w)
+            (m.pseudorange - g, w, input_index)
         })
         .collect();
     if rows.len() < 4 {
@@ -219,7 +224,7 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
         let clock = rows.iter().map(|r| r.0 * r.1).sum::<f64>() / sw;
         let mut worst = 0.0f64;
         let mut worst_pos = 0usize;
-        for (pos, &(y, w)) in rows.iter().enumerate() {
+        for (pos, &(y, w, _)) in rows.iter().enumerate() {
             let r_m = (y - clock).abs() * 1000.0;
             // h → 1: the row carries no redundancy (the mean interpolates
             // it) — untestable, never blamed (aeae8ec's h→1 exemption).
@@ -238,6 +243,7 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
                 clock_km: clock,
                 residual_rms_m: (ss / n as f64).sqrt() * 1000.0,
                 n_sat: n,
+                accepted_indices: rows.iter().map(|r| r.2).collect(),
                 max_leverage,
             });
         }
@@ -1055,6 +1061,10 @@ mod tests {
         m[low].pseudorange += 5.0;
         let f = solve_clock_only(&m, STATION, true).expect("converges");
         assert_eq!(f.n_sat, 5, "the biased sat must be rejected");
+        assert!(
+            !f.accepted_indices.contains(&low),
+            "accepted identity must exclude the rejected input row"
+        );
         assert!(
             (f.clock_km - 50.0).abs() < 1e-3,
             "clock err {:.3} m after rejection",

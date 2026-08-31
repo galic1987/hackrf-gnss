@@ -8,7 +8,7 @@ import math
 import random
 import sys
 
-from clock_bias_analyzer import analyze, detrend, tdev, verdict
+from clock_bias_analyzer import analyze, detrend, report_exit_status, tdev, verdict
 
 
 def _white_pm(n, sigma, seed=7):
@@ -64,9 +64,12 @@ def test_detrend_removes_linear_drift():
 
 
 def _rows(gen, t0, n, dt=1.0, rms_m=5.0):
-    return [{"epoch": t0 + k * dt, "clock_ns": 0.01 * k, "clock_ns_uw": 0.01 * k,
+    return [{"schema": "clock_bias-v4",
+             "epoch": t0 + k * dt, "clock_ns": 0.01 * k, "clock_ns_uw": 0.01 * k,
              "residual_rms_m": rms_m, "residual_rms_m_uw": rms_m + 0.5,
-             "n_sat": 8, "n_fresh": 2, "n_pred": 6, "slips": 0,
+             "n_sat": 8, "n_gps": 6, "n_bds": 2,
+             "ab_membership_match": True,
+             "n_fresh": 2, "n_pred": 6, "slips": 0,
              "gen": gen, "source": "clock_bias"} for k in range(n)]
 
 
@@ -103,9 +106,12 @@ def test_mixed_cadence_splits_and_refuses():
     for k in range(3400):
         ep.append(t)
         t += dts[k % 10]
-    rows = [{"epoch": e, "clock_ns": 0.0, "clock_ns_uw": 0.0,
+    rows = [{"schema": "clock_bias-v4",
+             "epoch": e, "clock_ns": 0.0, "clock_ns_uw": 0.0,
              "residual_rms_m": 5.0, "residual_rms_m_uw": 5.5,
-             "n_sat": 8, "n_fresh": 2, "n_pred": 6, "slips": 0,
+             "n_sat": 8, "n_gps": 6, "n_bds": 2,
+             "ab_membership_match": True,
+             "n_fresh": 2, "n_pred": 6, "slips": 0,
              "gen": "v2-1", "source": "clock_bias"} for e in ep]
     rep = analyze(rows)
     assert len(rep["segments"]) > 100, len(rep["segments"])
@@ -143,6 +149,119 @@ def test_gen_latest_analyzed_by_default():
     rep = analyze(rows, all_gens=True)
     assert rep["gen"] is None and rep["all_gens"] is True
     assert rep["n_gen"] == 200, rep["n_gen"]
+
+
+def test_latest_all_bad_generation_cannot_fall_back_to_old_pass():
+    old = _rows("old-good", 1_000_000.0, 4000)
+    newest = _rows("new-all-bad", 2_000_000.0, 100, rms_m=900.0)
+    rep = analyze(old + newest)
+    assert rep["gen"] == "new-all-bad", rep["gen"]
+    assert rep["n_gen_raw"] == 100, rep["n_gen_raw"]
+    assert rep["n_gen"] == 0, rep["n_gen"]
+    assert rep["verdict"] is None
+    assert rep["gate_fails"] == ["no rows after filtering"], rep["gate_fails"]
+
+
+def test_latest_schema_invalid_generation_cannot_fall_back():
+    old = _rows("old-good", 1_000_000.0, 4000)
+    newest = _rows("new-broken", 2_000_000.0, 100)
+    for row in newest:
+        row.pop("clock_ns")
+    rep = analyze(old + newest)
+    assert rep["gen"] == "new-broken"
+    assert rep["n_gen_raw"] == 100
+    assert rep["n_schema"] == 0
+    assert rep["verdict"] is None
+    assert any("clock_bias-v4" in reason for reason in rep["gate_fails"])
+
+
+def test_malformed_epoch_cannot_disappear_behind_old_generation():
+    rows = _rows("old-good", 1_000_000.0, 4000)
+    rows.append({"schema": "clock_bias-v4", "gen": "new-broken",
+                 "epoch": "bad"})
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert rep["n_identity_invalid"] == 1
+    assert any("epoch identity" in reason for reason in rep["gate_fails"])
+
+
+def test_unrepresentably_large_epoch_cannot_crash_or_pass():
+    rows = _rows("old-good", 1_000_000.0, 4000)
+    rows.append({"schema": "clock_bias-v4", "gen": "new-broken",
+                 "epoch": 10 ** 1000})
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert rep["n_identity_invalid"] == 1
+
+
+def test_json_parse_error_is_claim_fatal():
+    rep = analyze(_rows("old-good", 1_000_000.0, 4000), parse_errors=1)
+    assert rep["verdict"] is None
+    assert any("unparseable JSON" in reason for reason in rep["gate_fails"])
+
+
+def test_mutating_input_snapshot_is_claim_fatal():
+    rep = analyze(_rows("old-good", 1_000_000.0, 4000),
+                  snapshot_changed=True)
+    assert rep["verdict"] is None
+    assert any("immutable snapshot" in reason for reason in rep["gate_fails"])
+
+
+def test_generation_and_integer_schema_are_exact():
+    for mutate in (
+        lambda row: row.pop("gen"),
+        lambda row: row.__setitem__("n_sat", 8.0),
+        lambda row: row.__setitem__("n_gps", "6"),
+        lambda row: row.__setitem__("slips", False),
+        lambda row: row.pop("n_fresh"),
+    ):
+        rows = _rows("v4-types", 1_787_000_000.0, 4000)
+        mutate(rows[-1])
+        rep = analyze(rows)
+        assert rep["verdict"] is None, rep
+        assert rep["gate_fails"], rep
+
+
+def test_passing_numeric_screen_is_explicitly_exploratory():
+    rep = analyze(_rows("v4-screen", 1_787_000_000.0, 4000))
+    assert rep["verdict"] is True
+    assert rep["claim_grade"] is False
+    assert rep["exploratory_reasons"]
+    assert report_exit_status(rep) == 2
+
+
+def test_duplicate_epoch_is_refused_not_sorted_away():
+    rows = _rows("v2-1", 1_787_000_000.0, 4000)
+    rows[2000]["epoch"] = rows[1999]["epoch"]
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert any("duplicate/nonmonotonic" in f for f in rep["gate_fails"]), \
+        rep["gate_fails"]
+
+
+def test_subthreshold_cadence_variation_splits_uniform_grid():
+    # 1.20 s is below the historical 1.5x gap threshold for a 1.0 s median,
+    # but it is not a uniform grid and must not enter index-based TDEV.
+    rows = _rows("v2-1", 1_787_000_000.0, 4000)
+    t = rows[0]["epoch"]
+    for i, r in enumerate(rows):
+        r["epoch"] = t
+        t += 1.20 if i % 10 == 9 else 1.0
+    rep = analyze(rows)
+    assert len(rep["segments"]) > 100, len(rep["segments"])
+    assert rep["verdict"] is None
+    assert rep["gate_fails"], rep["gate_fails"]
+
+
+def test_alternating_three_percent_cadence_is_not_uniform_tdev_grid():
+    rows = _rows("v4-cadence", 1_787_000_000.0, 4000)
+    t = rows[0]["epoch"]
+    for i, row in enumerate(rows):
+        row["epoch"] = t
+        t += 0.97 if i % 2 else 1.03
+    rep = analyze(rows)
+    assert len(rep["segments"]) > 100
+    assert rep["verdict"] is None
 
 
 def main():

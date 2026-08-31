@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""gpsdo_probe.py — publish Leo Bodnar LBE-1421 GPSDO health to state.gpsdo.json.
+"""Publish Leo Bodnar receiver NMEA navigation health to state.gpsdo.json.
 
-The station's clock star (Bodnar OUT1/OUT2 -> Pro#2/One P1) is only trustworthy
-while the GPSDO itself stays locked. Nothing else on the machine watches it:
-this probe reads the NMEA stream on the Bodnar's USB CDC port and atomically
-publishes fix quality, satellite count, HDOP and per-constellation SNR so a
-reference degradation is visible in the observations directory (and, via
-/api/sync, on the panel) instead of being discovered after the fact.
+The probe reads the NMEA stream on the Bodnar's USB CDC port and atomically
+publishes fix quality, satellite count, HDOP and per-constellation SNR. A fresh
+valid GGA proves only that the receiver has a navigation fix. It is not
+oscillator-lock, 10 MHz phase/frequency, PPS-quality, holdover, or UTC-offset
+telemetry, so the schema calls it `nmea_fix_valid`, never `lock`.
 
 Stdlib only (macOS cu.* devices are plain ttys after stty). Publish cadence
 ~5 s, atomic (tmp + rename), with an explicit `ttl_s` so consumers can
@@ -109,7 +108,7 @@ def snapshot(st, port):
         "ttl_s": TTL_S,
         "gpsdo": {
             "port": port,
-            "lock": bool(fresh_gga and st.get("fix_quality", 0) > 0),
+            "nmea_fix_valid": bool(fresh_gga and st.get("fix_quality", 0) > 0),
             "fix_quality": st.get("fix_quality") if fresh_gga else None,
             "n_sat": st.get("n_sat") if fresh_gga else None,
             "hdop": st.get("hdop") if fresh_gga else None,
@@ -156,7 +155,7 @@ def main():
             port, fd = open_port()
             if fd is None:
                 publish({"epoch": time.time(), "ttl_s": TTL_S,
-                         "gpsdo": {"port": None, "lock": False,
+                         "gpsdo": {"port": None, "nmea_fix_valid": False,
                                    "error": "no /dev/cu.usbmodem* (GPSDO absent)"}})
                 print("gpsdo_probe: no GPSDO serial port found, waiting...", flush=True)
                 time.sleep(5)
