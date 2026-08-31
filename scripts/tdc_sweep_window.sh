@@ -159,17 +159,22 @@ log "pkill -TERM tracker (pattern-broken)"
 pkill -TERM -f 'tracker''_producer.py' 2>/dev/null
 sleep 3
 
-if pgrep -f 'live''_radio' > /dev/null 2>&1 || pgrep -f 'hackrf''_transfer' > /dev/null 2>&1; then
-    log "live_radio/hackrf_transfer still alive — TERM the orphan (never -9)"
+# live_radio winds down slowly after its parent dies (observed 2026-08-31
+# 02:46Z: gone within ~60 s of tracker TERM, but well past a 6 s wait) —
+# give it up to 10 rounds of 6 s before declaring the radio held.
+orphan_tries=0
+while pgrep -f 'live''_radio' > /dev/null 2>&1 || pgrep -f 'hackrf''_transfer' > /dev/null 2>&1; do
+    orphan_tries=$(( orphan_tries + 1 ))
+    if [ "$orphan_tries" -gt 10 ]; then
+        RADIO_HELD=1
+        log "FATAL: orphan live_radio/hackrf_transfer refuses TERM after ${orphan_tries} rounds (~60 s) — radio not free, aborting without reset"
+        exit 1
+    fi
+    log "live_radio/hackrf_transfer still alive — TERM the orphan, round $orphan_tries/10 (never -9)"
     pkill -TERM -f 'live''_radio' 2>/dev/null
     pkill -TERM -f 'hackrf''_transfer' 2>/dev/null
-    sleep 3
-fi
-if pgrep -f 'live''_radio' > /dev/null 2>&1 || pgrep -f 'hackrf''_transfer' > /dev/null 2>&1; then
-    RADIO_HELD=1
-    log "FATAL: orphan live_radio/hackrf_transfer refuses TERM — radio not free, aborting without reset"
-    exit 1
-fi
+    sleep 6
+done
 log "radio verified free of orphans"
 
 # --- 5. board reset (checked) -----------------------------------------------
