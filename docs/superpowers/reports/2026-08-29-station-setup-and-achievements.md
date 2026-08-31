@@ -23,7 +23,7 @@ provisional or retracted, it says so.
 
 ## TL;DR
 
-A HackRF Pro, disciplined by a GPSDO in a star topology, autonomously
+A HackRF Pro, referenced to a GPSDO in a star topology, autonomously
 tracks GPS L1 C/A, Galileo E1, BeiDou B1I and SBAS WAAS, demodulates SBAS
 messages, solves a fixed-anchor clock-bias observable at 1 Hz, and
 publishes everything to a live education panel (http://localhost:8090/sync.html).
@@ -46,12 +46,10 @@ continuous clean hour of clock-bias data exists yet.
  HackRF One P1 (CLKIN)   HackRF Pro P1      HackRF One P28 pin 16   HackRF Pro P28 pin 16
  …922c63dc21748847       …645061de252d6613      (TRIGGER.IN)            (TRIGGER.IN)
  
-                       [ Shared RF via Power Splitter ]
-                       AA.250 active GNSS patch
-                   /                              \
-          (DC-block leg)                    (DC-pass leg)
-       HackRF One RF IN                     HackRF Pro RF IN
-       *Safe gains (0/0/0)*
+ RF paths are independent in this retained configuration:
+   AA.250 active GNSS patch -> HackRF Pro RF IN
+   ClearStream/bench feed   -> HackRF One RF IN (currently starved)
+ A shared-RF splitter/ABBA calibration is proposed, not deployed evidence.
 
   HackRF Pro #1 (…977c…) — DEAD, out of the station. Never target it.
 ```
@@ -62,10 +60,10 @@ continuous clean hour of clock-bias data exists yet.
 - **Clock eras, measured on air:** free-running Pro TCXO ≈ +0.53 ppm;
   GPSDO-referenced star era ≈ −0.054 ppm; broken-chain era −1.7 ppm. The
   star restoration is visible in the drift history.
-- **Physical-labeling hold (USER-PHYSICAL):** repo documents say OUT2→Pro,
-  OUT1→One, but external-clock detection cannot prove which Bodnar output
-  feeds which radio. Both cable ends must be photographed and labeled
-  before either output is re-tasked to 1PPS.
+- **Physical labels:** OUT2 is the split 10 MHz source; OUT1 is the split
+  1PPS source. Electrical presence and NMEA navigation health do not prove
+  PPS phase, output delay, or oscillator lock; retain photos/configuration
+  records with any final measurement.
 - **USB:** the Pro streams ~32 MB/s; simultaneous Pro+One streaming on one
   USB2 bus is unsafe — separate root controllers required for dual-radio
   work.
@@ -97,7 +95,7 @@ BeiDou 2, SBAS 2.**
 
 ## 3. What has been achieved (verified)
 
-1. **Four-constellation live tracking on a GPSDO-disciplined HackRF Pro.**
+1. **Four-constellation live tracking on a GPSDO-referenced HackRF Pro.**
    GPS L1 C/A, Galileo E1, BeiDou B1I, SBAS WAAS concurrently, with
    acquisition seeded from broadcast ephemeris (RINEX hourly).
 2. **SBAS demodulation depth.** 250-sym Viterbi + CRC24Q framing; MT2–5
@@ -140,10 +138,10 @@ BeiDou 2, SBAS 2.**
 8. **GPSDO health monitoring.** The reference's own NMEA is watched at
    5 s cadence with a 30 s TTL — a dead probe reads degraded, never
    healthy.
-9. **Operational robustness.** The station survived a Pro unplug/wedge
-   cycle: a recovery watcher detected, reset, restarted and re-verified
-   the pipeline unaided. The corrected window law (reset immediately
-   after kill, before any build) is in AGENTS.md.
+9. **Operational lesson.** The station survived a Pro unplug/wedge cycle,
+   which established the restart ordering in AGENTS.md. The legacy automatic
+   reset watcher is now retired; monitoring is observe-only and hardware
+   recovery is a manual maintenance-window procedure, not a supervisor mode.
 10. **Education interface.** The sync panel documents every stage of the
     signal/clock path against the real hardware (MAX2831/MAX5864/
     Si5351C/RFFC5072 class components), each tooltip carrying
@@ -152,27 +150,38 @@ BeiDou 2, SBAS 2.**
 ## 4. What has NOT been achieved (standing negative results)
 
 - **Sub-nanosecond absolute code-phase is physically unachievable** due to ionospheric diurnal variation (10–100+ ns), multipath, and anchor uncertainty (physical floor is 10–50 ns). The `< 1.0 ns` target is officially re-registered as a **carrier-phase TDEV stability claim** ($\sigma_x(\tau) < 1.0\text{ ns}$).
-- **TCXO vs Bodnar Physics:** TCXO frequency offset is $-0.667 \pm 0.004\text{ ppm}$ at this epoch and temperature (quantization LSB was $\pm 0.00003\text{ ppm}$, but thermal drift is $\pm 0.004\text{ ppm}$). The Bodnar rate truth is proved by three legs: (1) Run 1 vs Run 3 relative coherence, (2) WAAS GEO code-Doppler residual $< 0.006\text{ ppm} \ll 0.667\text{ ppm}$, and (3) Bodnar GPS lock ($\sim 10^{-11}$).
-- **TDC DNL & Saturation Physics:** The 79.74% saturation rate reflects the exact geometric ratio of the $5.07\text{ ns}$ window ($48\times 105.5\text{ ps}$) over the $25\text{ ns}$ clock ($20.28\%$ in-window $\to 79.72\%$ expected saturation). The $k=1$ excess and hop bins at codes 17 and 33 represent iCE40 fabric routing DNL across 16-LUT blocks, not a Bodnar comb.
-- **TDC external calibration: in progress.** Free TCXO-swept code-density calibration against Bodnar 1PPS scheduled to map 48-tap DNL/INL.
+- **TCXO vs Bodnar remains conditional:** the historical Run 1 ratio is
+  consistent with about $-0.667\text{ ppm}$, but the retained artifact lacks
+  clock-source/rate/build/temperature provenance. Run 3 supports relative
+  common-source coherence. NMEA fix validity is not oscillator/PPS truth.
+- **TDC scale is not calibrated:** 79.74% full-scale occupancy and the
+  historical 105.5 ps estimate are circular unless uniform input phase and
+  the composite code-48 transfer function are independently established.
+  The 16-code pattern is consistent with fabric-hop DNL; source visitation
+  remains unresolved.
+- **TDC external calibration is blocked:** the first sweep procedure was
+  quarantined after review found a 10 MHz post-reset clock could be mislabeled
+  as 40 MHz, non-atomic register reads, and no independent uniform-phase proof.
 - **The One is not a GPS receiver yet.** It runs an ATSC pilot stream, clock-detected but RF-dark (~0.02–0.05 z vs 0.75 z floor). Common-antenna shared-RF calibration sequence scheduled.
 - **BDS carrier sign verified; inter-system bias unmodeled** — v3 clock-bias uses fixed-anchor clock solve with studentized rejection.
 - **The GPSDO discipline loop is design-only/shadow-only** — the correction register is computed, never written.
 
 ## 5. What is next (ranked)
 
-1. **Tonight 20:41 EDT — v3 availability bake-off (armed, automatic):**
-   does the GPS+BDS solver deliver a continuous clean hour? If yes →
-   first-ever TDEV evaluation on clean data.
+1. **Preserve the live station:** observe-only supervision; no build, image
+   switch, reset, capture, or source change outside an explicit hardware
+   window.
 2. **Next maintenance window (tracker restart required):** tracker
    session-UUID provenance propagated into clock_bias/P0b/PVT rows; BDS
    inter-system-bias state + retained-satellite identity emission;
    deaf-band watchdog (the 15:24 poisoned-start incident class);
    fit_hist session keying.
-3. **User-physical, when the user returns:** photograph/label both
-   Bodnar cable ends; inspect the One's RF path; decide the PPS port
-   budget; common-antenna splitter test for the One; antenna phase-center
-   survey if spatial work resumes.
+3. **TDC redesign before another run:** atomic fresh-event/status-bracketed
+   capture, direct clock/build/source attestation, and an independently swept
+   or phase-tagged stimulus.
+4. **User-physical:** retain photos/labels for both splitters and matched
+   cables; inspect the One's RF path; perform a safe-gain shared-RF/ABBA test
+   only after the capture manifest and USB-root plan are frozen.
 4. **Then:** MT9 oracle validation (independent ephemeris cross-check),
    second-GEO promotion review for Tier-1 voting, GEO-in-solver ranging
    (needs SBAS pseudorange production in the tracker), TDC external

@@ -1,48 +1,91 @@
-# 2026-08-29 — TDC PPS Run 1 + Run 3 (Latch Calibration SUCCESS)
+# 2026-08-29 — Run 1 / Run 3 preliminary clock-ratio and TDC observations
 
 Window: 21:59–23:30 EDT (Run 1), 08:25–08:45 EDT next day (Run 3). Pro #2 (645061de).
 Topology: Bodnar LBE-1421 GPSDO — OUT2 10 MHz split to both radios' CLKIN (matched cables), OUT1 1PPS split to both radios' P28 pin 16 TRIGGER.IN (matched cables). P28 pinout correction of this date stands: pin 16 = TRIGGER.IN on Pro and One alike.
 
-Evidence: `gnss/observations/tdc_pps_run1.jsonl` (3,658 events, TCXO), `gnss/observations/ts_latch_run3.jsonl` (1200 s, CLKIN), analyzers `scripts/tdc_pps_analyze.py` and `scripts/tdc_ts_analyze.py`.
+Retained evidence: `gnss/observations/tdc_pps_run1.jsonl` (3,658 fine-code
+rows), `gnss/observations/ts_latch_run1.jsonl` (the coarse ratio used for the
+historical −0.667 ppm estimate), and `gnss/observations/ts_latch_run3.jsonl`
+(1,200 s coarse ratio after a stream selected CLKIN). The modern analyzers are
+`scripts/tdc_pps_analyze.py` and `scripts/tdc_ts_analyze.py`.
 
-*Amended (2026-08-30): The previous version of this report incorrectly voided Run 1 and falsely claimed the Bodnar 1PPS was biased or steered on a 16-tap comb. This amendment corrects the record using the definitive Run 1 + Run 3 differential measurement.*
+**Status amendment:** these artifacts are useful preliminary relative
+observations, not a completed calibration. Run 1 did not retain image/build,
+actual AFE clock, selected-reference readback, reset/stream history, GPSDO
+output telemetry, or temperature. “Idle” is not a clock-source state: stream
+shutdown does not reselect the internal reference. Consequently the historic
+source labels and absolute scale cannot be recovered from the JSONL alone.
 
-## 1. The Differential Clock Measurement (Run 1 vs Run 3)
+## 1. What the coarse latch rows establish
 
-We captured two long-duration `hackrf_pro` TDC hardware latch runs against the Bodnar 1PPS:
-- **Run 1 (TCXO free-running):** The HackRF Pro booted and remained idle. The Si5351 remained referenced to the internal TCXO. The measurement yielded **−0.667 ± 0.004 ppm** (drift slope was statistically significant across the 900s run, t=3.8; Allan floor 1.3e-9; the previous ±0.00003 ppm was merely quantization LSB/time).
-- **Run 3 (GPSDO-locked):** The HackRF Pro was briefly streamed (1 s at 16 Msps), forcing the firmware to latch the Bodnar 10MHz on `CLKIN` and steer the Si5351 to it. The measurement yielded exactly **32,000,000.000834 ticks** per PPS (+0.026 ± 0.026 ppb, literally +1 count in 1200 seconds).
+The slot-1 coarse trigger latch counts synthesized AFE ticks between observed
+PPS edges. It therefore measures a **ratio of two clocks**.
 
-**The Three-Legged Inference:**
-Run 3 alone only proves that the Si5351 locks the 32 MHz AFE coherently to the Bodnar 10 MHz reference. Run 1 + Run 3 proves the relative offset between the TCXO and the Bodnar. To prove absolute truth, we rely on three legs:
-1. **Relative Coherence:** Run 1 vs Run 3 isolates a −0.667 ppm offset to the unsteered TCXO.
-2. **WAAS Doppler Bound:** The live tracker's WAAS GEO Doppler limits absolute rate error to < 6 ppb (far below the 667 ppb bias).
-3. **GPS Lock:** The Bodnar's own GPS discipline loop provides ~10⁻¹¹ absolute rate truth.
-Conclusion: The HackRF TCXO sits exactly −0.667 ± 0.004 ppm below true time. The Bodnar GPSDO is perfectly 0.0 ppm.
+- **Run 1:** the retained ratio is consistent with an AFE/reference relation
+  about −0.667 ppm from nominal under the then-assumed clock configuration.
+  The artifact does not prove that the selected source was the TCXO or that
+  the nominal rate used by the old analyzer was correct.
+- **Run 3:** after a 16 Msps stream selected external CLKIN, the retained mean
+  was 32,000,000.000834 ticks per observed PPS. This is strong relative
+  common-source coherence evidence for that 20-minute window. “+1 count in
+  1,200 s” is counter quantization, not a ±0.026 ppb absolute uncertainty or a
+  proof of UTC/PPS truth.
 
-## 2. Retracting the Bodnar "Comb" and "Bias"
+WAAS code-Doppler and the Bodnar receiver's NMEA fix are useful cross-checks,
+but neither supplies a retained traceable absolute frequency/PPS uncertainty
+for these files. No conclusion here assigns either clock perfect truth.
 
-Prior to these hardware latch runs, we falsely attributed anomalies in the tracker output to the Bodnar GPSDO:
-- **The Bias:** We assumed an idle Pro was locked to the GPSDO. We now know it reverts to the TCXO unless explicitly locked by a stream. The −0.667 ppm bias was the TCXO, not the Bodnar.
-- **The "16-Tap Comb":** TDC histogram clustering (~16 taps) is NOT the Bodnar source. It is an artifact of **Differential Non-Linearity (DNL)** in the iCE40 FPGA logic fabric routing (e.g., segment-16 hop bins matching fabric routing quantitatively). The 105 ps/tap physics are real (SB_CARRY fast corner is 103 ps).
-- **The "Missing" Valid Codes (Saturation):** The 79.74% saturation rate (2917/3658 captures) is exactly correct geometry. 48 taps × ~105.5 ps = 5.07 ns window. 5.07 ns / 25 ns clock = 20.3% coverage. Expected saturation: 79.7%. Measured: 79.74%. Code-density DNL calibration is absolutely necessary before making any sub-ns physical time conversions (e.g., "400 ps comb", "1.3 ns window", "499 ps RMS"). The raw tap size cannot be linearly inferred from the in-window fraction without DNL mapping.
+## 2. Fine-code occupancy
 
-## 3. Retraction of Amendment 893526c
+`tdc_pps_run1.jsonl` contains a strong occupancy pattern, including structure at
+16-code boundaries. That is **consistent with** iCE40 carry/fabric-hop DNL;
+the capture cannot uniquely exclude nonuniform source-phase visitation.
 
-The conclusions drawn in commit 893526c regarding the Bodnar's output-1 synthesized behavior are fully retracted.
-- The -0.667 ppm bias was the HackRF TCXO, not the Bodnar.
-- The 16-tap comb was FPGA DNL, not the Bodnar.
-- Run 1 was NOT an aliasing failure; the host polling jitter (12.0 ms) would have produced a ~480,000-tick spread if the register were free-running. The 4-tick spread proves it is a genuine hardware latch.
+The former 105.5 ps estimate divided an inferred in-window fraction by 48 and
+then used the result to claim that the same saturation fraction confirmed a
+5.07 ns window. That is circular. In external-trigger mode:
 
-## 4. Coherence verdict
+- genuine strict-prefix interior codes are 1..47;
+- code 0 is not a qualified capture;
+- code 48 combines full-chain overflow with possible qualifier-deferred
+  capture after a bubbled first sample.
 
-- Pro #2 sample clock: perfectly locked to the Bodnar 10 MHz CLKIN (Run 3 proves zero drift vs PPS over 20 min).
-- HackRF One: still dark. No cross-radio coherence pairs possible until it locks. Physical RF feed check remains owner-owed.
+Therefore 79.74% code-48 occupancy is not an ordinary right-censored tap bin,
+and no absolute width, DNL/INL, 499 ps RMS, or fine-time LUT follows from this
+run. An independently swept/randomized or phase-tagged stimulus is required.
+
+This describes the retained pre-A2 run, not the current A2 capture contract.
+A2 preserves every nonzero tap-0-anchored raw word: strict prefixes 1..47 are
+`interior`, all ones is `composite-full-scale`, and anchored words with holes
+are `bubbled`. A bubbled word is valid mailbox/capture evidence, but its raw
+popcount is not a timing-bin code. The current density analyzer retains and
+counts such words while excluding them from the occupancy/calibration input;
+their presence is an explicit absolute-calibration gate failure.
+
+## 3. What was legitimately corrected
+
+The small coarse-latch spread is compelling functional evidence that the
+trigger snapshot is hardware-latched rather than a free-running counter read.
+It does not identify the selected clock source, calibrate fine bins, or prove
+that every six-byte fine word was status-bracketed against a mid-read PPS.
+
+## 4. Conditional coherence verdict
+
+- Pro #2: Run 3 supports close relative rate coherence between the synthesized
+  32 MHz clock and the Bodnar-derived PPS during that window. Absolute phase,
+  UTC offset, and PPS quality were not measured.
+- HackRF One: no paired RF/common-start dataset is part of this report. Shared
+  10 MHz and 1PPS wiring alone does not establish receiver-delay coherence.
 
 ## 5. Next Steps
 
-1. Code-density DNL/INL calibration for the TDC to map the true tap delays, bypassing the routing-boundary artifacts.
-2. HackRF One RF path physical check → splitter test → cross-radio coherence.
+1. Keep the legacy capture procedures quarantined.
+2. Build a long-lived, fresh-toggle, status-before/after reader with complete
+   build/source/rate/temperature provenance.
+3. Supply independent phase-uniformity evidence bound to the capture hash
+   before emitting absolute widths, DNL/INL, or a LUT.
+4. Then perform safe-gain shared-RF ABBA receiver-delay work on separate USB
+   roots; report uncertainty rather than parabolic-fit picoseconds alone.
 
 ## 6. Midday addendum (2026-08-30) — Leg 1 hour-gate retry verdict
 

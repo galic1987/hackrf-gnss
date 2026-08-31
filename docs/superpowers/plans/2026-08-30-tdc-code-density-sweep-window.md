@@ -1,5 +1,24 @@
 # 2026-08-30: TDC Code-Density Sweep Window (TCXO DNL Calibration)
 
+> **STATUS: QUARANTINED / SUPERSEDED — DO NOT EXECUTE.** The operator entry
+> point now exits without touching hardware. Review established that a reset
+> with no stream initializes nominal adclk at **10 MHz / 100 ns**, not the
+> 40 MHz / 25 ns assumed below; the retained Run 1 artifact cannot attest its
+> source or rate. A deterministic 1 Hz sample of a fixed TCXO/PPS ratio is a
+> phase rotation, not independent proof of uniform finite-sample excitation.
+> The old seven-process register poll can also accept a PPS transition during
+> its six-byte read, and code 48 is a composite overflow/deferred-capture code,
+> not a simple saturation bin. Finally, `gpsdo.lock` was only a fresh NMEA
+> navigation fix, not PPS/oscillator telemetry. The remainder of this file is
+> retained as historical design rationale, not an approved procedure.
+>
+> A replacement requires direct build/source/adclk attestation, one long-lived
+> status-before/data/status-after reader, atomic maintenance ownership with
+> verified restoration, and independently swept/randomized or phase-tagged
+> stimulus evidence bound to the capture SHA-256. See
+> `scripts/tdc_sweep_window.sh` and `scripts/tdc_density_cal.py` for the current
+> fail-closed boundary.
+
 Executes step 6 of `docs/superpowers/plans/2026-08-30-shared-rf-calibration-plan.md`
 ("Free TDC Code-Density DNL Calibration") as a single checkpointed operator
 procedure: `scripts/tdc_sweep_window.sh`. Companion: `scripts/supervisor_v2.sh`
@@ -65,9 +84,11 @@ whenever a 10 MHz reference is present at the connector. The Bodnar 10 MHz is
    processes (this bench shows a `service-supervisor.ts` node process from
    another project); the precise check is `pgrep -f 'scripts/supervisor\.sh'`.
    `supervisor_v2.sh` may be running: it stands down on `maintenance.lock`.
-2. Bodnar GPSDO locked: `observations/state.gpsdo.json` fresh with
-   `lock:true` (an unlocked Bodnar invalidates the PPS truth; gpsdo_probe keeps
-   running through the window — it holds a serial port, not the radio).
+2. The NMEA probe may remain running because it holds a serial port, not a
+   radio, but `nmea_fix_valid:true` is only receiver-navigation health. The
+   current bench has no telemetry that attests 10 MHz lock, PPS phase, UTC
+   offset, or holdover; this missing output-state evidence is an additional
+   reason the quarantined procedure cannot make an absolute claim.
 3. Bodnar 1PPS on P28.16 (external trigger), slot-0 timing image flashed
    (the script verifies TDC regs respond post-reset; it will NOT touch slots).
 4. Bench temperature known (see Temperature, below).
@@ -142,7 +163,9 @@ average.
   the sweep from a fresh reset.
 - Collapsed code diversity (long runs of identical popcounts / saturation
   → ~100% or → well below 60%): the CLKIN-latch signature. Void the run.
-- `state.gpsdo.json` goes `lock:false` or stale: PPS truth lost.
+- `state.gpsdo.json` goes `nmea_fix_valid:false` or stale: record the GNSS
+  receiver-health warning and abort this already-quarantined procedure. A
+  valid NMEA fix would still not establish PPS truth.
 - Bench temperature excursion > ~2 °C without logging (see below).
 
 ## RO self-test cross-check (regs 0x30–0x35)

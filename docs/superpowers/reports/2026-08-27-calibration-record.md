@@ -1,14 +1,23 @@
-# Calibration record — all sources, GPSDO era
+# Historical calibration ledger — superseded, not claim-grade
 
-Date: 2026-08-27. Reference: Leo Bodnar LBE-1421 GPSDO (GPS-locked 10 MHz +
-1PPS), wired into the station 2026-08-26. Every number below was MEASURED
-on this station; where a figure is a target or a vendor claim, it says so.
+> **QUARANTINED 2026-08-30.** This ledger predates the deployed Split Star and
+> mixes conditional ratios, NMEA navigation status, nominal clock assumptions,
+> and topology-dependent observations under the word "calibrated." It is kept
+> as a historical index to raw evidence, not as a current calibration
+> certificate. In particular, the Bodnar NMEA stream does not report 10 MHz
+> lock, PPS phase, UTC offset, or holdover; Pro/One clock and TDC claims below
+> must be re-established under the evidence gates in the current timing docs.
+
+Date: 2026-08-27. Declared reference configuration: Leo Bodnar LBE-1421
+10 MHz + 1PPS, wired into the station 2026-08-26. The retained evidence does
+not independently attest the output lock state or make every number below an
+absolute measurement.
 
 ## Frequency references
 
 | Source | Calibration datum | Method | Status |
 |---|---|---|---|
-| Bodnar LBE-1421 | GPSDO-locked by construction; vendor class ~1e-11 ADEV (NOT locally measured) | GPS survey-in via NMEA (position verified ~2 m class) | reference |
+| Bodnar LBE-1421 | GPSDO-derived outputs; vendor class ~1e-11 ADEV was quoted but NOT locally measured, and current NMEA is not output-lock telemetry | GPS survey-in via NMEA (position verified ~2 m class) | declared reference, uncalibrated locally |
 | Pro#1 tick (adclk counter) | −0.018 ppm vs session ref (median, PC-read jitter dominates); WAAS residual +0.000–0.003 ppm deadband | in-process tick poll while streaming + WAAS GEO Doppler | CALIBRATED live |
 | Pro#1 correction register | unity (never written; write→exact→clear→unity verified) | hackrf_debug radio-register readback, bank APPLIED | VERIFIED 2026-08-26/27 |
 | Pro#2 TCXO | +0.53 ppm | ATSC pilot offset on the One (fed by Pro#2 CLKOUT), continuous | CALIBRATED live |

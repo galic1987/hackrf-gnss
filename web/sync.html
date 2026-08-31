@@ -237,7 +237,7 @@
     <h2>60 Hz carrier phase &mdash; relative displacement (diagnostic)</h2>
     <div id="phase"><span class="dim">waiting for phase producer&hellip;</span></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Carrier-phase displacement" data-tip="Unwrapped carrier phase of the ATSC ch35 pilot × λ (≈497.7 mm), in mm of relative path change, last 60 s. Sub-mm sensitivity; the absolute zero wanders with multipath and atmosphere, so read the wiggles, not the offset."><canvas id="phasechart" class="cv"></canvas></div>
-    <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the HackRF One (cabled CLKOUT&rarr;CLKIN; lock unverified while the phase producer holds it full-time);
+    <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the HackRF One (10 MHz direct from the Bodnar Split Star; presence was checked while the radio was free, but the soft rate check is not topology proof);
     unwrapped carrier phase &times; &lambda; (&asymp;497.7 mm) = relative path displacement, last 60 s.
     Absolute zero wanders with multipath/atmosphere &mdash; sensitivity, not absolute accuracy, is the spec.</span>
   </div>
@@ -366,22 +366,22 @@
       <tbody>
         <tr><td>SPI read of counter</td><td class="num">&plusmn;1&ndash;5 ms</td><td class="num">&plusmn;300&ndash;1500 km</td>
             <td class="dim">diagnostics only &mdash; USB latency dominates</td></tr>
-        <tr><td>40-bit tick counter @ 32 MHz</td><td class="num">31.25 ns</td><td class="num">9.4 m</td>
-            <td class="ok">live &mdash; counts adclk cycles</td></tr>
-        <tr><td>Nibble-embedded timestamps</td><td class="num">25&ndash;31.25 ns, 0 jitter</td><td class="num">7.5&ndash;9.4 m</td>
-            <td class="ok">LIVE &mdash; verified on hardware 2026-08-23: 2.84M sequence-validated anchors, exact tick recovery from the stream (ext 12-bit mode incl. 8 Msps boost; slot-2 streams only, not 8-bit)</td></tr>
+        <tr><td>Slot-0 44-bit tick counter @ 32 MHz</td><td class="num">31.25 ns</td><td class="num">9.4 m</td>
+            <td class="ok">live modulo counter &mdash; counts adclk cycles; absolute era is external metadata</td></tr>
+        <tr><td>Nibble-embedded timestamps</td><td class="num">25&ndash;31.25 ns tick</td><td class="num">7.5&ndash;9.4 m tick scale</td>
+            <td class="ok">LIVE &mdash; 2.84M sequence-validated anchors, zero payload-bandwidth cost; timestamp/sample association still has bounded pipeline skew (slot-2 12-bit streams only)</td></tr>
         <tr><td>Clock correction register</td><td class="num">fp_1_63, &plusmn;1% window</td><td class="num" id="correq">&mdash;</td>
             <td class="warn">SHADOW — never written while actuate is off (the 122/122 write-collapse retro retired live writes; P0c is closed as negative evidence, not "open"). Any future write is a capture-boundary operation pending the continuity experiment</td></tr>
         <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;7.5&ndash;9.4 m</td>
-            <td class="ok">LIVE &mdash; verified on hardware (2026-08-29): Bodnar 1PPS latches 40-bit tick on P28 pin 16 (TRIGGER.IN) across Run 1 and Run 3 (4-count spread proves true hardware latch)</td></tr>
-        <tr><td>Carry-chain TDC (48-tap)</td><td class="num">&asymp;105.5 ps nominal / DNL-mapped</td><td class="num">~3.2 cm</td>
-            <td class="ok">LIVE &mdash; 48 SB_CARRY taps on P28.16; 79.74% saturation confirms 5.07 ns window / 25 ns clock geometry; code-density DNL calibration sweeps TCXO vs 1PPS to linearize inter-segment routing delays</td></tr>
+            <td class="warn">WIRED, NOT CALIBRATED &mdash; Bodnar 1PPS reaches P28 pin 16, but the retained runs do not prove a claim-grade coarse latch: slot 1 alone has the 48-bit trigger latch, while slot 0 alone has the TDC. CDC latency/phase is uncalibrated</td></tr>
+        <tr><td>Carry-chain TDC (48-tap)</td><td class="num">scale uncalibrated</td><td class="num">not established</td>
+            <td class="warn">FUNCTIONAL &mdash; A2 preserves tap-0-anchored raw external-trigger captures on P28.16, including explicitly classified bubbled words; bubbled popcounts are excluded from timing bins, code 48 is composite, and the retained stimulus does not prove uniform phase. The 105.5 ps / 5.07 ns figure remains a conditional historical estimate, not a calibration</td></tr>
         <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps (projection)</td><td class="num">~1&ndash;1.5 cm</td>
-            <td class="dim">projection &mdash; combines coarse 1PPS tick latch with DNL-calibrated 48-tap fine phase</td></tr>
+            <td class="dim">projection only &mdash; would require atomic coarse+fine capture, independent swept-edge DNL calibration, and a measured uncertainty budget; no shipped image currently co-hosts both paths</td></tr>
         <tr><td>ATSC pilot carrier PLL</td><td class="num">σ ~86&ndash;99 mm over 10 s, live</td><td class="num">relative displacement</td>
             <td class="ok">live &mdash; see chart; sub-mm is the theoretical phase granularity, achieved stability is multipath-limited</td></tr>
         <tr><td>Cross-radio interferometer</td><td class="num">~0.1 mm (design target)</td><td class="num">differential path</td>
-            <td class="dim">design &mdash; needs trigger sync; the shared-clock premise itself is unverified (CLKIN lock never established — the One is held full-time by the phase producer, so the detection read can't open it)</td></tr>
+            <td class="dim">design &mdash; both radios have direct 10 MHz and 1PPS wiring, but common-start behavior, receiver delay, RF path, and uncertainty remain unverified</td></tr>
       </tbody>
     </table>
   </div>
@@ -406,8 +406,7 @@
   <div class="card s12" id="rfcard">
     <h2 class="tip" tabindex="0" data-tip-title="Inside the HackRF Pro" data-tip="The hardware path every sample travels, animated left to right. Live values are bolted onto the stages that expose them: the FPGA tick rate, the discipline correction, and the consensus the whole chain is held to.">Inside the HackRF Pro &mdash; the measurement chain, live</h2>
     <div class="jchain" id="rfchain"><span class="dim">waiting for data&hellip;</span></div>
-    <span class="cap">Everything is slaved to ONE clock tree (Si5351 synthesizer &larr; the FPGA correction register &larr; the discipline loop),
-    which is why cross-band consensus can cancel clock error at all. The second radio (HackRF One) is cabled to the same reference via CLKOUT&rarr;CLKIN — but the lock is unverified: the CLKIN status read cannot open the One while the phase producer holds it, so treat its rows as possibly a second clock.</span>
+    <span class="cap">Each radio has its own Si5351 clock tree, and both are referenced directly to the same Bodnar 10 MHz Split Star. That syntonizes frequency; the matched 1PPS wiring does not by itself prove sample-zero alignment, receiver delay, or coherent capture.</span>
   </div>
 
   <!-- academy view D2: physical chain — antenna to screen (end-to-end zoom) -->
@@ -848,7 +847,7 @@ function renderJourney(st) {
     "SPI tick poll · ±30 ppm read jitter",
     "everything on ONE clock — common-mode errors → consensus works",
     "SDR front-end — one clock",
-    "Both radios are cabled to a single 32 MHz reference (CLKOUT&rarr;CLKIN), but the One's lock is unverified while the phase producer occupies it. Only when the lock is verified does any clock error shift every band identically, making cross-band consensus cancel it — until then the ATSC-vs-WAAS disagreement may be two clocks, not one. The Hz shown is the SPI tick poll: ±30 ppm of PC-read jitter, level is diagnostic only."));
+    "Both radios receive the Bodnar 10 MHz directly through the Split Star; each synthesizes its own AFE clock. This is frequency syntonization, not proof of sample-zero or RF-phase alignment. The Hz shown is the SPI tick poll: ±30 ppm of PC-read jitter, level is diagnostic only."));
 
   // 4. Tracking loops
   var nLock = sats.filter(function (s) { return s.lock_s > 0; }).length;
@@ -882,20 +881,20 @@ function renderJourney(st) {
     (d.stalled ? '<span class="pill warn">STALLED</span> ' : "") + esc(d.note || "") +
     (d.waas_locked !== undefined ? " · " + d.waas_locked + " WAAS refs" : ""),
     (d.step_limit_ppm !== undefined && d.clamp_ppm !== undefined
-      ? "±" + d.step_limit_ppm + " ppm steps · ±" + d.clamp_ppm + " ppm clamp"
-      : "±0.1 ppm steps · ±2 ppm clamp"),
+      ? "design bounds only: ±" + d.step_limit_ppm + " ppm steps · ±" + d.clamp_ppm + " ppm clamp"
+      : "SHADOW only · no approved actuator step"),
     "Discipline loop",
     "A slow software loop compares the WAAS GEO carriers — near-zero Doppler, so convenient always-on frequency references (GEO motion floors them at ~±0.01 ppm: ±0.5–3 m/s line-of-sight range-rate ÷ c) — against the local clock. Discipline currently runs SHADOW: the correction is computed and logged but never written, because every write was proven to collapse all tracker locks for ~1 min (122/122 in the archive)."));
 
-  // 7. Clock out (CLKOUT) — undisciplined while the loop runs SHADOW
+  // 7. Local clock tree; CLKOUT is idle in the Split Star
   var res = c.residual_ppm;
-  nodes.push(journeyNode("Clock out (CLKOUT)",
+  nodes.push(journeyNode("Local clock tree (CLKOUT idle)",
     (res !== undefined && res !== null) ? "<b>" + sgn(res) + Math.abs(res).toFixed(3) + "</b> ppm residual" : "—",
     (c.tick_rate_drift_ppm_vs_session_ref !== undefined
       ? "tick " + sgn(c.tick_rate_drift_ppm_vs_session_ref) + Math.abs(c.tick_rate_drift_ppm_vs_session_ref).toFixed(1) + " ppm vs session ref (PC-read)" : ""),
     (res !== undefined && res !== null) ? "≈ ±" + fmtInt(Math.abs(res * 1000)) + " ns/s" : "≈ — ns/s",
-    "Clock out — undisciplined while SHADOW",
-    "What leaves the box: a 32 MHz tick (31.25 ns per count) driving every timestamp, and 10 MHz on CLKOUT for the second radio. While the discipline loop runs SHADOW nothing steers this clock. residual_ppm is the error the references still measure on the uncorrected clock — multiply ppm by 1,000 to get ns of time error per second. The session-ref tick drift is PC-read jitter, diagnostics only."));
+    "Local synthesized clocks — CLKOUT idle",
+    "The selected reference feeds the Si5351, which synthesizes the AFE/timestamp clocks. The Pro's CLKOUT is deliberately disabled; the One receives its own Bodnar splitter leg. While the discipline loop runs SHADOW it computes but does not write correction. residual_ppm is conditional clock-rate evidence; the session-ref tick drift is PC-read jitter, diagnostics only."));
 
   document.getElementById("journey").innerHTML =
     nodes.join('<div class="jarrow">→</div>');
@@ -963,7 +962,7 @@ function renderSummary(st) {
       ? "carrier-phase noise over 10 s at 60 epochs/s — sub-mm sensitivity to path change; the absolute zero wanders with the atmosphere."
       : "no carrier lock on the TV pilot right now; the tracker re-locks automatically when the signal returns.",
     "Displacement — the bottom line",
-    "The ATSC ch35 pilot is GPS-disciplined at the transmitter; tracking its carrier phase on the second radio (cabled CLKOUT&rarr;CLKIN, lock unverified) reads relative path change at 60 epochs per second. σ over 10 s is the honest noise figure — 86–99 mm this era: multipath sets the floor, not the electronics; sub-mm is only the theoretical phase granularity."));
+    "The ATSC ch35 pilot is GPS-disciplined at the transmitter; tracking its carrier phase on the second radio (direct Bodnar Split Star reference) reads relative path change at 60 epochs per second. Shared frequency does not prove common sample phase. σ over 10 s is the honest noise figure — 86–99 mm this era: multipath sets the floor, not the electronics; sub-mm is only the theoretical phase granularity."));
 
   document.getElementById("jsummary").innerHTML = cards.join("");
 }
@@ -1392,7 +1391,7 @@ var GLOSSARY = {
   "PRN": "Pseudo-Random Noise code number — a satellite's CDMA identity. Each satellite repeats its own public code; receivers separate satellites by correlating against it.",
   "TCXO": "Temperature-Compensated Crystal Oscillator — the HackRF's 10 MHz master clock. Good (±0.5 ppm) but not atomic; everything here exists to measure and correct it.",
   "FPGA": "Field-Programmable Gate Array — the iCE40UP5K chip on the HackRF Pro whose logic we reprogram: the timestamp counter, notch filter and TDC all live here.",
-  "TDC": "Time-to-Digital Converter — a 48-tap carry-chain delay line in the FPGA measuring arrival time INSIDE one clock period (~105.5 ps nominal tap width). Verified on hardware against Bodnar 1PPS via P28 pin 16 (79.74% saturation confirms 5.07 ns window geometry); code-density DNL calibration sweeps TCXO vs 1PPS to map individual tap widths.",
+  "TDC": "Time-to-Digital Converter — a 48-tap carry-chain delay line in the FPGA for sub-clock trigger phase. A2 accepts nonzero tap-0-anchored raw words; bubbled words remain capture evidence but their popcount is excluded from timing bins. Absolute tap widths/DNL/INL are not calibrated: code 48 is composite and the retained PPS/clock relation does not prove uniform phase excitation.",
   "PPS": "Pulse Per Second — a precision hardware 1 Hz epoch mark. In our Split Star topology, Bodnar OUT1 1PPS is split over matched cables to P28 pin 16 (TRIGGER.IN) on both Pro and One.",
   "CLKIN": "clock input SMA: feed an external 10 MHz reference and the radio runs on it. In our Split Star topology, both HackRF Pro and HackRF One receive 10 MHz from Leo Bodnar GPSDO OUT2 via matched cables.",
   "CLKOUT": "clock output SMA: deliberately idle in our Split Star topology (both radios fed directly from GPSDO splitter to avoid cascade dependencies).",
@@ -1456,7 +1455,7 @@ var GLOSSARY = {
   "C/N₀": "carrier-to-noise density in dB-Hz — the fundamental signal-quality currency of GNSS.",
   "SAW": "Surface Acoustic Wave filter — the AA.250's built-in bandpass; why cellular doesn't desense it (and why Iridium rolls off).",
   "SOF": "Start of Frame — a USB heartbeat from the host (1 ms frames; 125 µs microframes at high-speed). Planned use: an M4 software latch for host↔device time transfer at ~10–50 µs — NOT a TDC calibration source.",
-  "DNL": "Differential Non-Linearity — per-bin width error of the TDC delay chain; measured by code-density calibration.",
+  "DNL": "Differential Non-Linearity — per-bin width error of the TDC delay chain. Code-density identifies it only with an independently established phase-uniform stimulus and a known edge-code transfer function; those gates remain open here.",
   "nibble": "4 bits. In ext-precision mode, the top nibble of each 12-bit sample carries the FPGA timestamp INSIDE the data stream — 31.25 ns-quantized timing with fixed pipeline delay (the nibble/IQ association skew of a few samples is under review).",
   "cycle slip": "when the PLL loses count of whole carrier cycles (deep fade) — shows as a phase jump; flagged, not hidden.",
   "multipath": "signal bouncing off buildings/ground before the antenna — the slow cm–m wander on top of every phase measurement.",
@@ -1683,8 +1682,8 @@ function render(st) {
       " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
       "references above. Per-fix the solver absorbs it; what actually limits position is the " +
       "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
-      "the 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) adds sub-tick fine phase down to ~105.5 ps nominal (79.74% saturation confirms 5.07 ns window / 25 ns clock geometry; code-density DNL calibration sweeps TCXO vs 1PPS). " +
-      "The whole chain is GPSDO-rooted since 2026-08-26 and in Split Star topology: Bodnar LBE-1421 OUT2 (10 MHz, GPS-locked) split to Pro CLKIN & One CLKIN, OUT1 (1PPS) split to Pro P28.16 & One P28.16.";
+      "the 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) is functionally present, but its absolute bin scale and full-scale semantics remain uncalibrated. " +
+      "The whole chain is GPSDO-rooted since 2026-08-26 and in Split Star topology: Bodnar LBE-1421 OUT2 (10 MHz) split to Pro CLKIN & One CLKIN, OUT1 (1PPS) split to Pro P28.16 & One P28.16. The NMEA probe reports navigation-fix health, not output lock or PPS phase.";
   }
   if (st.atsc_spread_ppm !== undefined) {
     fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
@@ -2596,19 +2595,19 @@ function renderRfChain(st) {
   nodes.push(journeyNode("MAX5864 ADC", "16 Msps I/Q", "8-bit (12-bit extended-precision mode)",
     "the sample quantum",
     "MAX5864 ADC/DAC", "The analog-to-digital converter turns the baseband wave into numbers: 16 million complex samples per second here. Extended-precision mode streams 12 bits (≈20 dB more dynamic range) with timestamps embedded in the stream itself."));
-  nodes.push(journeyNode("SGPIO / CPLD", "sample bus", "glue logic into the FPGA", "adds 0 jitter",
-    "SGPIO / CPLD", "Serial General-Purpose I/O is the high-speed bus carrying samples in; the CPLD is glue logic between the front-end and the FPGA. Pure wires — they add no timing error of their own."));
+  nodes.push(journeyNode("SGPIO / CPLD", "sample bus", "glue logic into the FPGA", "fabric-timed path",
+    "SGPIO / CPLD", "Serial General-Purpose I/O is the high-speed bus carrying samples in; the CPLD/FPGA logic moves data deterministically, but receiver, CDC, and pipeline delay still require measurement. No zero-jitter claim is assigned to this stage."));
   nodes.push(journeyNode("FPGA iCE40UP5K",
     c.live_tick_hz ? "<b>" + (c.live_tick_hz / 1e6).toFixed(6) + "</b> MHz" : "—",
-    "CIC 4× decimation · nibble timestamps in-stream · 48-tap carry-chain TDC (~105.5 ps nominal, P28.16 1PPS latch verified)",
-    "40-bit tick = 31.25 ns",
-    "FPGA — timestamps are born here", "The field-programmable gate array: a 40-bit counter ticks every sample clock (31.25 ns); in extended-precision mode the top nibble of each 12-bit sample carries that timestamp inside the stream — 31.25 ns-quantized timing recovered on hardware (2.84M anchors). The CIC filter decimates, and the 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) provides sub-tick fine phase down to ~105.5 ps (79.74% saturation confirms 5.07 ns window / 25 ns clock geometry; code-density DNL calibration sweeps TCXO vs 1PPS). The Hz shown is the live tick poll — PC-read jitter applies."));
+    "CIC 4× decimation · nibble timestamps in-stream · 48-tap carry-chain TDC (functional, absolute scale pending)",
+    "slot-0 44-bit tick = 31.25 ns",
+    "FPGA — timestamps are born here", "The field-programmable gate array: the live slot-0 image has a 44-bit modulo counter ticking every sample clock (31.25 ns in the current 32 MHz stream). Slot 2 instead has a 40-bit counter whose rotating top nibbles ride in its 12-bit stream — sequence recovery was verified over 2.84M anchors, with bounded pipeline association skew. Slot 0 also carries the 48-tap external-trigger TDC, but its absolute scale, edge-code mapping, DNL and INL remain uncalibrated. The Hz shown is the live tick poll — PC-read jitter applies."));
   nodes.push(journeyNode("Cortex-M4", "control core",
     "USB stack · SPI house-keeping · correction register <b>unity</b> (never written; readback 2026-08-26)" +
       ((d.correction_ppm !== undefined && d.correction_ppm !== null)
         ? " · shadow intent " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : ""),
     "would steer the Si5351 (SHADOW: no writes)",
-    "Cortex-M4 + correction register", "The main ARM core runs the USB stack, host requests, SPI register access and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers — that is the physical lever the discipline loop would pull, in ±0.1 ppm steps; today the loop runs SHADOW (computed, logged, never written)."));
+    "Cortex-M4 + correction register", "The main ARM core runs the USB stack, host requests, SPI register access and the clock-correction register. Writing the register reprograms the Si5351 synthesizer's fractional dividers; the register accepts a ±1% window, but every tested mid-stream write collapsed tracking. Today the loop is SHADOW (computed, logged, never written), with no approved live step size."));
   nodes.push(journeyNode("Cortex-M0", "SGPIO dataplane", "serializes the sample stream → USB queue", "91.9% loaded at 20 Msps",
     "Cortex-M0", "The small co-processor runs the SGPIO assembly server — it services the high-speed serial interface transaction by transaction, shoveling 16 Msps of interleaved I/Q into the USB transfer queue (~92% of its cycles at full rate). Its timing is hardware-scheduled — but the quantized timestamps come from the FPGA, not from either core."));
   nodes.push(journeyNode("USB → PC", "this page",
@@ -2665,7 +2664,7 @@ function renderPhysChain(st) {
     : (d.actuate === true ? '<span class="pill ok">ACTUATING</span> ' : "");
   nodes.push(journeyNode("Clock tree",
     d.correction_ppm !== undefined ? "corr <b>" + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + "</b> ppm" : "—",
-    shadPill + "GPSDO master: LBE-1421 10 MHz (GPS-locked) → Pro#1 CLKIN → P2 chain → Pro#2 → One — TCXOs bypassed while the chain lives" +
+    shadPill + "GPSDO master: LBE-1421 OUT2 10 MHz → splitter → Pro#2 CLKIN + One CLKIN — independent star branches" +
       ((st.clock || {}).clkin_signal_present === true ? ' · CLKIN signal present (≠ lock proof)' :
        (st.clock || {}).clkin_signal_present === false ? ' · CLKIN: no 10 MHz-class signal' :
        ' · CLKIN unreadable (One busy)') +
@@ -2682,8 +2681,8 @@ function renderPhysChain(st) {
               ? ' <span class="dim">(diff RMS ' + st.clkin_soft.diff_rms_ppm.toFixed(3) + ' ppm)</span>' : '')
           : ''),
     "shared reference → errors cancel in consensus",
-    "Clock tree — Si5351 + TCXO + CLKOUT",
-    "What happens here — a 10 MHz TCXO is the physics; the Si5351 synthesizer derives every sample clock from it through fractional dividers; the FPGA's fp_1_63 correction register (±1% window) is the actuator the discipline loop would pull; and 10 MHz leaves on CLKOUT to slave the HackRF One's CLKIN. Why it matters — ONE clock for everything is what makes consensus work: any clock error shifts every band identically, so cross-band agreement isolates and removes it, and the second radio inherits the same reference, making its errors common-mode too. What can go wrong — every actuating write collapses tracking (the 122/122 finding), so the loop runs SHADOW until a capture-boundary-safe write path exists; and CLKOUT ownership follows radio ownership — after any flash or reset it must be re-asserted (hackrf_clock -o 1) or the second radio silently freewheels."));
+    "Clock tree — Si5351 + selected reference",
+    "What happens here — each radio's Si5351 synthesizes its clocks from its selected reference; both radios receive independent splitter legs from the same Bodnar 10 MHz. The FPGA fp_1_63 register would offset the Pro's synthesized settings, but every observed mid-stream write collapsed tracking, so the loop remains SHADOW. CLKOUT is idle and no radio is upstream of the other. Shared reference makes frequency error largely common-mode, but it does not establish sample-zero or RF-phase coherence."));
 
   // 6. CPLD / SGPIO dataplane
   nodes.push(journeyNode("CPLD / SGPIO",
@@ -2696,10 +2695,10 @@ function renderPhysChain(st) {
   // 7. FPGA
   nodes.push(journeyNode("FPGA",
     "iCE40 UP5K · 4 image slots",
-    "slot 0 timing image: 48-tap carry-chain TDC + 40-bit tick counter · slot 2 ext-precision RX: NCO mix + CIC 4× decimation, nibble timestamps in-stream",
+    "slot 0 timing image: 48-tap carry-chain TDC + 44-bit modulo counter · slot 2 ext-precision RX: NCO mix + CIC 4× decimation, 40-bit nibble timestamps in-stream",
     "40-bit tick = 31.25 ns",
     "FPGA — what fabric does, and why",
-    "What happens here — programmable logic does the deterministic work software cannot: the slot-0 timing image counts a 40-bit tick every adclk cycle (31.25 ns) and carries the 48-tap carry-chain TDC (~105.5 ps nominal tap delay on P28.16, 79.74% saturation confirms 5.07 ns window / 25 ns clock geometry; free TCXO sweeps 1PPS to calibrate DNL); the slot-2 ext-precision image mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and stamps the tick as a nibble INSIDE the stream — 31.25 ns-quantized timing, 2.84M sequence-validated anchors on hardware. Why it matters — fabric is cycle-exact where a PC is not: timestamps born here carry none of the USB/OS jitter that swamps the SPI tick poll. What can go wrong — booting the wrong image silently drops features (TDC, nibble timestamps), which is why manifest_check.py verifies all four slots after every flash; a flash or reset also clears the correction register."));
+    "What happens here — programmable logic does deterministic work software cannot: slot 0 counts adclk ticks and carries the 48-tap external-trigger TDC; slot 2 mixes with an NCO, decimates CIC 4× to 8 Msps of 12-bit samples, and embeds timestamp nibbles in the stream. Timestamp sequences were validated over 2.84M anchors. The TDC's absolute bin scale and edge-code transfer function remain open. Why it matters — fabric is cycle-exact where a PC is not. What can go wrong — booting the wrong image silently drops features, so manifest_check.py attests all four slots outside active measurements; an FPGA reload also resets its timing state."));
 
   // 8. LPC4320
   nodes.push(journeyNode("LPC4320 MCU",
@@ -3407,7 +3406,7 @@ sweepFocus();
         "Each stage shows its live value and the precision it can <i>honestly</i> claim \u2014 not the precision of the stage after it. Timestamp ticks, TDC bins, averaged PPS phase and carrier phase are different observables, not successive measurements of the same error.",
         "<b>Physics reality (2026-08-30):</b> Code phase has a systematic absolute floor of ~10–50 ns (iono diurnal, multipath, and 6.7–10 ns anchor error). <b>Sub-ns absolute code-phase is physically unreachable.</b>",
         "The < 1.0 ns gate is officially re-registered as a <b>carrier-phase TDEV stability claim</b> (and previous −0.038 ns/s figures were exploratory).",
-        "The 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) provides sub-tick fine phase down to ~105.5 ps nominal (79.74% saturation confirms 5.07 ns window / 25 ns clock geometry; free TCXO sweeps 1PPS to calibrate DNL)."
+        "The 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) has functional A2 tap-0-anchored raw capture with explicit interior, composite-full-scale, and bubbled classes. Bubbled popcounts are not timing bins; absolute scale, DNL/INL, tap-0 transfer behavior and fine-time orientation remain open."
       ],
       src: "Live: state.tracker.json + state.phase.json + observations/tdc_pps_run1.jsonl."
     },
@@ -3500,21 +3499,21 @@ sweepFocus();
       b: [
         "Four FPGA images coexist on the Pro. Slot 0 hosts the 48-tap carry-chain TDC; Slot 1 a coarse trigger latch; Slot 2 the 12-bit extended-precision RX (CIC + NCO, 54% logic cells, 0% of the 128 KB SPRAM used); production runs release 0x469 on all four slots (manifest-verified today).",
         "The tick counter is a free-running 32 MHz fabric counter \u2014 its polls feed the heartbeat chart. The clock-correction register (RADIO_CLOCK_CORRECTION, radio-interface index 23, fp_1_63 \u2014 it steers the Si5351C-synthesized sample/LO clocks, never the TCXO) is computed by the discipline loop in shadow mode only and never written. The 0x60\u20130x7F FPGA page exists only as a GPSDO design-doc register-map proposal \u2014 no gateware implements it.",
-        "<b>TDC calibration status (2026-08-29):</b> 48-tap carry-chain delay line on P28.16 (TRIGGER.IN). Hardware 1PPS latch verified in Run 1 and Run 3 (79.74% saturation confirms exact 5.07 ns window geometry / ~105.5 ps nominal tap width). Free TCXO-swept code-density calibration sweeps 667 ns/s to map individual tap DNL/INL across 16-LUT block routing boundaries."
+        "<b>TDC status:</b> slot-0 external-trigger capture is functional. Run 1 occupancy suggested a conditional ~105.5 ps estimate, but retained provenance does not establish clock source/rate or uniform phase visitation; code 48 is composite. Absolute bin width, DNL/INL and fine-time orientation are therefore uncalibrated."
       ],
       svg: chainSvg([
         { t: ["SGPIO / ADC IF"], s: "8-bit I/Q in" },
         { t: ["CIC + NCO"], s: "Slot 2 \u00b7 12-bit" },
         { t: ["ts nibble", "packer"], s: "12-bit + 4-bit ts" },
         { t: ["tick ctr", "32 MHz"], s: "heartbeat source" },
-        { t: ["TDC 48-tap"], s: "Slot 0 \u00b7 ~105.5 ps*" },
+        { t: ["TDC 48-tap"], s: "Slot 0 \u00b7 scale pending" },
         { t: ["corr reg", "idx 23"], s: "shadow-only" },
         { t: ["SPI / USB"], s: "to host" }
       ], { bw: 108 }),
       specs: [
         ["FPGA", "Lattice iCE40UP5K", "5,280 LCs \u00b7 8 DSP16 \u00b7 30 EBR (120 Kbit) \u00b7 4 SPRAM (1 Mbit)"],
         ["SPRAM use (Slot 2)", "0 of 4 blocks", "128 KB free \u2014 reserved for frame buffer"],
-        ["TDC", "48-tap carry chain, regs 0x20\u20130x35", "~105.5 ps nominal · P28.16 1PPS latch verified*"],
+        ["TDC", "48-tap carry chain, regs 0x20\u20130x35", "P28.16 functional · absolute scale pending"],
         ["tick counter", "32 MHz, regs 0x10\u20130x16", "absent on Slot 2 (LC budget) \u2014 use ts nibble"],
         ["release", "0x469 all 4 slots (2026-08-28)", "0xE91 pin-swap build quarantined \u2014 never flash"]
       ],
@@ -3821,12 +3820,12 @@ sweepFocus();
         links: [["Product page", PG_MAX5864], ["Datasheet", DS_MAX5864]] } },
     { id: "fpga", x: 864, y: 280, w: 152, h: 82, t: ["iCE40UP5K FPGA"], s: "Pro only · timestamps born here",
       lv: function (ST) { var c = ST && ST.clock; return c && c.live_tick_hz ? (c.live_tick_hz / 1e6).toFixed(6) + " MHz tick" : null; },
-      tip: ["FPGA — where time is born", "Lattice iCE40 UltraPlus: sample glue, decimation, the 40-bit tick counter behind every timestamp, nibble timestamp injection, and (custom images) the carry-chain TDC. Green: the live tick poll."],
+      tip: ["FPGA — where time is born", "Lattice iCE40 UltraPlus: sample glue, decimation, image-specific 40/44/48-bit modulo counters, nibble timestamp injection in slot 2, and the carry-chain TDC in slot 0. Green: the live tick poll."],
       det: { h3: "iCE40UP5K FPGA — the Pro's timing engine",
-        paras: ["The Pro replaced HackRF One's CoolRunner-II CPLD with a real FPGA — small (5K LUTs, 1 Mbit SPRAM, 8 DSPs) but enough for a CIC decimator, sample packaging, the 40-bit tick counter at the AFE clock, top-nibble timestamp embedding, and this project's custom images: TDC carry-chain (slot 0), extended-precision RX (slot 2), and the planned soft-metric FIFO + SPRAM frame buffer.",
+        paras: ["The Pro replaced HackRF One's CoolRunner-II CPLD with a real FPGA — small (5K LUTs, 1 Mbit SPRAM, 8 DSPs) but enough for a CIC decimator, sample packaging, image-specific modulo counters (44-bit slot 0, 48-bit slot 1, 40-bit slot 2), top-nibble timestamp embedding in slot 2, and this project's custom images: TDC carry-chain (slot 0), extended-precision RX (slot 2), and the planned soft-metric FIFO + SPRAM frame buffer.",
           "The green number is the live tick-counter poll — the station's rawest view of the board's clock. PC/USB read jitter (±30 ppm) swamps the TCXO's physics, so its SHAPE matters, not its level.",
           "Honest status: production slot runs the attested 0x469 image on all four slots (attested 2026-08-28). The 0xE91 pin-swap experiment is quarantined — official mapping is FPGA clock on pin 47, trigger-in on pin 48, and any image that swaps them invalidates every TDC/trigger result."],
-        specs: [["Part", "Lattice iCE40UP5K: 5280 LCs, 30 EBRs, 4×128 Kbit SPRAM, 8 DSP16"], ["Roles", "SGPIO glue, CIC decimation, 40-bit tick (31.25 ns), nibble timestamp injection"], ["Custom images", "slot 0 TDC · slot 2 ext-precision RX · 4 slots total in flash"], ["Production", "release 0x469 on all 4 slots — attested; 0xE91 quarantined (pin swap)"], ["Replaces", "Xilinx CoolRunner-II CPLD on HackRF One (fixed glue, no user logic)"]],
+        specs: [["Part", "Lattice iCE40UP5K: 5280 LCs, 30 EBRs, 4×128 Kbit SPRAM, 8 DSP16"], ["Roles", "SGPIO glue, CIC decimation, image-specific modulo counters, slot-2 nibble injection"], ["Custom images", "slot 0 TDC · slot 2 ext-precision RX · 4 slots total in flash"], ["Production", "release 0x469 on all 4 slots — attested; 0xE91 quarantined (pin swap)"], ["Replaces", "Xilinx CoolRunner-II CPLD on HackRF One (fixed glue, no user logic)"]],
         links: [["iCE40 UltraPlus family", "https://www.latticesemi.com/en/Products/FPGAandCPLD/iCE40UltraPlus"], ["Hardware components", DOC_COMP]] } },
     { id: "mcu", x: 864, y: 452, w: 152, h: 82, t: ["LPC43xx"], s: "Cortex-M4 + M0",
       lv: function (ST) { var d = ST && ST.discipline; return d && d.correction_ppm != null ? "shadow " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : null; },
@@ -3852,7 +3851,7 @@ sweepFocus();
         paras: ["HackRF Pro's built-in temperature-compensated crystal oscillator is the default reference when no CLKIN signal is present. It drifts with temperature and age — the class of error this entire dashboard measures.",
           "History you can see in the data: the Pro ran free on this TCXO before the Bodnar era (the +0.53 ppm era in the drift history), and the One's plain-crystal era was worse (−3 ppm class). The star feed made both radios agree with the GPSDO and, through it, with GPS time itself.",
           "Physical truth: the TCXO is never 'wrong' — it is an oscillator doing its best. Discipline means comparing it against something better and either steering it (the correction register — currently SHADOW) or just knowing its error (what this station does)."],
-        specs: [["Type", "temperature-compensated crystal oscillator (Pro built-in; One has a plain crystal)"], ["Role", "reference for the Si5351C clock tree when CLKIN is absent"], ["Switching", "CLKIN detection → external reference wins, but ONLY at RX/TX stream start"], ["Measured here", "free-running Pro TCXO −0.667 ± 0.004 ppm (TDC calibration, epoch/temperature-scoped); GPSDO-locked Run 3 = +0.026 ppb exact (+1 count in 1200 s)"]],
+        specs: [["Type", "temperature-compensated crystal oscillator (Pro built-in; One has a plain crystal)"], ["Role", "reference for the Si5351C clock tree when CLKIN is absent"], ["Switching", "CLKIN detection → external reference wins, but ONLY at RX/TX stream start"], ["Historical evidence", "Run 1 showed a conditional ~−0.667 ppm relative ratio, but retained source/rate/temperature provenance is insufficient; Run 3 supports common-source relative coherence, not absolute GPSDO truth"]],
         links: [["External clock interface", DOC_CLK]] } },
     { id: "si5351", x: 472, y: 92, w: 142, h: 66, t: ["Si5351C"], s: "clock generator",
       tip: ["Si5351C — the clock tree's root", "A programmable clock generator: takes the reference (TCXO or CLKIN) and synthesizes every clock the board needs — AFE clock, FPGA clock, sample clocks, CLKOUT. The correction register reprograms its fractional dividers."],
@@ -3860,10 +3859,10 @@ sweepFocus();
         paras: ["The multi-PLL clock generator distributes the reference into the many frequencies a software-defined radio needs: the AFE/sample clocks (PLL-A), the FPGA fabric clock, and the CLKOUT port (PLL-B on Pro).",
           "The discipline lever: RADIO_CLOCK_CORRECTION re-programs the fractional-N dividers, pulling the synthesized sample clocks by fractions of a ppm WITHOUT touching the reference itself. Two consequences this station learned the hard way: (1) the correction does NOT propagate to CLKOUT (different PLL), so a downstream radio can't be disciplined through the clock cable; (2) writing it mid-stream historically collapsed every tracker lock — hence SHADOW mode.",
           "With the Bodnar on CLKIN, the Si5351C's job is distribution, not opinion: the reference is already GPS-disciplined, and the best local policy is to leave the steering alone."],
-        specs: [["Part", "Si5351C — 2 PLLs, 8 outputs, I²C-programmable"], ["Input", "TCXO or CLKIN (auto-detected at stream start)"], ["Correction", "fractional divider re-programming, ±0.1 ppm steps as used by the discipline loop"], ["Register map", "Skyworks AN619 (Si5351 register map generator)"]],
+        specs: [["Part", "Si5351C — 2 PLLs, 8 outputs, I²C-programmable"], ["Input", "TCXO or CLKIN (auto-detected at stream start)"], ["Correction", "±1% register window; shadow-only, no approved mid-stream step"], ["Register map", "Skyworks AN619 (Si5351 register map generator)"]],
         links: [["Datasheet", DS_SI5351], ["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
     { id: "p1", x: 30, y: 92, w: 112, h: 66, t: ["P1 = CLKIN"], s: "10 MHz in",
-      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO fix · " + g.n_sat + " sats (NMEA, not oscillator telemetry)" : "ref DEGRADED") : null; },
+      lv: function (ST) { var g = ST && ST.gpsdo; var ok = g && (g.nmea_fix_valid === true || (g.nmea_fix_valid == null && g.lock === true)); return g ? (ok ? "NMEA fix · " + g.n_sat + " sats (not oscillator telemetry)" : "NMEA fix invalid/dark") : null; },
       tip: ["P1 — the board's ear for the reference", "Default CLKIN: a 3.3 V, 10 MHz square wave. When detected at stream start it replaces the TCXO as the reference. Green: the health of the GPSDO feeding this port, from the live NMEA probe."],
       det: { h3: "P1 (CLKIN) — where the Bodnar enters the board",
         paras: ["P1 is one of the Pro's two configurable SMA ports; by default it is CLKIN. A detected 10 MHz, 3.3 V square wave overrides the TCXO — but the switch happens ONLY when an RX/TX stream starts, which is why this station's law says: attach the clock first, then start the tracker.",
@@ -3940,7 +3939,7 @@ sweepFocus();
           "'Silently' is the operative word — the only honest confirmations are hackrf_clock -i (electrical detection) and the on-air drift behavior (which this station watches continuously). The −1.7 ppm 'broken chain' era in the drift history is exactly this fallback happening unnoticed."],
         specs: [["Fallback", "automatic at stream start when CLKIN absent"], ["Station witness", "drift-history eras: free TCXO +0.53 ppm · GPSDO −0.054 ppm · broken chain −1.7 ppm"]], links: [] } },
     { x1: 142, y1: 125, x2: 172, y2: 125, label: "10 MHz", lx: 157, ly: 115,
-      tip: ["CLKIN — the GPSDO's voice", "Bodnar OUT2 → P1: a 10 MHz, 3.3 V square wave that, once detected at stream start, makes the whole board a GPS-disciplined instrument."],
+      tip: ["CLKIN — the GPSDO's voice", "Bodnar OUT2 → P1: a 10 MHz, 3.3 V square wave that, once detected at stream start, makes the board GPSDO-referenced; absolute discipline still depends on unobserved output lock/phase health."],
       det: { h3: "P1 → Si5351C (external reference)",
         paras: ["This short wire is the single most important connection in the station's clock architecture: through it, the Leo Bodnar LBE-1421's GPS-disciplined 10 MHz replaces the local TCXO as the reference for every oscillator on the board.",
           "Two caveats the station learned empirically: detection is only evaluated at RX/TX stream start (clock first, tracker second — always), and 'detected' says nothing about which Bodnar output or cable is attached — hence the labeling hold before any PPS work."],
@@ -3949,14 +3948,14 @@ sweepFocus();
       tip: ["P2 SMA — idle in Split Star mode", "P2 SMA is disabled to prevent near-field clock leakage. External 1PPS trigger is routed via internal header P28 pin 16 (TRIGGER.IN)."],
       det: { h3: "P2 SMA (idle) & P28.16 Trigger",
         paras: ["P2's default career is output (10 MHz square from PLL-B). In our Split Star topology, both radios receive 10 MHz from Leo Bodnar OUT2 via a splitter, leaving P2 disabled.",
-          "The external 1PPS trigger is routed to internal header P28 pin 16 (TRIGGER.IN), directly connected to the 48-tap carry-chain TDC in the FPGA."],
+          "The external 1PPS trigger is routed to internal header P28 pin 16 (TRIGGER.IN); it reaches the 48-tap carry-chain TDC only while slot 0 is loaded. Slot 1 instead carries the coarse trigger latch, so no shipped image provides atomic coarse+fine capture."],
         specs: [["P2 SMA", "Disabled (set_clkout_enable(false))"], ["1PPS Trigger", "Routed via P28 pin 16 (TRIGGER.IN) from Bodnar OUT1 splitter"]], links: [["Hardware triggering", DOC_TRIG]] } },
     { x1: 614, y1: 158, x2: 900, y2: 280, label: "clock tree (PLL-A: AFE + sample clocks)", lx: 700, ly: 205,
       tip: ["The clock tree — every tick's ancestor", "From the chosen reference, the Si5351C synthesizes the AFE clock, the FPGA fabric clock and the sample clocks. The correction register bends these dividers by fractions of a ppm."],
       det: { h3: "Si5351C → everywhere (clock distribution)",
         paras: ["One reference in, a family of clocks out: the AFE clock pacing the ADC, the FPGA fabric clock (pin 47 — remember the quarantined pin-swap), the sample clocks, and CLKOUT from the second PLL.",
-          "Every oscillator on the board is therefore the SAME oscillator, related by rational ratios. That's why a single 10 MHz reference disciplines the whole instrument — and why a reference problem corrupts every measurement identically (which is precisely what makes the drift-consensus math possible)."],
-        specs: [["PLL-A", "sample/AFE clocks — the corrected ones"], ["PLL-B", "CLKOUT — NOT corrected"], ["Correction", "fractional-N divider steering, ±0.1 ppm steps"]], links: [["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
+          "The outputs share one reference but are generated by distinct PLL/multisynth paths; they are not one phase-identical oscillator. A common 10 MHz source makes much frequency error common-mode while leaving synthesizer phase, receiver delay, and path residuals to measure."],
+        specs: [["PLL-A", "sample/AFE clocks — correction path currently shadow-only"], ["PLL-B", "CLKOUT — NOT corrected"], ["Correction", "±1% register window; no approved mid-stream writes"]], links: [["AN619 register map", "https://www.skyworksinc.com/-/media/Skyworks/SL/documents/public/application-notes/AN619.pdf"]] } },
     { x1: 940, y1: 158, x2: 940, y2: 280, label: "bitstream", lx: 948, ly: 215,
       tip: ["Flash → FPGA at boot", "At power-up the MCU reads the selected FPGA image slot from flash and configures the iCE40 over SPI. Slot switches are a deliberate, attested act on this station."],
       det: { h3: "W25Q32 → iCE40UP5K (boot configuration)",
@@ -4023,7 +4022,7 @@ sweepFocus();
         specs: [["Part", "Xilinx CoolRunner-II CPLD (non-volatile)"], ["Role", "fixed sample glue + control, no user logic"], ["Contrast", "Pro: iCE40UP5K FPGA, 4 image slots, custom timing logic"]],
         links: [["Hardware components", DOC_COMP]] } },
     { id: "mcu", x: 864, y: 452, w: 152, h: 82, t: ["LPC43xx"], s: "Cortex-M4 + M0",
-      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "ref lock · HDOP " + g.hdop : "ref DEGRADED") : null; },
+      lv: function (ST) { var g = ST && ST.gpsdo; var ok = g && (g.nmea_fix_valid === true || (g.nmea_fix_valid == null && g.lock === true)); return g ? (ok ? "NMEA fix · HDOP " + g.hdop : "NMEA fix invalid/dark") : null; },
       tip: ["LPC43xx — same computer", "Same dual-core ARM as the Pro: M4 control + M0 SGPIO dataplane. Green: the health of the reference this board reports seeing (from the live GPSDO probe)."],
       det: { h3: "LPC43xx (One) — same split-brain",
         paras: ["The One runs the same microcontroller family and the same architecture: M4 for USB/control, M0 for the SGPIO assembly server. Firmware: hackrf_usb from the same tree.",
@@ -4042,7 +4041,7 @@ sweepFocus();
       tip: ["Plain crystal — the One's weak flywheel", "No temperature compensation: this oscillator's frequency wanders with the weather. The −3 ppm era in the drift history is this crystal, free-running."],
       det: { h3: "Plain crystal (One) — why the One needed the star most",
         paras: ["The One ships with a plain crystal oscillator — no temperature compensation at all. Its free-running drift (−3 ppm class in this station's history, and it moves with temperature) is an order of magnitude worse than the Pro's TCXO.",
-          "That made the One the biggest beneficiary of the Bodnar star: with 10 MHz on its CLKIN, the crystal is out of the loop entirely, and the One measures as if it were a GPS-disciplined instrument.",
+          "That made the One the biggest beneficiary of the Bodnar star: with 10 MHz on its CLKIN, the crystal is out of the loop and the One is externally referenced. That does not by itself prove GPSDO lock, sample phase, or receiver delay.",
           "Fallback caveat identical to the Pro: if the CLKIN signal vanishes, the crystal silently returns at the next stream start. The station watches for exactly this (the soft drift-lock + the recency-gated ATSC voter)."],
         specs: [["Type", "plain crystal oscillator (no TCXO on One)"], ["Free-running", "−3 ppm class, temperature-sensitive (station drift history)"], ["Fix", "10 MHz CLKIN from the Bodnar star"]],
         links: [["External clock interface", DOC_CLK]] } },
@@ -4054,7 +4053,7 @@ sweepFocus();
         specs: [["Part", "Si5351C"], ["CLKOUT", "10 MHz, 3.3 V square, high-Z load"], ["Station", "unused — star topology, both radios fed directly"]],
         links: [["Datasheet", DS_SI5351]] } },
     { id: "clkin", x: 30, y: 92, w: 112, h: 66, t: ["CLKIN SMA"], s: "10 MHz in",
-      lv: function (ST) { var g = ST && ST.gpsdo; return g ? (g.lock ? "GPSDO fix · " + g.n_sat + " sats (NMEA, not oscillator telemetry)" : "ref DEGRADED") : null; },
+      lv: function (ST) { var g = ST && ST.gpsdo; var ok = g && (g.nmea_fix_valid === true || (g.nmea_fix_valid == null && g.lock === true)); return g ? (ok ? "NMEA fix · " + g.n_sat + " sats (not oscillator telemetry)" : "NMEA fix invalid/dark") : null; },
       tip: ["CLKIN — One's reference ear", "High-impedance input expecting a 3.3 V, 10 MHz square wave. Shared with header P22 pin 2 — feed ONE of them, never both. Wired today: Bodnar OUT2 via 10 MHz power splitter."],
       det: { h3: "CLKIN (One) — second star branch lands here",
         paras: ["The One's CLKIN is electrically the same idea as the Pro's P1: a detected 10 MHz square wave replaces the local crystal at stream start. Wired today from Bodnar OUT2 via an SMA power splitter with a cable matched in length to the Pro's feed — relative frequency drift between the radios is thereby ~0 by construction.",
@@ -4155,8 +4154,9 @@ sweepFocus();
   // ---------- wiring view: adding a third board ----------
   function wireHtml(ST) {
     var g = (ST && ST.gpsdo) || {};
-    var refLine = g.lock ? "<b class='hw-lv'>reference healthy</b> — " + g.n_sat + " sats, HDOP " + g.hdop + ", fix " + g.fix_quality
-                         : "<b style='color:#e57373'>reference DEGRADED or probe dark</b>";
+    var nmeaOk = g.nmea_fix_valid === true || (g.nmea_fix_valid == null && g.lock === true);
+    var refLine = nmeaOk ? "<b class='hw-lv'>NMEA navigation fix valid</b> — " + g.n_sat + " sats, HDOP " + g.hdop + ", fix " + g.fix_quality
+                         : "<b style='color:#e57373'>NMEA fix invalid or probe dark</b>";
     function card(t, rows) {
       return "<div style='background:#0c1218;border:1px solid #2a3742;border-radius:8px;padding:0.7em 1em;margin-bottom:0.7em'>"
         + "<h3 style='margin:0 0 0.4em;color:#9fd8f0'>" + t + "</h3>" + rows + "</div>";
@@ -4165,14 +4165,14 @@ sweepFocus();
     var h = "";
     h += "<div style='margin-bottom:0.7em;font-size:0.95em'>Live reference: " + refLine + " (gpsdo_probe, 5 s cadence, TTL 30 s — a dead probe reads as degraded, never as healthy)</div>";
     h += card("① CLOCK — 10 MHz frequency reference (Split Star)",
-      row("What it is", "A 10 MHz, 3.3 V square wave from Bodnar OUT2 split to both boards via an SMA power splitter so every sample clock and LO derives from the SAME oscillator.")
+      row("What it is", "A 10 MHz, 3.3 V square wave from Bodnar OUT2 split to both boards. Their clocks share a reference but are generated by distinct synthesizers, so phase and receiver delay remain to be measured.")
       + row("HackRF Pro", "P1 SMA = CLKIN (10 MHz from splitter) · P2 SMA = idle")
       + row("HackRF One", "CLKIN SMA = 10 MHz from splitter · CLKOUT SMA = idle")
       + row("Rules that bite", "Detection happens ONLY at RX/TX stream start. Verify with <code>hackrf_clock -i</code> after starting a stream.")
       + row("This station today", "Bodnar OUT2 \u2192 10 MHz Splitter \u2192 Pro P1 & One CLKIN (matched-length cables)"));
     h += card("② TRIGGER — 1PPS sample synchronization",
       row("What it is", "A 1PPS pulse from Bodnar OUT1 split to internal header P28 pin 16 (TRIGGER.IN) on both radios.")
-      + row("HackRF Pro", "P28 pin 16 = TRIGGER.IN (TDC external latch)")
+      + row("HackRF Pro", "P28 pin 16 = TRIGGER.IN (slot 0: TDC; slot 1: coarse latch; mutually exclusive)")
       + row("HackRF One", "P28 pin 16 = TRIGGER.IN (1PPS hardware arming)")
       + row("Procedure", "Arm both boards within the same 1PPS second to align capture start without 1-second sample skew.")
       + row("This station today", "Bodnar OUT1 \u2192 1PPS Splitter \u2192 Pro P28.16 & One P28.16 (matched-length cables)"));
@@ -4260,7 +4260,7 @@ sweepFocus();
     lv.innerHTML =
       "<span>FPGA tick <b>" + (c.live_tick_hz ? (c.live_tick_hz / 1e6).toFixed(6) + " MHz" : "—") + "</b></span>"
       + "<span>consensus <b>" + (ST.consensus_ppm != null ? sgn(ST.consensus_ppm) + Math.abs(ST.consensus_ppm).toFixed(3) + " ppm" : "—") + "</b></span>"
-      + "<span>GPSDO <b>" + (gd.lock ? "lock · " + gd.n_sat + " sats · HDOP " + gd.hdop : "DEGRADED/dark") + "</b></span>"
+      + "<span>GPSDO NMEA <b>" + ((gd.nmea_fix_valid === true || (gd.nmea_fix_valid == null && gd.lock === true)) ? "fix · " + gd.n_sat + " sats · HDOP " + gd.hdop : "invalid/dark") + "</b></span>"
       + "<span>CLKIN soft-verify <b>" + (ST.clkin_soft_verified === true ? "locked" : (ST.clkin_soft_verified === false ? "FAILED" : "closed (dark)")) + "</b></span>"
       + "<span>One <b>" + (ph.lock ? "phase lock" : "RF-dark") + "</b></span>"
       + "<span>discipline <b>" + (d.correction_ppm != null ? "SHADOW " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : "—") + "</b></span>"
