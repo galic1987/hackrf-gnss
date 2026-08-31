@@ -80,6 +80,22 @@ CHECKPOINT_EVERY_S=300
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) tdc_sweep[$$] $*"; }
 
+# PIDs holding (or able to claim) the PRO's radio. live_radio is Pro-only.
+# hackrf_transfer blocks only when it targets $PRO_SERIAL or names no -d
+# device (an undirected open can claim any board) — the One legitimately
+# runs its own hackrf_transfer all day (phase_producer pilot capture,
+# serial 922c...; unscoped matching aborted the 2026-08-31 02:47Z window).
+pro_radio_holders() {
+    pgrep -f 'live''_radio' 2>/dev/null
+    pgrep -fl 'hackrf''_transfer' 2>/dev/null | while read -r pid args; do
+        case "$args" in
+            *"$PRO_SERIAL"*) echo "$pid" ;;
+            *' -d '*)        : ;;
+            *)               echo "$pid" ;;
+        esac
+    done
+}
+
 case "$DUR" in
     ''|*[!0-9]*) log "FATAL: DURATION_S must be an integer (got '$DUR')"; exit 2 ;;
 esac
@@ -163,16 +179,17 @@ sleep 3
 # 02:46Z: gone within ~60 s of tracker TERM, but well past a 6 s wait) —
 # give it up to 10 rounds of 6 s before declaring the radio held.
 orphan_tries=0
-while pgrep -f 'live''_radio' > /dev/null 2>&1 || pgrep -f 'hackrf''_transfer' > /dev/null 2>&1; do
+while true; do
+    holders=$(pro_radio_holders)
+    [ -z "$holders" ] && break
     orphan_tries=$(( orphan_tries + 1 ))
     if [ "$orphan_tries" -gt 10 ]; then
         RADIO_HELD=1
-        log "FATAL: orphan live_radio/hackrf_transfer refuses TERM after ${orphan_tries} rounds (~60 s) — radio not free, aborting without reset"
+        log "FATAL: PRO-radio holder(s) [$(echo $holders)] refuse TERM after ${orphan_tries} rounds (~60 s) — radio not free, aborting without reset"
         exit 1
     fi
-    log "live_radio/hackrf_transfer still alive — TERM the orphan, round $orphan_tries/10 (never -9)"
-    pkill -TERM -f 'live''_radio' 2>/dev/null
-    pkill -TERM -f 'hackrf''_transfer' 2>/dev/null
+    log "PRO-radio holder(s) [$(echo $holders)] still alive — TERM, round $orphan_tries/10 (never -9)"
+    kill -TERM $holders 2>/dev/null
     sleep 6
 done
 log "radio verified free of orphans"
@@ -267,9 +284,10 @@ while :; do
     # window means activate_best_clock_source may have latched CLKIN (see plan
     # doc, THE COHERENCE TRAP) — the data is void from this instant. Abort via
     # the normal cleanup path (trap restores the station).
-    if pgrep -f 'live''_radio' > /dev/null 2>&1 || pgrep -f 'hackrf''_transfer' > /dev/null 2>&1; then
-        log "FATAL: live_radio/hackrf_transfer observed mid-sweep — CLKIN may have latched (coherence broken, see plan doc). Aborting sweep; data void from this instant."
-        printf '{"kind": "abort", "t": %s, "n": %s, "aborted_coherence_risk": true, "reason": "streaming process (live_radio/hackrf_transfer) observed during window"}\n' \
+    sentry_holders=$(pro_radio_holders)
+    if [ -n "$sentry_holders" ]; then
+        log "FATAL: PRO-radio streaming process observed mid-sweep [$(echo $sentry_holders)] — CLKIN may have latched (coherence broken, see plan doc). Aborting sweep; data void from this instant."
+        printf '{"kind": "abort", "t": %s, "n": %s, "aborted_coherence_risk": true, "reason": "PRO-radio streaming process observed during window"}\n' \
             "$(date +%s)" "$n_lines" >> "$OUT"
         exit 1
     fi

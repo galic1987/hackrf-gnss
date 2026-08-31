@@ -126,6 +126,22 @@ health_check() {
 }
 
 # --- recovery ---------------------------------------------------------------
+# PIDs holding (or able to claim) the PRO's radio. live_radio is Pro-only.
+# hackrf_transfer blocks only when it targets $PRO_SERIAL or names no -d
+# device — the One legitimately runs its own hackrf_transfer all day
+# (phase_producer pilot capture); unscoped matching would loop on its
+# respawning child until the consecutive-recovery give-up bricked us.
+pro_radio_holders() {
+    pgrep -f 'live''_radio' 2>/dev/null
+    pgrep -fl 'hackrf''_transfer' 2>/dev/null | while read -r pid args; do
+        case "$args" in
+            *"$PRO_SERIAL"*) echo "$pid" ;;
+            *' -d '*)        : ;;
+            *)               echo "$pid" ;;
+        esac
+    done
+}
+
 kill_everything() {
     # Pattern-broken pkill -TERM only. NEVER -9. Covers live_radio explicitly.
     pkill -TERM -f 'tracker''_producer.py'   2>/dev/null
@@ -133,15 +149,15 @@ kill_everything() {
     pkill -TERM -f 'examples/clock''_bias'   2>/dev/null
     pkill -TERM -f 'clock_bias''_shadow.py'  2>/dev/null
     pkill -TERM -f 'gpsdo''_probe.py'        2>/dev/null
-    pkill -TERM -f 'live''_radio'            2>/dev/null
-    pkill -TERM -f 'hackrf''_transfer'       2>/dev/null  # band_producer's spawned child
+    local holders
+    holders=$(pro_radio_holders)
+    [ -n "$holders" ] && kill -TERM $holders 2>/dev/null
     sleep 3
 }
 
 radio_is_free() {
-    # true only when no orphan live_radio OR hackrf_transfer holds the Pro
-    ! pgrep -f 'live''_radio' > /dev/null 2>&1 \
-        && ! pgrep -f 'hackrf''_transfer' > /dev/null 2>&1
+    # true only when nothing holds (or could claim) the Pro
+    [ -z "$(pro_radio_holders)" ]
 }
 
 reset_board() {
@@ -212,9 +228,8 @@ recover() {
             log "orphan live_radio survived ${tries}x TERM — will NOT reset or relaunch (never -9). Retrying next cycle."
             return 1
         fi
-        log "live_radio/hackrf_transfer still holds the radio — TERM again (try $tries)"
-        pkill -TERM -f 'live''_radio' 2>/dev/null
-        pkill -TERM -f 'hackrf''_transfer' 2>/dev/null
+        log "PRO-radio holder(s) [$(echo $(pro_radio_holders))] — TERM again (try $tries)"
+        kill -TERM $(pro_radio_holders) 2>/dev/null
         sleep 3
     done
     log "radio verified free of orphans"
