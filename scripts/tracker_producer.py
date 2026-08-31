@@ -279,6 +279,11 @@ def main():
                             disc.clear()
                             disc.update(r["discipline"])
                         else:
+                            # r["epoch"] is the SAMPLE-ACCURATE stream epoch
+                            # (3107967) and lags wall clock by the engine's
+                            # processing backlog — it must not be compared
+                            # against wall time. Stamp arrival for liveness.
+                            r["_rx"] = time.time()
                             sats[(r["sys"], r["prn"])] = r
 
             threading.Thread(target=reader, daemon=True).start()
@@ -293,9 +298,13 @@ def main():
                     with lock:
                         snap = dict(sats)
                         disc_snap = dict(disc)
-                    # drop PRNs silent for >10 s (channel dropped/re-acq)
+                    # drop PRNs silent for >10 s (channel dropped/re-acq).
+                    # Liveness = arrival time, NOT row epoch: the stream
+                    # epoch lags wall clock by the processing backlog, and
+                    # gating on it silently blanked the whole sat table
+                    # (2026-08-31 07:15 session, backlog ~4.6%/s growth).
                     snap = {k: v for k, v in snap.items()
-                            if now - v.get("epoch", 0) < 10}
+                            if now - v.get("_rx", 0) < 10}
                     try:
                         nwaas = publish(snap, now, disc_snap)
                     except Exception as e:
