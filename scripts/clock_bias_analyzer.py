@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Sub-ns claim analyzer (Leg 1 v2): detrend clock_bias.jsonl, RMS + TDEV, gates.
+"""Leg 1 v2 stability analyzer: detrend clock_bias.jsonl, RMS + TDEV, gates.
+
+The 1 ns gates are a STABILITY screen on the code-phase observable, not an
+absolute-accuracy claim (code phase floors at ~10-50 ns absolute; the
+re-registered Leg 1 claim gate is carrier-phase TDEV).
 
 Usage: python3 scripts/clock_bias_analyzer.py [path] [--min-rows 3400] [--all-gens]
 Gates (spec 2026-08-27): RMS < 1.0 ns and TDEV < 1.0 ns for tau in 10..1000 s.
@@ -322,7 +326,13 @@ def main():
         print(f"  TDEV(tau={t:>4}s): "
               + (f"{v:.3f} ns" if v is not None else "n/a (span < 3*tau)"))
     ok = rep["verdict"]
-    print("VERDICT:", "SUB-NS CLAIM SUPPORTED" if ok else "claim not supported")
+    # The 1 ns gates screen STABILITY only. The observable is code-phase
+    # pseudorange: iono/multipath/anchor systematics floor it at ~10-50 ns
+    # absolute regardless of averaging, so a pass here must never be read
+    # as an absolute sub-ns claim (re-registered gate: carrier-phase TDEV).
+    print("VERDICT:", "SUB-NS STABILITY GATES PASSED (code-phase observable; "
+          "absolute floor ~10-50 ns — not an absolute sub-ns claim)"
+          if ok else "stability gates not passed")
     if rep.get("ab_median_m") is not None:
         print(f"paired A/B: median (weighted-raw RMS) = "
               f"{rep['ab_median_m']:+.2f} m over {rep['ab_n']} epochs "
