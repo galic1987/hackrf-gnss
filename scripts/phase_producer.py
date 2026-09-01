@@ -184,8 +184,10 @@ def open_stream():
         os.mkfifo(FIFO)
     except FileExistsError:
         pass
+    lna_gain = os.environ.get("HACKRF_LNA", "40")
+    vga_gain = os.environ.get("HACKRF_VGA", "44")
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", ONE, "-f", str(int(F_TUNE)),
-           "-s", str(int(FS)), "-l", "0", "-g", "0", "-a", "0", "-r", FIFO]
+           "-s", str(int(FS)), "-l", str(lna_gain), "-g", str(vga_gain), "-a", "0", "-r", FIFO]
     log("launching: " + " ".join(cmd))
     proc = subprocess.Popen(cmd, env=ENV,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
