@@ -186,8 +186,12 @@ def open_stream():
         pass
     lna_gain = os.environ.get("HACKRF_LNA", "40")
     vga_gain = os.environ.get("HACKRF_VGA", "44")
+    # Antenna port power (3.3 V bias-tee) for active/mag-mount antennas;
+    # default off — enable only with a known 3-5 V external LNA antenna.
+    ant_power = os.environ.get("HACKRF_ANT_POWER", "0")
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", ONE, "-f", str(int(F_TUNE)),
-           "-s", str(int(FS)), "-l", str(lna_gain), "-g", str(vga_gain), "-a", "0", "-r", FIFO]
+           "-s", str(int(FS)), "-l", str(lna_gain), "-g", str(vga_gain), "-a", "0",
+           "-p", ant_power, "-r", FIFO]
     log("launching: " + " ".join(cmd))
     proc = subprocess.Popen(cmd, env=ENV,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
