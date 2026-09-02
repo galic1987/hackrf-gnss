@@ -7,9 +7,38 @@
 //! anchor (weighted AND unweighted — the paired A/B), and appends one row to
 //! observations/clock_bias.jsonl. Rows:
 //! {schema, epoch, clock_ns, clock_ns_uw, residual_rms_m,
-//!  residual_rms_m_uw, n_sat, n_gps, n_bds, n_bds_pre_reject, n_fresh,
-//!  n_pred, slips, gen, source}. n_gps/n_bds describe the weighted solver's
-//!  accepted post-rejection set.
+//!  residual_rms_m_uw, n_sat, n_gps, n_bds, n_sbas, n_bds_pre_reject,
+//!  ab_membership_match, n_sat_weighted, n_sat_unweighted, n_fresh,
+//!  n_pred, slips, gen, source} plus optional geo_ranging/dropped_slip
+//! (see the v4 additive amendment below). n_gps/n_bds/n_sbas describe the
+//! weighted solver's accepted post-rejection set.
+//!
+//! v4 additive amendment (2026-09-02, availability work order): schema
+//! string stays clock_bias-v4, new fields are ADDITIVE ONLY.
+//!  - SBAS GEO ranging (lever 2): sys=sbas rows for PRN 131/135 join the
+//!    solve. The tracker anchors their pseudorange to the 1 s SBAS block
+//!    boundary (src/live.rs Sys::Sbas nav arm); satellite state/clock come
+//!    from the tracker-published MT9 (sbas_geonav) via sbas::geo_at_txtime
+//!    (DO-229D A.4.5.1 2nd-order Taylor + agf0/agf1, the audited python
+//!    GeoCorrector math). Accepted GEO PRNs are listed additively as
+//!    geo_ranging: [prns] and counted in n_sbas so leg-1 weighting can
+//!    distinguish the ~10 m-class GEO ranging bias later; the residual
+//!    rejection loop is NOT relaxed for them.
+//!  - Slip-tolerant gate (lever 3b): when a satellite CONTRIBUTING to this
+//!    epoch's solve had a smoother reset (tracker slip, lock regression,
+//!    or innovation breach — exactly the events the `slips` counter
+//!    counts) and the pre-drop measurement count is >= 6, that satellite
+//!    is excluded and the epoch solved on the remainder (floor 4); the
+//!    row records dropped_slip: ["G..",..] and its `slips` count excludes
+//!    the dropped resets. Below 6 (or if dropping would go under 4) the
+//!    previous behavior is unchanged (publish with slips counted).
+//!  - A/B flag-not-suppress (lever 6): an accepted_indices mismatch
+//!    between the weighted and unweighted solves now PUBLISHES the epoch
+//!    with ab_membership_match:false plus n_sat_weighted/n_sat_unweighted
+//!    instead of silently skipping it; the analyzer keeps such rows out
+//!    of claims (quality filter) — visible in data, excluded from claims.
+//!    On mismatch rows the n_sat/n_gps/n_bds/n_sbas identity fields
+//!    describe the WEIGHTED solve's accepted set.
 //!
 //! v4 (2026-08-30): post-rejection constellation identity and a strict
 //! paired-A/B membership gate. v3 (2026-08-29) added the GPS+BDS vector.
@@ -61,6 +90,8 @@
 use hackrf_gnss::beidou_d1::{parse_rinex_bds, sat_at_txtime_bds};
 use hackrf_gnss::gps::broadcast::{parse_rinex_gps, wrap_tk, BrdcEph};
 use hackrf_gnss::gps::hatch::Hatch;
+use hackrf_gnss::gps::pvt::ClockFix;
+use hackrf_gnss::sbas::{geo_at_txtime, GeoEph};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::{fs, thread, time::Duration};
@@ -82,6 +113,116 @@ const WINDOW_S: f64 = 20.0;
 const EPH_REFRESH_S: f64 = 900.0;
 /// A sat's carrier prediction is trusted for two staircase periods.
 const PRED_WINDOW_S: f64 = 12.0;
+/// The WAAS GEOs this station ranges on (lever 2). The gate is a
+/// whitelist, not a Sys filter: only birds whose MT9 stream this station
+/// has actually observed and whose LOS physics were sanity-checked are
+/// admitted.
+const GEO_RANGING_PRNS: [u8; 2] = [131, 135];
+/// Slip-tolerant gate floor (lever 3b): only with this many built
+/// measurements may a slipped contributor be dropped and the epoch
+/// re-solved; below it, behavior is unchanged (publish with slips
+/// counted). 6 pre-drop leaves >= 5 after a single drop — above both the
+/// solver's 4-floor and the analyzer's n_sat >= 5 quality gate.
+const SLIP_DROP_MIN_PRE: usize = 6;
+/// DO-229D Table 2-1 MT9 timeout (en-route/terminal): a GEO vector whose
+/// |t − t0| exceeds this is stale — refuse to range on it (fail-closed).
+const GEO_MAX_DT_S: f64 = 360.0;
+
+/// Constellation of one built measurement (the per-row identity the
+/// accepted-set counters and the dropped_slip labels are derived from).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cls {
+    Gps,
+    Bds,
+    Sbas,
+}
+
+impl Cls {
+    /// RINEX-style satellite label ("G12" / "C32" / "S131") — dropped_slip
+    /// rows carry these instead of bare PRNs because GPS and BDS PRNs
+    /// collide (the live sky holds GPS 32 and BDS 32 simultaneously).
+    fn label(self, prn: u8) -> String {
+        match self {
+            Cls::Gps => format!("G{prn:02}"),
+            Cls::Bds => format!("C{prn:02}"),
+            Cls::Sbas => format!("S{prn}"),
+        }
+    }
+}
+
+/// Lever 3b decision, pure for the window tests: indices of measurements
+/// to drop before the solve. Non-empty only when the pre-drop count is
+/// >= SLIP_DROP_MIN_PRE, at least one contributor slipped, and dropping
+/// every slipped contributor still leaves the solver's 4-sat floor.
+fn plan_slip_drop(slipped: &[bool]) -> Vec<usize> {
+    let n_slip = slipped.iter().filter(|&&s| s).count();
+    if slipped.len() >= SLIP_DROP_MIN_PRE && n_slip > 0 && slipped.len() - n_slip >= 4 {
+        (0..slipped.len()).filter(|&i| slipped[i]).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Assemble the jsonl epoch row (pure for the window tests). `cls`/`prn`
+/// describe the measurement slice BOTH solves consumed (post slip-drop);
+/// identity counters (n_sat/n_gps/n_bds/n_sbas) and geo_ranging come from
+/// the WEIGHTED solve's accepted set — on an A/B membership mismatch the
+/// row still publishes (lever 6) with ab_membership_match:false and both
+/// n_sat_weighted/n_sat_unweighted, and the analyzer keeps it out of
+/// claims. `slips` must already exclude the dropped resets.
+#[allow(clippy::too_many_arguments)]
+fn epoch_row(
+    a: &ClockFix,
+    b: &ClockFix,
+    cls: &[Cls],
+    prn: &[u8],
+    epoch: f64,
+    n_bds_pre_reject: u32,
+    n_fresh: u32,
+    n_pred: u32,
+    slips: u32,
+    dropped_slip: &[String],
+    gen_id: &str,
+) -> Value {
+    let ab_match = a.accepted_indices == b.accepted_indices;
+    let n_bds = a.accepted_indices.iter().filter(|&&i| cls[i] == Cls::Bds).count();
+    let n_sbas = a.accepted_indices.iter().filter(|&&i| cls[i] == Cls::Sbas).count();
+    let n_gps = a.n_sat - n_bds - n_sbas;
+    let geo_ranging: Vec<u8> = a
+        .accepted_indices
+        .iter()
+        .filter(|&&i| cls[i] == Cls::Sbas)
+        .map(|&i| prn[i])
+        .collect();
+    let mut row = json!({
+        "schema": "clock_bias-v4",
+        "epoch": epoch,
+        "clock_ns": a.clock_km * 1e9 / 299_792.458,
+        "clock_ns_uw": b.clock_km * 1e9 / 299_792.458,
+        "residual_rms_m": a.residual_rms_m,
+        "residual_rms_m_uw": b.residual_rms_m,
+        "n_sat": a.n_sat,
+        "n_bds": n_bds,
+        "n_gps": n_gps,
+        "n_sbas": n_sbas,
+        "n_bds_pre_reject": n_bds_pre_reject,
+        "ab_membership_match": ab_match,
+        "n_sat_weighted": a.n_sat,
+        "n_sat_unweighted": b.n_sat,
+        "n_fresh": n_fresh,
+        "n_pred": n_pred,
+        "slips": slips,
+        "gen": gen_id,
+        "source": "clock_bias",
+    });
+    if !geo_ranging.is_empty() {
+        row["geo_ranging"] = json!(geo_ranging);
+    }
+    if !dropped_slip.is_empty() {
+        row["dropped_slip"] = json!(dropped_slip);
+    }
+    row
+}
 
 /// Per-PRN smoother output + prediction bookkeeping. The prediction base is
 /// the smoother's value and the carrier reading AT THE LAST FRESH CODE
@@ -308,6 +449,76 @@ fn build_meas_bds(
     })
 }
 
+/// GEO twin of build_meas (lever 2): satellite position/velocity/clock
+/// from the tracker-published MT9 vector (sbas_geonav -> sbas::GeoEph),
+/// propagated by sbas::geo_at_txtime — the DO-229D A.4.5.1 2nd-order
+/// Taylor + Sagnac rotation, the same transmit-time iteration convention
+/// as the GPS/BDS paths — with the agf0 + agf1·dt clock applied exactly
+/// like a GPS SV clock. Iono comes from the SBAS grid (the GEO is an L1
+/// signal whose pierce point sits inside the WAAS grid) and tropo from the
+/// same map as every other row. No PRC/LT corrections: WAAS addresses
+/// MT2-5/24/25 to mask slots 1..=37 (GPS), never to the GEO itself; the
+/// GEO integrity gates are MT9's own URA (15 = do-not-use) and the 360 s
+/// MT9 timeout. Expected quality is ~10 m-class ranging bias (GEO
+/// ephemeris + uncorrected code biases) — well inside the 1000 m
+/// studentized gate, which is deliberately NOT relaxed for these rows;
+/// the epoch row flags them (geo_ranging/n_sbas) for later weighting.
+fn build_meas_sbas(
+    prn: u8,
+    rho_m: f64,
+    t_tx: f64,
+    geos: &HashMap<u8, GeoEph>,
+    site_m: [f64; 3],
+    site_lla: [f64; 3],
+    igp_delay: &HashMap<(i16, i16), f64>,
+) -> Option<hackrf_gnss::gps::pvt::Meas> {
+    let geo = geos.get(&prn)?;
+    if geo.ura >= 15 {
+        return None; // MT9 URA "do not use"
+    }
+    if geo.dt_from(t_tx).abs() > GEO_MAX_DT_S {
+        return None; // stale vector — fail-closed rather than extrapolate
+    }
+    let (_, dt0, _) = geo_at_txtime(geo, t_tx, site_m);
+    let mut a = t_tx - dt0 + 0.125;
+    let (mut sat_m, mut dt_sv) = ([0.0; 3], dt0);
+    for _ in 0..2 {
+        let (s, d, r) = geo_at_txtime(geo, a, site_m);
+        sat_m = s;
+        dt_sv = d;
+        a = t_tx - d + r / 299_792_458.0;
+    }
+    let rel = [sat_m[0] - site_m[0], sat_m[1] - site_m[1], sat_m[2] - site_m[2]];
+    let (az, el) = hackrf_gnss::sbas_iono::azel(
+        site_lla[0].to_radians(),
+        site_lla[1].to_radians(),
+        rel,
+    );
+    let mut iono_m = 0.0;
+    if el > 0.0 && !igp_delay.is_empty() {
+        let ((plat, plon), fp) = hackrf_gnss::sbas_iono::ion_pierce_point(
+            (site_lla[0].to_radians(), site_lla[1].to_radians()),
+            az,
+            el,
+        );
+        if let Some(d) = hackrf_gnss::sbas_iono::iono_slant_delay(
+            plat.to_degrees(),
+            plon.to_degrees(),
+            fp,
+            igp_delay,
+        ) {
+            iono_m = d;
+        }
+    }
+    let tropo_m = tropo_delay_m(site_lla[2], el);
+
+    Some(hackrf_gnss::gps::pvt::Meas {
+        sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
+        pseudorange: (rho_m - iono_m - tropo_m) / 1000.0 + dt_sv * 299_792.458,
+        clock_free: false,
+    })
+}
+
 fn main() {
     // ephemeris: same loader live_fix uses (BRDC); refresh every 15 min
     let mut ephs = load_ephs();
@@ -346,6 +557,12 @@ fn main() {
     // the loop keeps that protection for both.
     let mut smoothers_bds: HashMap<u8, Hatch> = HashMap::new();
     let mut prev_bds: HashMap<u8, PrevSat> = HashMap::new();
+    // SBAS GEO chains (lever 2): same PRN-collision reasoning — a third
+    // map pair. GEO carrier is L1 (λ_L1), same NCO machinery, and the
+    // frame anchor refreshes every second so the fresh-code path runs
+    // every epoch (no ~6 s staircase for these channels).
+    let mut smoothers_sbas: HashMap<u8, Hatch> = HashMap::new();
+    let mut prev_sbas: HashMap<u8, PrevSat> = HashMap::new();
     let mut last_epoch = 0.0_f64;
     loop {
         thread::sleep(Duration::from_millis(500));
@@ -367,10 +584,22 @@ fn main() {
         let mut sbas_lt: HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)> = HashMap::new();
         let mut sbas_dnu: HashMap<u8, f64> = HashMap::new();
         let mut igp_delay: HashMap<(i16, i16), f64> = HashMap::new();
+        // per-GEO MT9 state vectors (lever 2): the published sbas_geonav
+        // deserializes straight into sbas::GeoEph (same field names/units)
+        let mut sbas_geo: HashMap<u8, GeoEph> = HashMap::new();
 
         for s in sats {
             if s["sys"].as_str() != Some("sbas") {
                 continue;
+            }
+            // the MT9 vector is a CRC-validated cached record: harvest it
+            // whether or not THIS second's decode window is locked (rho_m
+            // freshness is gated by the tracker's own anchor machinery)
+            if let (Some(prn), Ok(geo)) = (
+                s["prn"].as_u64(),
+                serde_json::from_value::<GeoEph>(s["sbas_geonav"].clone()),
+            ) {
+                sbas_geo.insert(prn as u8, geo);
             }
             if !s["sbas_msgs"]["locked"].as_bool().unwrap_or(false) {
                 continue;
@@ -424,7 +653,9 @@ fn main() {
         }
 
         let site_lla = site_lla();
-        let mut meas = Vec::new();
+        // built measurements with their identity + slip flag:
+        // (Meas, Cls, prn, contributed-with-a-reset-this-epoch)
+        let mut meas: Vec<(hackrf_gnss::gps::pvt::Meas, Cls, u8, bool)> = Vec::new();
         let mut slips = 0u32;
         let mut n_fresh = 0u32;
         let mut n_pred = 0u32;
@@ -432,27 +663,32 @@ fn main() {
         for s in sats {
             // Constellation split FIRST — before any smoother-map access
             // (the chains are per-constellation; see the map decls above).
-            let bds = match s["sys"].as_str() {
-                Some("gps") => false,
-                Some("beidou") => true,
+            let cls = match s["sys"].as_str() {
+                Some("gps") => Cls::Gps,
+                Some("beidou") => Cls::Bds,
+                Some("sbas") => Cls::Sbas,
                 _ => continue,
             };
+            let prn = s["prn"].as_u64().unwrap_or(0) as u8;
+            if cls == Cls::Sbas && !GEO_RANGING_PRNS.contains(&prn) {
+                continue; // GEO ranging is whitelisted (see the const)
+            }
             if s["cn0_proxy"].as_f64().unwrap_or(0.0) < 30.0 { continue; }
             let lock_s = s["lock_s"].as_f64().unwrap_or(0.0);
             if lock_s < 20.0 { continue; }
             let (rho, t_tx) = match (s["rho_m"].as_f64(), s["t_tx"].as_f64()) {
                 (Some(a), Some(b)) => (a, b), _ => continue };
-            let prn = s["prn"].as_u64().unwrap_or(0) as u8;
             let carr = s["carrier_cycles"].as_f64().unwrap_or(0.0);
             let slip = s["slip"].as_bool().unwrap_or(false);
             let s_epoch = s["epoch"].as_f64().unwrap_or(epoch);
-            // the same staircase/carrier machinery serves both
+            // the same staircase/carrier machinery serves all three
             // constellations — only the chain maps and the carrier
-            // wavelength differ (λ_B1I for BDS, λ_L1 for GPS)
-            let (smoothers, prev, lam) = if bds {
-                (&mut smoothers_bds, &mut prev_bds, LAM_B1I)
-            } else {
-                (&mut smoothers, &mut prev, LAM_L1)
+            // wavelength differ (λ_B1I for BDS; the WAAS GEO broadcasts
+            // on L1 proper, so it shares λ_L1 with GPS)
+            let (smoothers, prev, lam) = match cls {
+                Cls::Bds => (&mut smoothers_bds, &mut prev_bds, LAM_B1I),
+                Cls::Gps => (&mut smoothers, &mut prev, LAM_L1),
+                Cls::Sbas => (&mut smoothers_sbas, &mut prev_sbas, LAM_L1),
             };
             let lock_regressed = prev.get(&prn).is_some_and(|p| lock_s < p.lock_s);
 
@@ -486,10 +722,14 @@ fn main() {
                     // the same interval — the predicted range and the
                     // ephemeris evaluation must refer to the same epoch
                     let t_tx_used = t_tx + (s_epoch - p.last_code_epoch);
-                    let m = if bds {
-                        build_meas_bds(prn, rho_used, t_tx_used, &bds_ephs, site_m, site_lla)
-                    } else {
-                        build_meas(
+                    let m = match cls {
+                        Cls::Bds => {
+                            build_meas_bds(prn, rho_used, t_tx_used, &bds_ephs, site_m, site_lla)
+                        }
+                        Cls::Sbas => build_meas_sbas(
+                            prn, rho_used, t_tx_used, &sbas_geo, site_m, site_lla, &igp_delay,
+                        ),
+                        Cls::Gps => build_meas(
                             prn,
                             rho_used,
                             t_tx_used,
@@ -500,13 +740,15 @@ fn main() {
                             &sbas_prc,
                             &sbas_lt,
                             &sbas_dnu,
-                        )
+                        ),
                     };
                     if let Some(m) = m {
-                        if bds {
+                        if cls == Cls::Bds {
                             n_bds_pre_reject += 1;
                         }
-                        meas.push((m, bds));
+                        // predicted rows carry no reset by construction
+                        // (a reset on the frozen path voids the chain above)
+                        meas.push((m, cls, prn, false));
                     }
                     n_pred += 1;
                 }
@@ -542,10 +784,12 @@ fn main() {
                 file_epoch: s_epoch,
                 contrib_valid: true,
             });
-            let m = if bds {
-                build_meas_bds(prn, rho_s, t_tx, &bds_ephs, site_m, site_lla)
-            } else {
-                build_meas(
+            let m = match cls {
+                Cls::Bds => build_meas_bds(prn, rho_s, t_tx, &bds_ephs, site_m, site_lla),
+                Cls::Sbas => {
+                    build_meas_sbas(prn, rho_s, t_tx, &sbas_geo, site_m, site_lla, &igp_delay)
+                }
+                Cls::Gps => build_meas(
                     prn,
                     rho_s,
                     t_tx,
@@ -556,59 +800,74 @@ fn main() {
                     &sbas_prc,
                     &sbas_lt,
                     &sbas_dnu,
-                )
+                ),
             };
             if let Some(m) = m {
-                if bds {
+                if cls == Cls::Bds {
                     n_bds_pre_reject += 1;
                 }
-                meas.push((m, bds));
+                // `reset` is exactly the event the `slips` counter counted
+                // for this sat — the lever-3b drop plan keys off it
+                meas.push((m, cls, prn, reset));
             }
         }
-        let (meas, meas_is_bds): (Vec<_>, Vec<_>) = meas.into_iter().unzip();
         if meas.len() < 4 { continue; }   // emit gate 5->4 (window pkg, UNBUILT): the n>=5 floor was the hour-gate killer (2026-08-29 bake-off: duty 24.7% -> 38.3%). ISB tension: a 2-state (clock+ISB) solve needs n>=5 with BDS present — when ISB surgery lands, re-raise the gate for mixed solves or constrain ISB from the recent estimate at n==4.
-        // CAVEAT: ONE clock state for two constellations — the GPS/BDS
+        // Lever 3b: with >= SLIP_DROP_MIN_PRE built measurements, drop the
+        // contributors whose smoother reset this epoch and solve the
+        // remainder — one slipping bird must not poison an otherwise-deep
+        // epoch (the analyzer's slips==0 quality gate would exclude it).
+        // The dropped resets leave the published `slips` count; the row
+        // records them as dropped_slip labels instead.
+        let slipped: Vec<bool> = meas.iter().map(|&(_, _, _, s)| s).collect();
+        let drop = plan_slip_drop(&slipped);
+        let mut dropped_slip: Vec<String> = Vec::new();
+        if !drop.is_empty() {
+            dropped_slip = drop.iter().map(|&i| meas[i].1.label(meas[i].2)).collect();
+            slips = slips.saturating_sub(drop.len() as u32);
+            let mut keep = Vec::with_capacity(meas.len() - drop.len());
+            for (i, r) in meas.into_iter().enumerate() {
+                if !drop.contains(&i) {
+                    keep.push(r);
+                }
+            }
+            meas = keep;
+        }
+        let cls_of: Vec<Cls> = meas.iter().map(|&(_, c, _, _)| c).collect();
+        let prn_of: Vec<u8> = meas.iter().map(|&(_, _, p, _)| p).collect();
+        let meas: Vec<hackrf_gnss::gps::pvt::Meas> =
+            meas.into_iter().map(|(m, _, _, _)| m).collect();
+        // CAVEAT: ONE clock state for three constellations — the GPS/BDS
         // inter-system channel bias is unmodeled in this 1-state solve (a
         // weighted mean with studentized rejection; no ISB state — surgery
-        // out of scope). Rows carry n_bds so the analyzer can quantify
-        // mix-dependence; a structurally-biased BDS row that trips the
-        // 1000 m studentized gate is legitimately DROPPED by the rejection
-        // — fail-closed, not silent. The solver returns accepted input
-        // indices so the row reports post-rejection constellation counts.
+        // out of scope), and the GEO rows add their own ~10 m-class ranging
+        // bias on top. Rows carry n_bds/n_sbas/geo_ranging so the analyzer
+        // and leg-1 weighting can quantify mix-dependence; a structurally-
+        // biased row that trips the 1000 m studentized gate is legitimately
+        // DROPPED by the rejection — fail-closed, not silent. The solver
+        // returns accepted input indices so the row reports post-rejection
+        // constellation counts.
         let fw = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, true);
         let fu = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, false);
         if let (Some(a), Some(b)) = (fw, fu) {
-            // A/B means weighting only. Independent rejection sets would mix
-            // weighting with satellite composition, so publish nothing unless
-            // both solves retained the exact same caller rows in the same
-            // order.
-            if a.accepted_indices != b.accepted_indices {
-                continue;
-            }
-            let n_bds = a
-                .accepted_indices
-                .iter()
-                .filter(|&&index| meas_is_bds[index])
-                .count();
-            let n_gps = a.n_sat - n_bds;
-            let row = json!({
-                "schema": "clock_bias-v4",
-                "epoch": epoch,
-                "clock_ns": a.clock_km * 1e9 / 299_792.458,
-                "clock_ns_uw": b.clock_km * 1e9 / 299_792.458,
-                "residual_rms_m": a.residual_rms_m,
-                "residual_rms_m_uw": b.residual_rms_m,
-                "n_sat": a.n_sat,
-                "n_bds": n_bds,
-                "n_gps": n_gps,
-                "n_bds_pre_reject": n_bds_pre_reject,
-                "ab_membership_match": true,
-                "n_fresh": n_fresh,
-                "n_pred": n_pred,
-                "slips": slips,
-                "gen": gen_id,
-                "source": "clock_bias",
-            });
+            // Lever 6 — A/B means weighting only, and independent rejection
+            // sets would mix weighting with satellite composition. Such an
+            // epoch used to be silently skipped; it now PUBLISHES with
+            // ab_membership_match:false and both accepted counts, and the
+            // analyzer keeps it out of claims (visible in data, excluded
+            // from claims). epoch_row derives the flag and the counts.
+            let row = epoch_row(
+                &a,
+                &b,
+                &cls_of,
+                &prn_of,
+                epoch,
+                n_bds_pre_reject,
+                n_fresh,
+                n_pred,
+                slips,
+                &dropped_slip,
+                &gen_id,
+            );
             use std::io::Write;
             if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(OUT) {
                 let _ = writeln!(f, "{}", row);
@@ -628,8 +887,9 @@ fn main() {
                     "n_sat": row["n_sat"],
                     "n_bds": row["n_bds"],
                     "n_gps": row["n_gps"],
+                    "n_sbas": row["n_sbas"],
                     "n_bds_pre_reject": row["n_bds_pre_reject"],
-                    "ab_membership_match": true,
+                    "ab_membership_match": row["ab_membership_match"],
                     "n_fresh": row["n_fresh"],
                     "n_pred": row["n_pred"],
                     "slips": row["slips"],
@@ -641,5 +901,169 @@ fn main() {
                 let _ = fs::rename(&tmp, STATE_CB);
             }
         }
+    }
+}
+
+// Window-build tests (Cargo.toml marks this example `test = true`; nothing
+// here has run yet — the ABSOLUTE no-cargo law holds until the maintenance
+// window).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hackrf_gnss::gps::pvt::{solve_clock_only, Meas};
+
+    /// Real six-sat GPS geometry from the pvt solver tests (km): the site
+    /// anchor and satellite ECEFs; pseudorange = geometric + clock.
+    const STATION: [f64; 3] = [1351.991, -4653.584, 4133.012];
+    const SATS: [[f64; 3]; 6] = [
+        [5869.975, -16762.018, 19215.021],
+        [-3107.678, -19845.218, 17310.754],
+        [13935.468, -7948.651, 20949.401],
+        [12385.868, -23003.053, 2879.614],
+        [21723.378, -9762.873, 11751.846],
+        [-11644.487, -10338.459, 21397.985],
+    ];
+
+    fn norm3(a: [f64; 3]) -> f64 {
+        (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+    }
+
+    fn ranges(clock_km: f64) -> Vec<Meas> {
+        SATS.iter()
+            .map(|&s| {
+                let g = norm3([STATION[0] - s[0], STATION[1] - s[1], STATION[2] - s[2]]);
+                Meas { sat: s, pseudorange: g + clock_km, clock_free: false }
+            })
+            .collect()
+    }
+
+    fn fix(n: usize, accepted: Vec<usize>) -> ClockFix {
+        ClockFix {
+            clock_km: 50.0,
+            residual_rms_m: 1.0,
+            n_sat: n,
+            accepted_indices: accepted,
+            max_leverage: 0.3,
+        }
+    }
+
+    #[test]
+    fn plan_slip_drop_honors_the_floors() {
+        // below SLIP_DROP_MIN_PRE: never drop, even with a slip present
+        assert!(plan_slip_drop(&[true, false, false, false, false]).is_empty());
+        // at the floor with one slip: drop exactly it
+        assert_eq!(plan_slip_drop(&[false, true, false, false, false, false]), vec![1]);
+        // no slips: nothing to do
+        assert!(plan_slip_drop(&[false; 6]).is_empty());
+        // dropping all three slips would leave 3 < 4: refuse (unchanged
+        // behavior — publish with slips counted)
+        assert!(plan_slip_drop(&[true, true, true, false, false, false]).is_empty());
+        // 7 with two slips leaves 5: drop both
+        assert_eq!(
+            plan_slip_drop(&[false, true, false, true, false, false, false]),
+            vec![1, 3]
+        );
+    }
+
+    /// Lever 3b end-to-end on real geometry: a slipped contributor whose
+    /// pseudorange broke by a whole code tooth is dropped by the plan, and
+    /// the re-solve on the remainder recovers the exact clock with the
+    /// dropped label recorded.
+    #[test]
+    fn slip_drop_resolve_recovers_the_clock() {
+        let clock = 50.0;
+        let mut m = ranges(clock);
+        m[2].pseudorange += 299.792_458; // 1 ms tooth slip on the slipped sat
+        let cls = [Cls::Gps, Cls::Gps, Cls::Gps, Cls::Bds, Cls::Bds, Cls::Sbas];
+        let prn = [16u8, 4, 26, 27, 31, 131];
+        let slipped = [false, false, true, false, false, false];
+        let drop = plan_slip_drop(&slipped);
+        assert_eq!(drop, vec![2]);
+        let dropped_slip: Vec<String> =
+            drop.iter().map(|&i| cls[i].label(prn[i])).collect();
+        assert_eq!(dropped_slip, vec!["G26".to_string()]);
+        let kept: Vec<Meas> = (0..m.len()).filter(|i| !drop.contains(i)).map(|i| m[i]).collect();
+        let kept_cls: Vec<Cls> =
+            (0..cls.len()).filter(|i| !drop.contains(i)).map(|i| cls[i]).collect();
+        let kept_prn: Vec<u8> =
+            (0..prn.len()).filter(|i| !drop.contains(i)).map(|i| prn[i]).collect();
+        let a = solve_clock_only(&kept, STATION, true).expect("weighted solve");
+        let b = solve_clock_only(&kept, STATION, false).expect("unweighted solve");
+        assert!((a.clock_km - clock).abs() < 1e-6, "clock {}", a.clock_km);
+        assert_eq!(a.n_sat, 5);
+        let row = epoch_row(&a, &b, &kept_cls, &kept_prn, 1.0, 0, 5, 0, 0, &dropped_slip, "t");
+        assert_eq!(row["slips"], 0);
+        assert_eq!(row["dropped_slip"], json!(["G26"]));
+        assert_eq!(row["ab_membership_match"], json!(true));
+        // the GEO stayed in the solve and is flagged for leg-1 weighting
+        assert_eq!(row["geo_ranging"], json!([131]));
+        assert_eq!(row["n_sbas"], 1);
+        assert_eq!(row["n_bds"], 2);
+        assert_eq!(row["n_gps"], 2);
+    }
+
+    /// Lever 6: a membership mismatch publishes (flagged), never suppresses.
+    #[test]
+    fn ab_mismatch_publishes_flagged_with_both_counts() {
+        let cls = [Cls::Gps, Cls::Gps, Cls::Bds, Cls::Bds, Cls::Sbas];
+        let prn = [16u8, 4, 27, 31, 135];
+        // weighted kept all 5; unweighted rejected the GEO
+        let a = fix(5, vec![0, 1, 2, 3, 4]);
+        let b = fix(4, vec![0, 1, 2, 3]);
+        let row = epoch_row(&a, &b, &cls, &prn, 2.0, 0, 5, 0, 0, &[], "t");
+        assert_eq!(row["ab_membership_match"], json!(false));
+        assert_eq!(row["n_sat_weighted"], 5);
+        assert_eq!(row["n_sat_unweighted"], 4);
+        // identity fields describe the WEIGHTED accepted set (documented)
+        assert_eq!(row["n_sat"], 5);
+        assert_eq!(row["n_gps"], 2);
+        assert_eq!(row["n_bds"], 2);
+        assert_eq!(row["n_sbas"], 1);
+        assert_eq!(row["geo_ranging"], json!([135]));
+        // and a matching pair still reads true with both counts equal
+        let b2 = fix(5, vec![0, 1, 2, 3, 4]);
+        let row2 = epoch_row(&a, &b2, &cls, &prn, 3.0, 0, 5, 0, 0, &[], "t");
+        assert_eq!(row2["ab_membership_match"], json!(true));
+        assert_eq!(row2["n_sat_weighted"], row2["n_sat_unweighted"]);
+        // optional fields stay absent when empty (additive-only schema)
+        assert!(row2.get("dropped_slip").is_none());
+    }
+
+    /// The GEO measurement builder fails closed on the MT9 gates.
+    #[test]
+    fn geo_meas_gates_fail_closed() {
+        let geo = GeoEph {
+            t0_s: 43_200.0,
+            ura: 2,
+            pos_m: [-17_600_000.0, -36_500_000.0, 80_000.0],
+            vel_mps: [0.375, -0.125, 1.2],
+            acc_mps2: [1.25e-5, -2.5e-5, 6.25e-5],
+            agf0_s: 10.0 * 2.0f64.powi(-31),
+            agf1_sps: 3.0 * 2.0f64.powi(-40),
+        };
+        let site_m = [1_334_751.79, -4_654_832.67, 4_137_255.32];
+        let site_lla = [40.7, -74.0, 50.0];
+        let t_tx = 3.0 * 86_400.0 + 43_296.0; // dt = 96 s
+        let rho = 37_270_622.0;
+        let mut geos = HashMap::new();
+        geos.insert(131u8, geo.clone());
+        let igp = HashMap::new();
+        let m = build_meas_sbas(131, rho, t_tx, &geos, site_m, site_lla, &igp)
+            .expect("healthy vector ranges");
+        // pseudorange (km) ~ rho/1000 + clock*c; the GEO clock is ~4.9 ns
+        assert!((m.sat[0] * 1000.0 - -17_600_294.9).abs() < 5.0, "sagnac x {}", m.sat[0]);
+        assert!(!m.clock_free);
+        // unknown PRN -> None
+        assert!(build_meas_sbas(135, rho, t_tx, &geos, site_m, site_lla, &igp).is_none());
+        // URA 15 (do-not-use) -> None
+        let mut bad = geo.clone();
+        bad.ura = 15;
+        geos.insert(131, bad);
+        assert!(build_meas_sbas(131, rho, t_tx, &geos, site_m, site_lla, &igp).is_none());
+        // stale vector (|dt| > 360 s) -> None
+        let mut stale = geo.clone();
+        stale.t0_s = 43_200.0 - 1_000.0;
+        geos.insert(131, stale);
+        assert!(build_meas_sbas(131, rho, t_tx, &geos, site_m, site_lla, &igp).is_none());
     }
 }

@@ -1169,6 +1169,98 @@ impl Decoder {
         }
         rep
     }
+
+    /// Total symbols pushed since decoder creation — the absolute stream
+    /// position just past the newest buffered symbol (same identity space
+    /// as `DecodedMessage::sym_pos`). Lets the caller map symbol positions
+    /// back onto its own prompt bookkeeping (the live GEO frame anchor).
+    pub fn total_symbols(&self) -> usize {
+        self.base + self.soft.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MT9 GEO navigation: ranging-grade propagation (DO-229D A.4.5.1)
+// ---------------------------------------------------------------------------
+
+/// MT9 GEO navigation state vector in SI units — the same field names and
+/// units live.rs publishes as `sbas_geonav` (GeoNavPub), so a consumer can
+/// deserialize the published JSON object straight into this. Position /
+/// velocity / acceleration are WGS-84 ECEF at t0; agf0/agf1 are the GEO
+/// clock polynomial (DO-229D Table A-15 scales already applied).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct GeoEph {
+    /// Time-of-day applicability t0, seconds into the GPS day (13-bit x
+    /// 16 s as broadcast — a time of DAY, not a time of week).
+    pub t0_s: f64,
+    /// URA index (15 = do not use — the caller must gate on it; this
+    /// module only propagates).
+    pub ura: u8,
+    pub pos_m: [f64; 3],
+    pub vel_mps: [f64; 3],
+    pub acc_mps2: [f64; 3],
+    pub agf0_s: f64,
+    pub agf1_sps: f64,
+}
+
+impl GeoEph {
+    /// Propagation interval t − t0 for GPS time `t_sow` (seconds-of-week is
+    /// fine — it is folded to time-of-day), wrapped into ±43200 s across
+    /// the day boundary: the same fold `LtCorr::propagate` uses and the
+    /// audited python reference (phase_drift_producer wrap_tod/gps_tod_s)
+    /// implements.
+    pub fn dt_from(&self, t_sow: f64) -> f64 {
+        let mut d = t_sow.rem_euclid(86_400.0) - self.t0_s;
+        if d > 43_200.0 {
+            d -= 86_400.0;
+        } else if d < -43_200.0 {
+            d += 86_400.0;
+        }
+        d
+    }
+}
+
+/// Propagate a GEO state vector to GPS time `t_sow` per DO-229D A.4.5.1.1:
+/// 2nd-order Taylor position (p0 + v0·dt + a·dt²/2), 1st-order velocity,
+/// clock agf0 + agf1·dt. Returns (position m ECEF, velocity m/s, clock s).
+/// NO Earth-rotation correction here — `geo_at_txtime` adds it. Ported
+/// from the audited python GeoCorrector._term / geocorrector_helper
+/// (cross-checked numerically by the unit tests below).
+pub fn geo_state_at(geo: &GeoEph, t_sow: f64) -> ([f64; 3], [f64; 3], f64) {
+    let dt = geo.dt_from(t_sow);
+    let dt2 = dt * dt;
+    let mut p = [0.0f64; 3];
+    let mut v = [0.0f64; 3];
+    for i in 0..3 {
+        p[i] = geo.pos_m[i] + geo.vel_mps[i] * dt + 0.5 * geo.acc_mps2[i] * dt2;
+        v[i] = geo.vel_mps[i] + geo.acc_mps2[i] * dt;
+    }
+    (p, v, geo.agf0_s + geo.agf1_sps * dt)
+}
+
+/// GEO ECEF (metres) at transmit time, Sagnac-rotated into the reception
+/// frame, plus its clock offset (s) and geometric range (m) to `rx_m` —
+/// the MT9 twin of `gps::snapshot::sat_at_txtime_pub`, same convention:
+/// the satellite is evaluated at `t_sow − τ` with τ the iterated light
+/// time, and rotated by ω⊕·τ. The caller owns the validity gates (URA,
+/// |dt| freshness) — this function only propagates.
+pub fn geo_at_txtime(geo: &GeoEph, t_sow: f64, rx_m: [f64; 3]) -> ([f64; 3], f64, f64) {
+    const C: f64 = 299_792_458.0;
+    const EARTH_RATE: f64 = 7.292_115_146_7e-5; // rad/s (same as gps::broadcast)
+    let mut tau = 0.125; // GEO light time is 0.120-0.135 s
+    let mut s = [0.0f64; 3];
+    for _ in 0..2 {
+        let (p0, _, _) = geo_state_at(geo, t_sow - tau);
+        let th = EARTH_RATE * tau;
+        let (ct, st) = (th.cos(), th.sin());
+        s = [p0[0] * ct + p0[1] * st, -p0[0] * st + p0[1] * ct, p0[2]];
+        let d = [s[0] - rx_m[0], s[1] - rx_m[1], s[2] - rx_m[2]];
+        tau = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C;
+    }
+    let (_, _, dt_sv) = geo_state_at(geo, t_sow - tau);
+    let d = [s[0] - rx_m[0], s[1] - rx_m[1], s[2] - rx_m[2]];
+    let rng = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (s, dt_sv, rng)
 }
 
 // ---------------------------------------------------------------------------
@@ -2431,5 +2523,97 @@ mod tests {
             "prompts dropped silently across calls"
         );
         assert!(queue.len() <= 1, "at most the boundary straddle is deferred");
+    }
+
+    // -----------------------------------------------------------------------
+    // MT9 GEO propagation (geo_state_at / geo_at_txtime)
+    // -----------------------------------------------------------------------
+
+    /// The shared fixture: a WAAS-plausible GEO vector plus the site the
+    /// python cross-check used. Every hard-coded expectation below was
+    /// produced by scripts/geocorrector_helper.py + the GeoCorrector._term
+    /// reference math (phase_drift_producer.py) on this exact fixture
+    /// (run 2026-09-02; the helper and the reference agreed to <1e-9 Hz).
+    fn geo_fixture() -> (GeoEph, [f64; 3], f64) {
+        let geo = GeoEph {
+            t0_s: 43_200.0,
+            ura: 2,
+            pos_m: [-17_600_000.0, -36_500_000.0, 80_000.0],
+            vel_mps: [0.375, -0.125, 1.2],
+            acc_mps2: [1.25e-5, -2.5e-5, 6.25e-5],
+            agf0_s: 10.0 * 2.0f64.powi(-31),
+            agf1_sps: 3.0 * 2.0f64.powi(-40),
+        };
+        // llh_to_ecef(40.7, -74.0, 50.0) from geocorrector_helper.py
+        let site = [1_334_751.790333, -4_654_832.672551, 4_137_255.321796];
+        // GPS seconds-of-week whose time-of-day is 43296 -> dt = 96 s
+        let t_sow = 3.0 * 86_400.0 + 43_296.0;
+        (geo, site, t_sow)
+    }
+
+    #[test]
+    fn geo_state_matches_python_reference() {
+        let (geo, site, t) = geo_fixture();
+        assert_eq!(geo.dt_from(t), 96.0);
+        let (p, v, clk) = geo_state_at(&geo, t);
+        // python reference: pos/vel Taylor terms, exact to f64
+        let p_ref = [-17_599_963.9424, -36_500_012.1152, 80_115.488];
+        let v_ref = [0.3762, -0.1274, 1.206];
+        for i in 0..3 {
+            assert!((p[i] - p_ref[i]).abs() < 1e-6, "pos[{i}] {} vs {}", p[i], p_ref[i]);
+            assert!((v[i] - v_ref[i]).abs() < 1e-12, "vel[{i}]");
+        }
+        assert!((clk - 4.918547347187996e-9).abs() < 1e-18, "clock {clk}");
+        // un-rotated geometric range and LOS range-rate against the same
+        // reference (geocorrector_helper doppler agreed with these numbers)
+        let d = [p[0] - site[0], p[1] - site[1], p[2] - site[2]];
+        let rho = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        assert!((rho - 37_270_622.44241344).abs() < 1e-6, "rho {rho}");
+        let rr = (d[0] * v[0] + d[1] * v[1] + d[2] * v[2]) / rho;
+        assert!((rr - -0.21354821346267155).abs() < 1e-9, "range rate {rr}");
+        // the derived L1 Doppler must match calc_geo_doppler_hz on the
+        // same fixture (WAAS GEO LOS rates are sub-m/s to a mid-latitude
+        // site; the work order's 0.5-3 m/s envelope covers the daily swing)
+        let dop = (-rr / 299_792_458.0 + geo.agf1_sps) * 1_575.42e6;
+        assert!((dop - 1.1265019444254531).abs() < 1e-9, "doppler {dop}");
+    }
+
+    #[test]
+    fn geo_day_fold_wraps_at_the_boundary() {
+        let (mut geo, _, _) = geo_fixture();
+        // t0 late in the day, t just after midnight: dt must be small and
+        // positive, not ~-86000 (same fold LtCorr::propagate applies)
+        geo.t0_s = 86_368.0;
+        assert_eq!(geo.dt_from(4.0 * 86_400.0 + 64.0), 96.0);
+        // t late in the day, t0 just after midnight: small negative-side
+        // cross-over in the other direction
+        geo.t0_s = 64.0;
+        assert_eq!(geo.dt_from(86_400.0 - 32.0), -96.0);
+    }
+
+    #[test]
+    fn geo_at_txtime_matches_python_sagnac_replica() {
+        // expectations from a python replica of the sat_at_txtime_impl
+        // convention (evaluate at t - tau, rotate by EARTH_RATE * tau) on
+        // the shared fixture — run 2026-09-02 alongside the state check
+        let (geo, site, t) = geo_fixture();
+        let (s, dt_sv, rng) = geo_at_txtime(&geo, t, site);
+        let s_ref = [-17_600_294.88545553, -36_499_852.542422995, 80_115.33806872842];
+        for i in 0..3 {
+            assert!((s[i] - s_ref[i]).abs() < 1e-5, "sat[{i}] {} vs {}", s[i], s_ref[i]);
+        }
+        assert!((rng - 37_270_654.24666475).abs() < 1e-5, "range {rng}");
+        assert!((dt_sv - 4.918208137895036e-9).abs() < 1e-18, "clock {dt_sv}");
+        // self-consistency: the returned range IS the light time the
+        // iteration converged on (GEO tau ~0.124 s)
+        let tau = rng / 299_792_458.0;
+        assert!((tau - 0.1243215206123189).abs() < 1e-9, "tau {tau}");
+        // and the Sagnac rotation moved the satellite by ~ omega*tau*R
+        // (hundreds of metres in x/y) while leaving z untouched
+        let (p_unrot, _, _) = geo_state_at(&geo, t - tau);
+        // (tau here re-converges to ~1e-12 s of the loop's value, so z
+        // agrees to sub-nanometre rather than bit-exactly)
+        assert!((s[2] - p_unrot[2]).abs() < 1e-6, "z must be rotation-free");
+        assert!((s[0] - p_unrot[0]).abs() > 100.0, "rotation must act on x");
     }
 }

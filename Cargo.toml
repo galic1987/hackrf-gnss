@@ -3,6 +3,14 @@ name = "hackrf_gnss"
 version = "0.1.0"
 edition = "2024"
 
+# The clock_bias emitter carries its lever-2/3b/6 decision logic as unit
+# tests (2026-09-01 availability work order); `test = true` makes `cargo
+# test` build and run them at the maintenance window. Edition >= 2018 keeps
+# auto-discovery of the other examples intact alongside this explicit entry.
+[[example]]
+name = "clock_bias"
+test = true
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }

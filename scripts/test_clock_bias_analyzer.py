@@ -264,6 +264,84 @@ def test_alternating_three_percent_cadence_is_not_uniform_tdev_grid():
     assert rep["verdict"] is None
 
 
+def test_ab_mismatch_rows_are_quality_filtered_not_schema_fatal():
+    # Lever 6 (2026-09-02): the emitter now PUBLISHES A/B-membership-
+    # mismatch epochs flagged ab_membership_match:false. They are data,
+    # not schema violations: the file must not hard-fail, the rows must be
+    # excluded from the quality set (never claim-grade), and the mismatch
+    # count must be reported.
+    rows = _rows("v4-ab", 1_787_000_000.0, 4000)
+    for r in rows[-100:]:  # trailing block keeps the main segment whole
+        r["ab_membership_match"] = False
+        r["n_sat_weighted"] = r["n_sat"]
+        r["n_sat_unweighted"] = r["n_sat"] - 1
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_schema"] == 4000, rep["n_schema"]
+    assert rep["n_ab_mismatch"] == 100, rep["n_ab_mismatch"]
+    assert rep["n_quality"] == 3900, rep["n_quality"]
+    assert rep["verdict"] is True  # the clean 3900-row hour still screens
+
+
+def test_ab_membership_flag_must_still_be_a_real_boolean():
+    # schema strictness is unchanged for the FIELD itself: a missing flag
+    # or a non-boolean value stays generation-fatal
+    for mutate in (
+        lambda row: row.pop("ab_membership_match"),
+        lambda row: row.__setitem__("ab_membership_match", "false"),
+        lambda row: row.__setitem__("ab_membership_match", 1),
+    ):
+        rows = _rows("v4-ab-bool", 1_787_000_000.0, 4000)
+        mutate(rows[-1])
+        rep = analyze(rows)
+        assert rep["verdict"] is None, rep
+        assert any("clock_bias-v4" in f for f in rep["gate_fails"]), \
+            rep["gate_fails"]
+
+
+def test_geo_ranging_rows_count_via_n_sbas_identity():
+    # additive v4 GEO-ranging fields (2026-09-02): a row carrying an
+    # accepted SBAS measurement reports n_sbas (and geo_ranging), and the
+    # identity check is n_gps + n_bds + n_sbas == n_sat. Rows without the
+    # field (older emitters) default to n_sbas = 0.
+    rows = _rows("v4-geo", 1_787_000_000.0, 4000)
+    for r in rows[:2000]:
+        r["n_sat"] = 9
+        r["n_sbas"] = 1
+        r["geo_ranging"] = [131]
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_schema"] == 4000
+    assert rep["n_quality"] == 4000
+    assert rep["verdict"] is True
+    # inconsistent constellation identity stays generation-fatal
+    rows = _rows("v4-geo-bad", 1_787_000_000.0, 4000)
+    rows[-1]["n_sbas"] = 1  # 6 + 2 + 1 != 8
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert any("clock_bias-v4" in f for f in rep["gate_fails"])
+    # and n_sbas must be an exact JSON integer when present
+    rows = _rows("v4-geo-type", 1_787_000_000.0, 4000)
+    rows[-1]["n_sat"] = 9
+    rows[-1]["n_sbas"] = 1.0
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert any("clock_bias-v4" in f for f in rep["gate_fails"])
+
+
+def test_dropped_slip_rows_ride_the_normal_quality_gates():
+    # Lever 3b: a slip-dropped epoch publishes slips == 0 plus a
+    # dropped_slip list — an ADDITIVE annotation the analyzer must carry
+    # through as an ordinary quality row, not reject.
+    rows = _rows("v4-slipdrop", 1_787_000_000.0, 4000)
+    for r in rows[:100]:
+        r["dropped_slip"] = ["G26"]
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_quality"] == 4000
+    assert rep["verdict"] is True
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

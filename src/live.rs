@@ -205,6 +205,27 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
     t_wrap - t_code * ((t_wrap - t_bit_approx - off) / t_code).round()
 }
 
+/// Resolve the GPST integer second at which an SBAS block boundary left the
+/// GEO. SBAS carries no in-stream TOW; what pins the second is that block
+/// boundaries are transmitted at integer SNT seconds (SNT is held within
+/// 50 ns of GPST) and that the receive-side stream clock's offset to GPST
+/// is known from any fresh GPS/BDS anchor: `ref_off` = that channel's
+/// (t_bit − t_tx) = stream-vs-GPST offset + its travel time (0.06–0.14 s).
+/// The GEO's own travel time is 0.120–0.135 s, so the residue
+/// t_frame − ref_off − t_tx is bounded by the travel-time DIFFERENCE
+/// (|Δ| < 0.15 s) — far inside the 1 s rounding cell. A residue outside
+/// ±0.35 s means the offset chain is broken (stale reference, wrong-tooth
+/// wreckage): fail-closed, no anchor.
+fn sbas_frame_t_tx(t_frame: f64, ref_off: f64) -> Option<f64> {
+    let t_tx = (t_frame - ref_off).round();
+    let residue = t_frame - ref_off - t_tx;
+    if residue.abs() <= 0.35 && t_tx >= 0.0 {
+        Some(t_tx)
+    } else {
+        None
+    }
+}
+
 /// Max age of the newest validated subframe before a channel's rho_m/t_tx
 /// are withdrawn. With a healthy bit stream the anchor re-anchors every
 /// second (see the re-scan windows below), so 30 s stale means the nav
@@ -432,6 +453,25 @@ pub struct Channel {
     /// Survives fades/gaps/reseeds; cleared only on a CRC-proven pairing
     /// break (sbas_reset).
     sbas_geonav: Option<GeoNavPub>,
+    /// GEO frame-anchor bookkeeping (Sys::Sbas only): absolute 1 ms prompt
+    /// index of decoder symbol 0 under the current PROVEN-contiguous
+    /// pairing grid. Every sbas_tick push is checked against this mapping;
+    /// a push that lands off the established grid (a pairing re-probe
+    /// while unlocked shifted the queue-relative start) re-bases it and
+    /// records the re-base point in sbas_grid_valid_from — symbols before
+    /// that point can no longer be timed and are never anchored on.
+    /// Dies with the decoder (its symbol identity space).
+    sbas_grid_ms0: Option<i64>,
+    /// Earliest decoder symbol index (sym_pos space) for which the
+    /// sbas_grid_ms0 mapping is proven contiguous.
+    sbas_grid_valid_from: usize,
+    /// Absolute 1 ms prompt index of the newest CRC-valid block boundary
+    /// from THIS tick's locked decode (None when unlocked, off-grid, or no
+    /// message decoded). Consumed by end_second to (re-)anchor the GEO
+    /// pseudorange: an SBAS block's leading symbol edge is transmitted at
+    /// an integer SNT second (DO-229 — SNT is held within 50 ns of GPST),
+    /// so this is the SBAS twin of the LNAV subframe TOW boundary.
+    sbas_frame_ms: Option<u64>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -533,6 +573,9 @@ impl Channel {
             sbas_igpmask: std::collections::BTreeMap::new(),
             sbas_iono: std::collections::BTreeMap::new(),
             sbas_geonav: None,
+            sbas_grid_ms0: None,
+            sbas_grid_valid_from: 0,
+            sbas_frame_ms: None,
         }
     }
 
@@ -946,6 +989,23 @@ impl Channel {
         // pairing change.
         let (soft, s, par) =
             crate::sbas::symbols_from_prompt_abs(&self.nav_ms, self.sbas_par, self.nav_abs_ms);
+        // GEO frame-anchor grid: map decoder symbol index -> absolute 1 ms
+        // prompt index. Each push covers abs ms [nav_abs_ms + s, ..) with
+        // 2 ms per symbol; the mapping is only trustworthy while every
+        // push since symbol sbas_grid_valid_from has landed exactly on it
+        // (an unlocked re-probe can shift the pairing by 1 ms between
+        // ticks — the flip-settlement below only catches flips PROVEN by
+        // a locked decode, so the grid check must be independent).
+        // Any anchor consumed from a previous tick is stale by now.
+        self.sbas_frame_ms = None;
+        if !soft.is_empty() {
+            let n0 = self.sbas_dec.total_symbols() as i64; // symbols before this push
+            let ms_start = (self.nav_abs_ms + s as u64) as i64;
+            if self.sbas_grid_ms0 != Some(ms_start - 2 * n0) {
+                self.sbas_grid_ms0 = Some(ms_start - 2 * n0);
+                self.sbas_grid_valid_from = n0 as usize;
+            }
+        }
         // drain only the consumed prompts: when the 2 ms symbol grid sits
         // at the odd parity, one straddling ms must survive into the next
         // second or one symbol per second would be lost
@@ -1006,6 +1066,22 @@ impl Channel {
             self.sbas_par_prev = Some(par);
         } else {
             self.sbas_par = None;
+        }
+        // GEO frame anchor: remember the newest CRC-valid block boundary of
+        // a LOCKED decode, as an absolute prompt index — but only when its
+        // symbols sit on the proven-contiguous grid (an off-grid symbol
+        // cannot be timed against the prompt stream; fail-closed: no
+        // anchor rather than a mis-timed one). end_second turns this into
+        // the channel's pseudorange anchor.
+        if rep.sync.locked {
+            if let (Some(dm), Some(ms0)) = (rep.messages.last(), self.sbas_grid_ms0) {
+                if dm.sym_pos >= self.sbas_grid_valid_from {
+                    let abs_ms = ms0 + 2 * dm.sym_pos as i64;
+                    if abs_ms >= 0 {
+                        self.sbas_frame_ms = Some(abs_ms as u64);
+                    }
+                }
+            }
         }
         let mut types = std::collections::BTreeMap::new();
         for dm in &rep.messages {
@@ -1228,7 +1304,8 @@ impl Channel {
             // MT9 GEO navigation (DO-229D A.4.5.1): cache the latest, SI
             // units, for publication on the per-second report — the
             // phase-drift producer subtracts the GEO line-of-sight range
-            // rate (P0b) from it. Publication only; nothing ranges on it.
+            // rate (P0b) from it, and the clock_bias emitter ranges on it
+            // (sbas::geo_at_txtime against the SBAS frame anchor).
             crate::sbas::Message::GeoNav {
                 iodn, t0_s, ura, xyz, vxyz, axyz, agf0, agf1,
             } => {
@@ -1420,6 +1497,17 @@ impl Channel {
         self.sbas_igpmask.clear();
         self.sbas_iono.clear();
         self.sbas_geonav = None;
+        // frame-anchor grid dies with the decoder's symbol identity space;
+        // a PROVEN pairing break also voids the established pseudorange
+        // anchor itself — a coded symbol was inserted/deleted, so the
+        // tooth chain to the old boundary can no longer be trusted
+        // (fail-closed: re-anchor from the next locked decode).
+        self.sbas_grid_ms0 = None;
+        self.sbas_grid_valid_from = 0;
+        self.sbas_frame_ms = None;
+        self.anchor = None;
+        self.anchor_t = f64::NEG_INFINITY;
+        self.edge_off_valid = false;
     }
 
     /// Kill only the DECODER half of the SBAS state on a transient stream
@@ -1442,6 +1530,13 @@ impl Channel {
         self.sbas_dec = crate::sbas::Decoder::new();
         self.sbas_par = None;
         self.sbas_applied = None;
+        // the frame-anchor symbol->prompt mapping lives in the decoder's
+        // symbol identity space and dies with it (the ESTABLISHED anchor
+        // survives — a fade/reseed break is not proof the old boundary was
+        // mis-timed; ANCHOR_MAX_AGE_S retires it if no fresh lock follows)
+        self.sbas_grid_ms0 = None;
+        self.sbas_grid_valid_from = 0;
+        self.sbas_frame_ms = None;
         if !keep_grid {
             self.nav_abs_ms = 0;
             // A re-anchored grid must not pair pre-gap prompts: the queue is
@@ -1588,7 +1683,8 @@ pub struct SatReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sbas_msgs: Option<SbasSummary>,
     /// Latest MT9 GEO nav applied on this channel (Sys::Sbas rows only,
-    /// SI units — for the phase-drift producer's P0b LOS-rate subtraction).
+    /// SI units — the phase-drift producer's P0b LOS-rate subtraction and
+    /// the clock_bias emitter's GEO ranging both consume it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sbas_geonav: Option<GeoNavPub>,
 }
@@ -2098,6 +2194,19 @@ impl Band {
         let mut out = Vec::with_capacity(self.channels.len());
         // stream time of the most recently processed sample
         let t_proc = self.in_t - self.remaining().len() as f64 / self.fs;
+        // Stream-to-GPST offset reference for the SBAS integer-second
+        // resolution (see sbas_frame_t_tx): the freshest GPS/BDS anchor's
+        // (t_bit − t_tx). None while no such anchor exists — SBAS channels
+        // then publish no pseudorange (fail-closed), which is honest: with
+        // zero GPS/BDS anchors the clock solve has nothing to add a GEO to.
+        let ref_off = self
+            .channels
+            .iter()
+            .filter(|c| {
+                matches!(c.sys, Sys::Gps | Sys::Beidou) && c.locked && c.anchor_fresh(t_proc)
+            })
+            .max_by(|a, b| a.anchor_t.total_cmp(&b.anchor_t))
+            .and_then(|c| c.anchor.map(|(t_bit, t_tx)| t_bit - t_tx));
         for ch in &mut self.channels {
             let (cn0, dopp, cp) = ch.end_second();
             // carrier phase observable: carr_cycles is the unwrapped
@@ -2237,6 +2346,65 @@ impl Band {
                             }
                         }
                         n
+                    }
+                    Sys::Sbas => {
+                        // SBAS GEO pseudorange anchor (availability lever 2):
+                        // the newest CRC-valid block boundary of this tick's
+                        // LOCKED decode is a transmit event at an integer
+                        // SNT≈GPST second (frames are 1.0 s, preamble-
+                        // aligned — sbas_tick recorded its absolute prompt
+                        // index). Its stream time is refined to the code-
+                        // period comb exactly like the LNAV anchor; the
+                        // integer second is resolved against ref_off above.
+                        // No locked block or no reference -> no re-anchor
+                        // this second (ANCHOR_MAX_AGE_S retires rho_m as
+                        // for every other constellation).
+                        if let (Some(frame_ms), Some(ref_off)) =
+                            (ch.sbas_frame_ms.take(), ref_off)
+                        {
+                            // ms-bookkeeping estimate of the boundary's
+                            // stream time: the prompt queue's tail ends at
+                            // t_proc and abs prompt `m` starts
+                            // (head + len − m) ms earlier (f64 arithmetic —
+                            // the usize-underflow lesson at the top of
+                            // anchor_stream_time applies here too)
+                            let t_approx = t_proc
+                                - 1.0e-3
+                                    * (ch.nav_abs_ms as f64 + ch.nav_ms.len() as f64
+                                        - frame_ms as f64);
+                            // block boundaries are transmit-synchronous with
+                            // the 1 ms code period: snap to the comb
+                            let t_code = ch.t_code_meas;
+                            let t_wrap = ch.wrap_time(t_proc);
+                            let mut t_frame =
+                                t_wrap - t_code * ((t_wrap - t_approx) / t_code).round();
+                            if let Some(t_tx) = sbas_frame_t_tx(t_frame, ref_off) {
+                                // tooth-exact propagation from the previous
+                                // anchor (same law as anchor_stream_time:
+                                // boundaries t_tx seconds apart are exactly
+                                // 1000 comb teeth per second apart), bare
+                                // snap as fallback behind a 15 ms fence
+                                if let Some((prev_t_bit, prev_t_tx)) = ch.anchor {
+                                    let d_tx = t_tx - prev_t_tx;
+                                    if d_tx == 0.0 {
+                                        // same block re-validated: the
+                                        // boundary instant is fixed
+                                        t_frame = prev_t_bit;
+                                    } else if d_tx > 0.0 && d_tx < 120.0 {
+                                        let periods = (d_tx * 1000.0).round();
+                                        let m =
+                                            ((t_wrap - prev_t_bit) / t_code - periods).round();
+                                        let t_prop = t_wrap - t_code * m;
+                                        if (t_prop - t_approx).abs() < 15.0e-3 {
+                                            t_frame = t_prop;
+                                        }
+                                    }
+                                }
+                                ch.anchor = Some((t_frame, t_tx));
+                                ch.anchor_t = t_proc;
+                            }
+                        }
+                        0
                     }
                     _ => 0,
                 }
@@ -3032,6 +3200,26 @@ mod tests {
     fn anchor_stream_time_snaps_to_code_period_lattice_bds() {
         anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6160);
         anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6161);
+    }
+
+    /// SBAS integer-second resolution: the GEO's travel time exceeds the
+    /// reference channel's by < 0.15 s, so the rounded second is exact and
+    /// the residue small; a residue outside the ±0.35 s fence (broken
+    /// offset chain) or a negative resolved second resolves NOTHING —
+    /// fail-closed, the channel simply publishes no pseudorange.
+    #[test]
+    fn sbas_frame_t_tx_resolves_and_fails_closed() {
+        // reference: stream offset 123.456 s + 0.070 s GPS travel; the GEO
+        // frame for t_tx arrives 0.125 s (GEO travel) after t_tx + offset
+        let ref_off = 123.456 + 0.070;
+        let t_tx = 345_678.0;
+        let t_frame = t_tx + 123.456 + 0.125;
+        assert_eq!(sbas_frame_t_tx(t_frame, ref_off), Some(t_tx));
+        // an extra 0.45 s puts the residue at ±(0.495-0.505) around either
+        // neighbour second: outside the fence, refused
+        assert_eq!(sbas_frame_t_tx(t_frame + 0.45, ref_off), None);
+        // a resolution landing before the week origin is refused
+        assert_eq!(sbas_frame_t_tx(0.1, 1.0), None);
     }
 
     /// The re-scan window must keep the LAST validated subframe findable so

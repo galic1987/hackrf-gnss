@@ -212,14 +212,15 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
             snapshot_changed=False):
     """Full v2 pipeline on parsed jsonl rows -> report dict (main() prints it).
 
-    Quality gate (n_sat>=5, slips==0) -> poison-class exclusion -> gen
+    Quality gate (n_sat>=5, slips==0, ab_membership_match) -> poison-class
+    exclusion -> gen
     selection -> gap segmentation -> longest segment -> continuity gates ->
     detrend/RMS/TDEV/verdict + paired A/B. On any data shortfall the report
     carries gate_fails and verdict None (main prints INSUFFICIENT DATA)."""
     rep = {"all_gens": all_gens, "min_rows": min_rows,
            "n_in": len(rows), "gens": {}, "gen": None, "n_gen": 0,
            "n_schema": 0, "n_gen_raw": 0, "n_quality": 0,
-           "n_poison": 0,
+           "n_poison": 0, "n_ab_mismatch": 0,
            "n_identity_invalid": 0, "n_parse_errors": parse_errors,
            "snapshot_changed": bool(snapshot_changed),
            "segments": [], "holes": [], "dt_median": 0.0,
@@ -281,18 +282,27 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
             n_sat = _json_int(r["n_sat"])
             n_gps = _json_int(r["n_gps"])
             n_bds = _json_int(r["n_bds"])
+            # additive v4 field (2026-09-02 GEO ranging): absent on older
+            # rows, which carried no SBAS measurements — default 0
+            n_sbas = _json_int(r.get("n_sbas", 0))
             n_fresh = _json_int(r["n_fresh"])
             n_pred = _json_int(r["n_pred"])
             slips = _json_int(r["slips"])
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
+        # ab_membership_match must exist as a real boolean (schema), but a
+        # FALSE value is a quality verdict, not a schema violation: the
+        # emitter publishes A/B-membership-mismatch epochs flagged false
+        # (lever 6, 2026-09-02) — visible in data, excluded from claims by
+        # the quality gate below.
         if (r.get("schema") != REQUIRED_SCHEMA
                 or r.get("source") != "clock_bias"
                 or not isinstance(r.get("gen"), str)
                 or not r["gen"].strip()
-                or r.get("ab_membership_match") is not True
-                or min(n_sat, n_gps, n_bds, n_fresh, n_pred, slips) < 0
-                or n_gps + n_bds != n_sat):
+                or not isinstance(r.get("ab_membership_match"), bool)
+                or min(n_sat, n_gps, n_bds, n_sbas, n_fresh, n_pred,
+                       slips) < 0
+                or n_gps + n_bds + n_sbas != n_sat):
             continue
         normalized = dict(r)
         normalized.update({"epoch": epoch, "clock_ns": clock_ns,
@@ -300,7 +310,8 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
                            "residual_rms_m": rms,
                            "residual_rms_m_uw": rms_uw,
                            "n_sat": n_sat, "n_gps": n_gps,
-                           "n_bds": n_bds, "n_fresh": n_fresh,
+                           "n_bds": n_bds, "n_sbas": n_sbas,
+                           "n_fresh": n_fresh,
                            "n_pred": n_pred, "slips": slips})
         schema_rows.append(normalized)
     rep["n_schema"] = len(schema_rows)
@@ -311,8 +322,14 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
         ]
         return rep
 
+    # A/B-membership-mismatch rows are quality-filtered here (never
+    # claim-grade; the count is reported so the mismatch rate stays
+    # visible), alongside the n_sat / slips gates.
+    rep["n_ab_mismatch"] = sum(
+        1 for r in schema_rows if r["ab_membership_match"] is not True)
     quality = [r for r in schema_rows
-               if r["n_sat"] >= 5 and r["slips"] == 0]
+               if r["n_sat"] >= 5 and r["slips"] == 0
+               and r["ab_membership_match"] is True]
     rep["n_quality"] = len(quality)
     sel = [r for r in quality
            if r.get("residual_rms_m", 1e9) < POISON_RMS_M]
@@ -436,9 +453,10 @@ def main():
 
     print(f"file: {path} ({rep['n_in']} rows read"
           + (f", {bad} unparseable lines skipped" if bad else "") + ")")
-    print(f"quality gates: {rep['n_quality']} rows (n_sat>=5, slips==0); "
-          f"excluded {rep['n_poison']} poison-class rows "
-          f"(residual_rms_m >= {POISON_RMS_M:.0f} m)")
+    print(f"quality gates: {rep['n_quality']} rows (n_sat>=5, slips==0, "
+          f"ab_membership_match); excluded {rep['n_ab_mismatch']} "
+          f"A/B-membership-mismatch rows and {rep['n_poison']} "
+          f"poison-class rows (residual_rms_m >= {POISON_RMS_M:.0f} m)")
     print(f"NOTE: poison gate {POISON_RMS_M:.0f} m is DATA-DERIVED from the "
           f"v2 rows it filters (see spec pre-registration 2026-08-29) — "
           f"verdicts using it are exploratory until re-derived from a "
