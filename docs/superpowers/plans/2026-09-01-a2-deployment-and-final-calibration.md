@@ -1,6 +1,6 @@
 # A2 Deployment and Final TDC Calibration Runbook
 
-**Date:** 2026-09-01  
+**Date:** 2026-09-01
 **Status:** **NO-GO — staging document, not authorization to touch hardware**
 
 This is the controlling plan for the next HackRF Pro timing deployment and

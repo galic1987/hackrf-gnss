@@ -1,7 +1,7 @@
 //! Live 1 Hz multi-constellation tracker that OWNS the radio.
 //!
 //! Same engine as live_track, but streams from the HackRF Pro directly via
-//! rs-hackrf (vendored, extended with open_by_serial + clock correction).
+//! rs-hackrf (vendored, extended with open-by-serial and timestamp access).
 //! Owning the device handle makes sample/timestamp telemetry deterministic:
 //! hackrf_open is exclusive, so a second capture cannot share the stream.
 //! Production discipline is SHADOW-ONLY. The historical correction-write

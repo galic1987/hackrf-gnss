@@ -49,8 +49,6 @@ pub enum StreamControl {
     SetVgaGain(u32),
     /// Enable/disable RF amplifier
     SetAmpEnable(bool),
-    /// Set reference clock correction in ppm (HackRF Pro radio register 23)
-    ClockCorrPpm(f64),
     /// Read the FPGA timestamp counter ("now" latch); the reply channel
     /// receives the 48-bit tick value. Query variant: the only control
     /// command with a response.
@@ -133,13 +131,7 @@ impl AsyncReadControlHandle {
     /// Retune to a new center frequency (Hz).
     pub fn tune(&self, freq_hz: u64) -> Result<()> {
         self.ctrl_tx
-            .send(StreamControl::Tune(freq_hz))            .map_err(|_| Error::StreamingError("control channel closed".to_string()))
-    }
-
-    /// Set the reference clock correction in ppm (Pro gateware register).
-    pub fn set_clock_corr_ppm(&self, ppm: f64) -> Result<()> {
-        self.ctrl_tx
-            .send(StreamControl::ClockCorrPpm(ppm))
+            .send(StreamControl::Tune(freq_hz))
             .map_err(|_| Error::StreamingError("control channel closed".to_string()))
     }
 
@@ -187,9 +179,6 @@ impl AsyncReadControlHandle {
 enum VendorRequest {
     /// Set transceiver mode (OFF/RX/TX/SS/CPLD_UPDATE/RX_SWEEP).
     SetTransceiverMode = 1,
-    /// Write a radio register (Pro gateware DSP features). Data: 9 bytes
-    /// (reg number + LE u64 value), wIndex = bank. USB API >= 0x0111.
-    RadioWriteReg = 59,
     /// Set sample rate (8 bytes: freq_hz u32 + divider u32, LE).
     SampleRateSet = 6,
     /// Set baseband filter bandwidth (wValue=low16, wIndex=high16).
@@ -683,32 +672,6 @@ impl HackRf {
         Ok(())
     }
 
-    /// Set the reference clock correction (HackRF Pro gateware feature).
-    ///
-    /// Writes radio register 23 (bank ALL) as fp_1_63 fixed point:
-    /// value = (1 + ppm/1e6) * 2^63. Goes through the firmware's radio
-    /// configuration management, so it survives retunes — and unlike raw
-    /// FPGA pokes it works while streaming (control endpoint, same handle).
-    ///
-    /// Reference: hackrf.c `hackrf_set_clock_correction()` - vendor req 59
-    pub fn set_clock_correction_ppm(&self, ppm: f64) -> Result<()> {
-        if !(-10000.0..=10000.0).contains(&ppm) {
-            return Err(Error::ConfigFailed(format!(
-                "clock correction must be ±10000 ppm, got {ppm}"
-            )));
-        }
-        const REG_CLOCK_CORRECTION: u8 = 23;
-        const BANK_ALL: u16 = 255;
-        let fp_one = (1u64 << 63) as f64;
-        let value = ((1.0 + ppm / 1e6) * fp_one) as u64;
-        let mut data = [0u8; 9];
-        data[0] = REG_CLOCK_CORRECTION;
-        data[1..].copy_from_slice(&value.to_le_bytes());
-        self.control_out(VendorRequest::RadioWriteReg, 0, BANK_ALL, &data)?;
-        tracing::debug!("Clock correction set to {ppm} ppm");
-        Ok(())
-    }
-
     /// Enable or disable the 10 MHz CLKOUT output (HackRF Pro).
     ///
     /// The station's second radio is CLKIN-slaved to this output, so whoever
@@ -719,10 +682,7 @@ impl HackRf {
     /// Reference: hackrf.c `hackrf_set_clkout_enable` - vendor req 32
     pub fn set_clkout_enable(&self, enable: bool) -> Result<()> {
         self.control_out(VendorRequest::ClkoutEnable, enable as u16, 0, &[])?;
-        tracing::debug!(
-            "CLKOUT {}",
-            if enable { "enabled" } else { "disabled" }
-        );
+        tracing::debug!("CLKOUT {}", if enable { "enabled" } else { "disabled" });
         Ok(())
     }
 
@@ -1120,11 +1080,6 @@ fn streaming_thread(
                         tracing::warn!("HackRF set amp enable={} failed: {}", enable, e);
                     }
                 }
-                StreamControl::ClockCorrPpm(ppm) => {
-                    if let Err(e) = dev.set_clock_correction_ppm(ppm) {
-                        tracing::warn!("HackRF set clock correction {} ppm failed: {}", ppm, e);
-                    }
-                }
                 StreamControl::QueryTsNow(reply) => {
                     match dev.ts_read_now() {
                         Ok(t) => {
@@ -1136,7 +1091,10 @@ fn streaming_thread(
                             static WARNED: std::sync::atomic::AtomicBool =
                                 std::sync::atomic::AtomicBool::new(false);
                             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                                tracing::warn!("HackRF ts_read_now failed (further failures silent): {}", e);
+                                tracing::warn!(
+                                    "HackRF ts_read_now failed (further failures silent): {}",
+                                    e
+                                );
                             }
                         }
                     }
