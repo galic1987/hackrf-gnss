@@ -26,7 +26,7 @@ use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FC_IRIDIUM: f64 = 1626.25e6;
-const SERIAL: &str = "0000000000000000977c64de2b557213";
+const SERIAL: &str = "QUARANTINED_NO_SERIAL";
 
 struct Cap {
     path: String,
@@ -38,7 +38,9 @@ struct Cap {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: fused_sync <tle> --cap file,dur_s,fs,bits,pc_epoch[,sidecar.json] [--cap ...] [--guess lat lon] [--apply]");
+    eprintln!(
+        "usage: fused_sync <tle> --cap file,dur_s,fs,bits,pc_epoch[,sidecar.json] [--cap ...] [--guess lat lon] [--apply]"
+    );
     std::process::exit(2);
 }
 
@@ -108,14 +110,22 @@ fn read_cap(cap: &Cap) -> (Vec<u8>, usize) {
 fn load_sidecar(c: &Cap) -> Option<TsSidecar> {
     let path = c.sidecar.as_ref()?;
     let text = std::fs::read_to_string(path)
-        .map_err(|e| eprintln!("sidecar {path}: {e}")).ok()?;
+        .map_err(|e| eprintln!("sidecar {path}: {e}"))
+        .ok()?;
     serde_json::from_str(&text)
-        .map_err(|e| eprintln!("sidecar {path}: {e}")).ok()
+        .map_err(|e| eprintln!("sidecar {path}: {e}"))
+        .ok()
 }
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (tle_path, caps, guess, apply) = parse_args(&a);
+    if apply {
+        eprintln!(
+            "QUARANTINED: --apply targets the retired live clock-actuation path; offline solve remains available and no radio was opened."
+        );
+        std::process::exit(78);
+    }
     let text = match std::fs::read_to_string(&tle_path) {
         Ok(t) => t,
         Err(e) => {
@@ -125,7 +135,10 @@ fn main() {
     };
     let sats = gps::load_tle_named(&text);
     if sats.is_empty() {
-        eprintln!("no satellites parsed from {} -- is it a TLE file?", tle_path);
+        eprintln!(
+            "no satellites parsed from {} -- is it a TLE file?",
+            tle_path
+        );
         std::process::exit(2);
     }
     // the Iridium front end (position-match gate) needs A reference position;
@@ -156,27 +169,61 @@ fn main() {
         };
         let (raw_u8, bps) = read_cap(cap);
         let mut cap_obs = if bps == 2 {
-            let raw: Vec<i16> = raw_u8.chunks_exact(2)
-                .map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
-            iridium_observations(&raw, FC_IRIDIUM, cap.fs, cap.dur,
-                                 t_rel_start, cap.pc_epoch, &sats, rx_prior, ci)
+            let raw: Vec<i16> = raw_u8
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            iridium_observations(
+                &raw,
+                FC_IRIDIUM,
+                cap.fs,
+                cap.dur,
+                t_rel_start,
+                cap.pc_epoch,
+                &sats,
+                rx_prior,
+                ci,
+            )
         } else {
             let raw: Vec<i8> = raw_u8.iter().map(|&b| b as i8).collect();
-            iridium_observations(&raw, FC_IRIDIUM, cap.fs, cap.dur,
-                                 t_rel_start, cap.pc_epoch, &sats, rx_prior, ci)
+            iridium_observations(
+                &raw,
+                FC_IRIDIUM,
+                cap.fs,
+                cap.dur,
+                t_rel_start,
+                cap.pc_epoch,
+                &sats,
+                rx_prior,
+                ci,
+            )
         };
         println!(
             "cap {} {}: {} observations ({} doppler, {} timefix, {} drift)",
-            ci, cap.path,
+            ci,
+            cap.path,
             cap_obs.len(),
-            cap_obs.iter().filter(|o| o.kind == ObsKind::DopplerHz).count(),
-            cap_obs.iter().filter(|o| o.kind == ObsKind::TimeFix).count(),
-            cap_obs.iter().filter(|o| o.kind == ObsKind::ClockDriftPpm).count(),
+            cap_obs
+                .iter()
+                .filter(|o| o.kind == ObsKind::DopplerHz)
+                .count(),
+            cap_obs
+                .iter()
+                .filter(|o| o.kind == ObsKind::TimeFix)
+                .count(),
+            cap_obs
+                .iter()
+                .filter(|o| o.kind == ObsKind::ClockDriftPpm)
+                .count(),
         );
         obs.append(&mut cap_obs);
     }
 
-    println!("fused solve: {} observations over {} captures", obs.len(), caps.len());
+    println!(
+        "fused solve: {} observations over {} captures",
+        obs.len(),
+        caps.len()
+    );
     let est = match solve(&obs, &sats, first_pc_epoch, guess) {
         Ok(e) => e,
         Err(m) => {
@@ -189,10 +236,15 @@ fn main() {
             "fix: lat {:+.5}  lon {:+.5}  (sigma {:.2} km, rms {:.1} Hz, n {})",
             f.lat_deg, f.lon_deg, f.sigma_km, f.rms_hz, f.n_used
         ),
-        None => println!("fix: none (fewer than 20 matched Doppler observations, or no unambiguous multistart basin)"),
+        None => println!(
+            "fix: none (fewer than 20 matched Doppler observations, or no unambiguous multistart basin)"
+        ),
     }
     match est.time_offset_s {
-        Some(t) => println!("time offset: {:+.3} s (UTC = t_rel + offset)", t - first_pc_epoch),
+        Some(t) => println!(
+            "time offset: {:+.3} s (UTC = t_rel + offset)",
+            t - first_pc_epoch
+        ),
         None => println!("time offset: epoch not anchored"),
     }
     match est.drift_ppm {
@@ -207,7 +259,10 @@ fn main() {
     if apply {
         if let Some(tick0) = est.tick0_utc {
             let tick_hz = sidecars[0].as_ref().map(|s| s.tick_hz).unwrap_or(32.0e6);
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
             let ticks = ticks_for_utc(now, tick0, tick_hz);
             match apply_ts_set(SERIAL, ticks) {
                 Ok(back) => println!("ts-set {} ticks; readback now = {} ticks", ticks, back),

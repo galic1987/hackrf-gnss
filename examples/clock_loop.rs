@@ -10,13 +10,13 @@
 //!   The PC is NTP-disciplined; SystemTime is treated as absolute truth for
 //!   the capture start epoch the TLE predictions need.
 use hackrf_gnss::discipline::{Correction, CycleLog, RateReference};
-use hackrf_gnss::gps::{geodetic_to_ecef, load_tle_named, GpsSat};
+use hackrf_gnss::gps::{GpsSat, geodetic_to_ecef, load_tle_named};
 use hackrf_gnss::iridium::ppm::{self, median};
 use std::io::Write;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const SERIAL: &str = "0000000000000000977c64de2b557213";
+const SERIAL: &str = "QUARANTINED_NO_SERIAL";
 const HACKRF_PRO: &str =
     "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src/hackrf_pro";
 const RX_LAT: f64 = 39.001;
@@ -25,7 +25,10 @@ const FC: f64 = 1626.25e6;
 const FS: f64 = 4.0e6;
 
 fn epoch_now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 struct IridiumReference {
@@ -51,19 +54,44 @@ impl RateReference for IridiumReference {
         let n = ((self.capture_s * FS) as u64).to_string();
         let start = epoch_now();
         let st = Command::new("hackrf_transfer")
-            .args(["-d", SERIAL, "-f", "1626250000", "-s", "4000000",
-                   "-l", "40", "-g", "46", "-p", "1", "-a", "0",
-                   "-n", &n, "-r", &self.iq_path])
+            .args([
+                "-d",
+                SERIAL,
+                "-f",
+                "1626250000",
+                "-s",
+                "4000000",
+                "-l",
+                "40",
+                "-g",
+                "46",
+                "-p",
+                "1",
+                "-a",
+                "0",
+                "-n",
+                &n,
+                "-r",
+                &self.iq_path,
+            ])
             .status();
         match st {
             Ok(s) if s.success() => {}
             _ => {
-                eprintln!("iridium: hackrf_transfer failed ({:?})", st.map(|s| s.code()));
+                eprintln!(
+                    "iridium: hackrf_transfer failed ({:?})",
+                    st.map(|s| s.code())
+                );
                 return None;
             }
         }
         let end = epoch_now();
-        eprintln!("iridium: captured {:.1}s at {:.1} (took {:.1}s)", self.capture_s, start, end - start);
+        eprintln!(
+            "iridium: captured {:.1}s at {:.1} (took {:.1}s)",
+            self.capture_s,
+            start,
+            end - start
+        );
         let raw_u8 = std::fs::read(&self.iq_path).ok()?;
         let raw: Vec<i8> = raw_u8.iter().map(|&b| b as i8).collect();
         let est = ppm::estimate_ppm(&raw, FC, FS, self.capture_s, start, &self.sats, self.rx);
@@ -72,7 +100,9 @@ impl RateReference for IridiumReference {
         self.sats_seen = est.sats();
         eprintln!(
             "iridium: detected {} decoded {} attributed {} ppm {:?}",
-            est.detected, est.decoded, self.n_attributed,
+            est.detected,
+            est.decoded,
+            self.n_attributed,
             est.ppm().map(|p| format!("{:+.2}", p))
         );
         est.ppm()
@@ -104,11 +134,18 @@ fn apply_correction(ppm: f64) {
 }
 
 fn main() {
+    eprintln!(
+        "QUARANTINED: legacy clock_loop targets the dead Pro #1 and performs live clock actuation; no radio was opened."
+    );
+    std::process::exit(78);
+
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 3 {
         eprintln!("usage: clock_loop <tle_path> <cycles> [capture_s] [settle_s]");
         eprintln!("fetch a TLE with:");
-        eprintln!("  curl 'https://celestrakt.org/NORAD/elements/gp.php?GROUP=iridium&FORMAT=tle' > iridium.tle");
+        eprintln!(
+            "  curl 'https://celestrakt.org/NORAD/elements/gp.php?GROUP=iridium&FORMAT=tle' > iridium.tle"
+        );
         std::process::exit(2);
     }
     let cycles: usize = a[2].parse().unwrap();

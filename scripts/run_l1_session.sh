@@ -1,4 +1,9 @@
 #!/bin/bash
+# QUARANTINED: defaults to dead Pro #1, changes images/power state, and uses
+# pre-A2 timestamp assumptions. Retained as historical source only.
+echo "QUARANTINED: legacy L1 session procedure; no radio was opened." >&2
+exit 78
+
 # run_l1_session.sh — one-command open-sky L1/E1 session: capture -> convert
 # -> acquire -> verdict.  Validated end-to-end 2026-08-20 (6/6 sim control,
 # std/ext A/B equivalence, bitstream switching reliable without reboot).
@@ -13,7 +18,7 @@ SECS="${2:-60}"
 OUTDIR="${3:-.}"
 GNSS="$(cd "$(dirname "$0")/.." && pwd)"
 HACKRF_TOOLS="${HACKRF_TOOLS:-/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src}"
-S="${PRO_SERIAL:-0000000000000000977c64de2b557213}"
+S="${PRO_SERIAL:-QUARANTINED_NO_SERIAL}"
 TS="$(date +%Y%m%d_%H%M%S)"
 
 # hackrf_pro's exit code is 0 even on failure — a failed read is detected by

@@ -1,4 +1,10 @@
 #!/bin/bash
+# QUARANTINED: obsolete dual-active-antenna procedure. It broadly kills
+# transfers, defaults to the dead Pro #1, and enables persistent bias on both
+# receivers. Retained as historical source only.
+echo "QUARANTINED: unsafe legacy dual-band capture; no radio was opened." >&2
+exit 78
+
 # Dual-device, dual-band parallel GNSS capture for the Taoglas AA.250.
 #
 # Slices captured simultaneously:
@@ -23,7 +29,7 @@ set -e
 OUTDIR="${1:-.}"
 SECS="${2:-120}"
 
-PRO_SERIAL="${PRO_SERIAL:-0000000000000000977c64de2b557213}"
+PRO_SERIAL="${PRO_SERIAL:-QUARANTINED_NO_SERIAL}"
 ONE_SERIAL="${ONE_SERIAL:-0000000000000000922c63dc21748847}"
 DEVICES="${DEVICES:-both}"        # both | pro | one
 

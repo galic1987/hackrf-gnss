@@ -237,7 +237,7 @@
     <h2>60 Hz carrier phase &mdash; relative displacement (diagnostic)</h2>
     <div id="phase"><span class="dim">waiting for phase producer&hellip;</span></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Carrier-phase displacement" data-tip="Unwrapped carrier phase of the ATSC ch35 pilot × λ (≈497.7 mm), in mm of relative path change, last 60 s. Sub-mm sensitivity; the absolute zero wanders with multipath and atmosphere, so read the wiggles, not the offset."><canvas id="phasechart" class="cv"></canvas></div>
-    <span class="cap">ATSC ch35 pilot (602.30944 MHz, GPS-disciplined Tx) derotated to baseband on the HackRF One (10 MHz direct from the Bodnar Split Star; presence was checked while the radio was free, but the soft rate check is not topology proof);
+    <span class="cap">ATSC ch35 pilot (602.30944 MHz; transmitter discipline unverified) derotated to baseband on the HackRF One (10 MHz direct from the Bodnar Split Star; presence was checked while the radio was free, but the soft rate check is not topology proof);
     unwrapped carrier phase &times; &lambda; (&asymp;497.7 mm) = relative path displacement, last 60 s.
     Absolute zero wanders with multipath/atmosphere &mdash; sensitivity, not absolute accuracy, is the spec.</span>
   </div>
@@ -253,10 +253,10 @@
 
   <!-- per-band drift table -->
   <div class="card s12">
-    <h2>Per-band drift &mdash; every source measures the same clock</h2>
+    <h2>Per-band drift &mdash; independent chains share one frequency reference</h2>
     <table>
       <thead><tr>
-        <th><span class="tip" tabindex="0" data-tip-title="Band / source" data-tip="Each row is an independent producer measuring the one shared clock from its own signal — TV pilots, satellite carriers, decoded nav time. Agreement across rows = truth.">Band / source</span></th>
+        <th><span class="tip" tabindex="0" data-tip-title="Band / source" data-tip="Each row is an independent signal and receiver-chain measurement. The radios share a 10 MHz source, not one phase-identical clock; agreement is a consistency check, not proof of truth.">Band / source</span></th>
         <th><span class="tip" tabindex="0" data-tip-title="Satellites seen" data-tip="Which satellites contributed to this row's measurement. An empty cell means the source is a terrestrial carrier (no satellites involved).">Satellites seen</span></th>
         <th><span class="tip" tabindex="0" data-tip-title="Last drift" data-tip="The measured carrier offset expressed in ppm of its nominal frequency. For a stationary transmitter this IS the receiver clock's error; for a moving satellite it is mostly orbital Doppler.">Last drift</span></th>
         <th><span class="tip" tabindex="0" data-tip-title="vs consensus" data-tip="This row's drift minus the consensus drift of all references. For GEO rows (SBAS) it is a pure per-satellite clock check: green = agrees, amber = disagrees. MEO rows are dimmed because orbital motion dominates them.">vs consensus</span></th>
@@ -324,7 +324,7 @@
   <!-- precision history -->
   <div class="card s7">
     <h2>Precision &mdash; all bands, last 60 min</h2>
-    <div class="cvw tip" tabindex="0" data-tip-title="Per-band drift, 60 min" data-tip="Every producer's drift measurement of the same clock, last hour. Points = individual bands; the line = consensus. A band leaving the pack is a fault or spoof candidate."><canvas id="prec" class="cv"></canvas></div>
+    <div class="cvw tip" tabindex="0" data-tip-title="Per-band drift, 60 min" data-tip="Independent signal/receiver-chain drift measurements against a common 10 MHz reference, last hour. Points = individual bands; the line = consensus. A band leaving the pack is a fault or spoof candidate."><canvas id="prec" class="cv"></canvas></div>
     <div id="preclegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
     <div class="cvw tip" tabindex="0" data-tip-title="Satellite counts, 60 min" data-tip="How many satellites each band producer saw per sample over the last hour. A constellation dropping to zero is itself an alarm — antenna, producer or interference."><canvas id="sats" class="cv"></canvas></div>
     <div id="satslegend" class="dim" style="font-size:0.85em;margin:0.3em 0 0;"></div>
@@ -375,7 +375,7 @@
         <tr><td>Trigger-edge latch</td><td class="num">&plusmn;1 tick</td><td class="num">&plusmn;7.5&ndash;9.4 m</td>
             <td class="warn">WIRED, NOT CALIBRATED &mdash; Bodnar 1PPS reaches P28 pin 16, but the retained runs do not prove a claim-grade coarse latch: slot 1 alone has the 48-bit trigger latch, while slot 0 alone has the TDC. CDC latency/phase is uncalibrated</td></tr>
         <tr><td>Carry-chain TDC (48-tap)</td><td class="num">scale uncalibrated</td><td class="num">not established</td>
-            <td class="warn">FUNCTIONAL &mdash; A2 preserves tap-0-anchored raw external-trigger captures on P28.16, including explicitly classified bubbled words; bubbled popcounts are excluded from timing bins, code 48 is composite, and the retained stimulus does not prove uniform phase. The 105.5 ps / 5.07 ns figure remains a conditional historical estimate, not a calibration</td></tr>
+            <td class="warn">SOURCE CANDIDATE, NOT DEPLOYED &mdash; A2 is routed in the source tree but deployed build 0x469/API 0x0116 predates the held-mailbox protocol. Historical P28.16 captures are pre-A2; scale, DNL/INL and tap-0 transfer remain uncalibrated</td></tr>
         <tr><td>Averaged PPS + TDC (60 s loop)</td><td class="num">~30&ndash;50 ps (projection)</td><td class="num">~1&ndash;1.5 cm</td>
             <td class="dim">projection only &mdash; would require atomic coarse+fine capture, independent swept-edge DNL calibration, and a measured uncertainty budget; no shipped image currently co-hosts both paths</td></tr>
         <tr><td>ATSC pilot carrier PLL</td><td class="num">σ ~86&ndash;99 mm over 10 s, live</td><td class="num">relative displacement</td>
@@ -779,7 +779,7 @@ function renderHeartbeat(st) {
       cons !== null ? sgn(cons) + Math.abs(cons).toFixed(3) + " ppm" : "—",
       cons !== null ? "= " + fmtNs(cons * 1000) + " · " + fmtPerHour(cons * 1000) + " undisciplined" : "no consensus yet",
       "Consensus drift",
-      "The weighted agreement of every independent reference measuring this one clock (WAAS GEO Doppler, ATSC pilots). At this rate the clock would accumulate " +
+      "The weighted agreement among independent signal/receiver-chain estimates sharing the station reference (WAAS GEO Doppler and the ATSC pilot). The ATSC term also contains uncalibrated transmitter offset, so this is a consistency estimate, not absolute clock truth. At this rate the inferred offset would accumulate " +
       (cons !== null ? fmtPerHour(cons * 1000) : "—") +
       " of error left undisciplined — the discipline loop is what pins it near zero. Good: |drift| under 0.05 ppm; typical here: sub-ppm.") +
     stat("Reading it", "1 ppb = 1 ns/s",
@@ -787,7 +787,7 @@ function renderHeartbeat(st) {
       "How to read this chart",
       "1 ppb of frequency error = 1 nanosecond of time error accumulating every second; 1 ppm = 1,000 ns/s. Without discipline this clock would wander " +
       (cons !== null ? fmtPerHour(cons * 1000) : "—") +
-      ". The cyan dash (when visible) is the consensus — the true clock error — usually a hairline against the poll jitter.");
+      ". The cyan dash (when visible) is the conditional consensus estimate — usually a hairline against the poll jitter, never an absolute-truth claim.");
   lg.innerHTML = "median tick <b>" + (info.med / 1e6).toFixed(6) + "</b> MHz · window " +
     (winMin < 90 ? winMin.toFixed(0) + " min" : (winMin / 60).toFixed(1) + " h") +
     ' · <span style="color:#ffcc80">amber fill</span> = time-error rate vs median · ' +
@@ -962,7 +962,7 @@ function renderSummary(st) {
       ? "carrier-phase noise over 10 s at 60 epochs/s — sub-mm sensitivity to path change; the absolute zero wanders with the atmosphere."
       : "no carrier lock on the TV pilot right now; the tracker re-locks automatically when the signal returns.",
     "Displacement — the bottom line",
-    "The ATSC ch35 pilot is GPS-disciplined at the transmitter; tracking its carrier phase on the second radio (direct Bodnar Split Star reference) reads relative path change at 60 epochs per second. Shared frequency does not prove common sample phase. σ over 10 s is the honest noise figure — 86–99 mm this era: multipath sets the floor, not the electronics; sub-mm is only the theoretical phase granularity."));
+    "Tracking the ATSC ch35 pilot on the second radio (direct Bodnar Split Star reference) reads observed relative phase change at 60 epochs per second; the transmitter's discipline is not independently attested. Shared frequency does not prove common sample phase. σ over 10 s is the honest noise figure — 86–99 mm this era: multipath sets the floor, not the electronics; sub-mm is only the theoretical phase granularity."));
 
   document.getElementById("jsummary").innerHTML = cards.join("");
 }
@@ -1399,7 +1399,7 @@ var GLOSSARY = {
   "ADEV": "Allan deviation — clock stability vs averaging time. A τ⁻¹ slope means white measurement noise averaging down, not oscillator physics.",
   "σ": "sigma — one standard deviation: the honest uncertainty of a measurement. '±σ' tells you how much to trust the number it follows.",
   "z": "z-score — how many σ a source sits from the consensus of all references. |z| > 3 raises the spoofing alarm.",
-  "consensus": "the weighted mean of all independent references measuring the same clock. Agreement = truth; one source diverging = someone is lying (or broken).",
+  "consensus": "the weighted combination of independent signal and receiver-chain estimates sharing a frequency reference. Agreement is a consistency check; it does not prove absolute truth, common phase, or receiver delay.",
   "drift": "the measured carrier offset expressed in ppm of its nominal frequency. For a stationary transmitter this IS the receiver clock's error; for a moving satellite it is mostly orbital Doppler.",
   "vs consensus": "this row's drift minus the consensus drift of all references. For GEO rows (SBAS) it is a pure per-satellite clock check: green = agrees, amber = disagrees. MEO rows are dimmed because orbital motion dominates them.",
   "GPS": "US Global Positioning System. L1 C/A at 1575.42 MHz is its oldest and easiest signal.",
@@ -1415,7 +1415,7 @@ var GLOSSARY = {
   "QZSS": "Japan's regional system — below the horizon from Virginia, so excluded from this panel by geometry.",
   "Iridium": "66-satellite LEO constellation at 1616–1626.5 MHz. Strong bursts; this station's proven Doppler-positioning workhorse.",
   "Inmarsat": "GEO maritime satellites at L-band (~1535–1555 MHz) — useful as near-stationary carrier references.",
-  "ATSC": "the digital TV standard. Its pilot carrier is GPS-disciplined (single-frequency-network rules) — a free terrestrial frequency reference through a TV antenna.",
+  "ATSC": "the digital TV standard. Its pilot is a continuous terrestrial carrier useful for relative phase/frequency tracking; this station has not independently attested the transmitter's discipline.",
   "FDMA": "Frequency-Division Multiple Access — satellites separated by frequency, not code (GLONASS legacy).",
   "CDMA": "Code-Division Multiple Access — all satellites on one frequency, separated by their PRN codes (GPS/Galileo/BeiDou).",
   "C/A": "Coarse/Acquisition code — the civilian GPS L1 signal: 1023 chips, 1.023 Mcps, repeats every 1 ms.",
@@ -1597,7 +1597,6 @@ function render(st) {
   if (disc && disc.correction_ppm !== undefined && (Date.now() / 1000 - (disc.epoch || 0)) < 120) {
     c = Object.assign({}, c, {
       correction_ppm: disc.correction_ppm,
-      residual_ppm: disc.residual_ppm === null ? undefined : disc.residual_ppm,
       note: "discipline loop: " + (disc.note || "") +
         (disc.stalled ? " (STALLED)" : ""),
     });
@@ -1609,7 +1608,7 @@ function render(st) {
     // shadow is a published runtime state: the loop computes but never
     // writes — never let HOLDING/STEERING imply actuation
     if (disc.actuate === false)
-      discPill = '<span class="pill warn" title="Corrections are computed and logged but NEVER written to hardware (HACKRF_GNSS_ACTUATE unset) — every write was proven to collapse all tracker locks ~1 min">SHADOW</span> ';
+      discPill = '<span class="pill warn" title="Corrections are computed and logged but NEVER written to hardware — the production write call was removed after 122/122 writes collapsed tracking, and the legacy override is rejected before radio open">SHADOW</span> ';
   }
   // headline = the REAL clock number (consensus of independent references);
   // the SPI-poll tick rate is PC-read jitter — diagnostics, demoted below.
@@ -1651,18 +1650,17 @@ function render(st) {
     ? ' &nbsp;·&nbsp; consensus <b>' + sgn(st.consensus_ppm) + Math.abs(st.consensus_ppm).toFixed(3) + " ppm</b>"
     : (st.consensus_suspect ? ' &nbsp;·&nbsp; consensus <span class="pill warn">unarbitrated</span>' : "");
   var corrTxt = (c.correction_ppm === undefined || c.correction_ppm === null)
-    ? "correction register <b>0 ppm</b> (cleared by reflash)"
+    ? "expected correction <b>0 ppm</b> after reset (no live register readback)"
     : (st.discipline && st.discipline.actuate === false
-      // SHADOW: the number is computed intent, never written — the applied
-      // register was MEASURED unity by readback (2026-08-26 window); never
-      // render intent as if it were a live correction
-      ? "clock: <b>uncorrected</b> (register unity — nothing applied) · shadow intent " +
+      // SHADOW: the number is computed intent, never written. Unity was
+      // observed in a historical window but is not continuously read back.
+      ? "clock steering: <b>SHADOW</b> (expected unity; no live readback) · intent " +
         sgn(c.correction_ppm) + Math.abs(c.correction_ppm).toFixed(2) + " ppm"
       : "clock: correction <b>" + (c.correction_ppm >= 0 ? "+" : "") + c.correction_ppm.toFixed(2) + " ppm</b>");
   document.getElementById("clock").innerHTML =
     discPill + corrTxt +
-    (c.residual_ppm !== undefined ? ", residual <b>" + sgn(c.residual_ppm) + Math.abs(c.residual_ppm).toFixed(3) + " ppm</b>" +
-      ' <span class="dim">(live, from GPS-disciplined ATSC pilots)</span>' : "") +
+    (c.residual_ppm !== undefined && c.residual_ppm !== null ? ", residual <b>" + sgn(c.residual_ppm) + Math.abs(c.residual_ppm).toFixed(3) + " ppm</b>" +
+      ' <span class="dim">(live ATSC pilot; Tx discipline unverified)</span>' : "") +
     cons + " &nbsp;·&nbsp; " + anchor +
     (c.note ? '<br><span class="dim">' + esc(c.note) + "</span>" : "") +
     '<br><span class="dim">state updated ' + utc(st.epoch) + " (" + age(st.epoch) + ")</span>";
@@ -1671,25 +1669,17 @@ function render(st) {
   var res = c.residual_ppm;
   var fpga = "The 40-bit counter in the iCE40 counts adclk cycles; nibble embedding stamps every sample with " +
     "<b>bounded-uncertainty</b> ticks recovered from the stream (2.84M sequence-validated anchors; nibble/IQ association skew of a few samples under review). ";
-  if (res !== undefined) {
+  if (res !== undefined && res !== null) {
     var mps = Math.abs(res) * 299.792458;   // ppm -> m/s range-rate
     var corrNow = c.correction_ppm || 0;
     fpga += (Math.abs(corrNow) > 0.001
-      ? "The shadow loop's intent (never written; the applied register measured UNITY by readback 2026-08-26) stands at <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
+      ? "The shadow loop's intent (never written; unity was observed only in a historical 2026-08-26 readback) stands at <b>" + sgn(corrNow) + Math.abs(corrNow).toFixed(3) +
         " ppm</b>; the live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>"
       : "The uncorrected live residual <b>" + sgn(res) + Math.abs(res).toFixed(3) + " ppm</b>") +
       " = " + sgn(res) + Math.abs(res * 1000).toFixed(0) +
-      " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate bias, measured continuously by the " +
-      "references above. Per-fix the solver absorbs it; what actually limits position is the " +
-      "<b>intra-capture stability ±0.01 ppm (±3 m/s)</b> and the timestamp granularity: 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
+      " ns/s = <b>" + mps.toFixed(0) + " m/s</b> range-rate equivalent for the observed ATSC-pilot/One relative-frequency offset. It contains transmitter and receiver terms, is not hardware readback, and is not applied to the GNSS PVT solver. The timestamp granularity is 25&ndash;31.25 ns = 7.5&ndash;9.4 m today; " +
       "the 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) is functionally present, but its absolute bin scale and full-scale semantics remain uncalibrated. " +
-      "The whole chain is GPSDO-rooted since 2026-08-26 and in Split Star topology: Bodnar LBE-1421 OUT2 (10 MHz) split to Pro CLKIN & One CLKIN, OUT1 (1PPS) split to Pro P28.16 & One P28.16. The NMEA probe reports navigation-fix health, not output lock or PPS phase.";
-  }
-  if (st.atsc_spread_ppm !== undefined) {
-    fpga += '<br><span class="dim">Clock-free observable — ATSC ch23−ch35 spread: <b>' +
-      st.atsc_spread_ppm.toFixed(3) + " ppm</b> (the difference cancels your clock entirely; " +
-      "a sudden move here means a transmitter exciter drifted or something narrowband sits near a pilot — " +
-      "no clock event can explain it).</span>";
+      "Both boards are physically fed by the Split Star: Bodnar LBE-1421 OUT2 (10 MHz) split to Pro CLKIN & One CLKIN, OUT1 (1PPS) split to Pro P28.16 & One P28.16. The NMEA probe reports navigation-fix health, not output lock or PPS phase.";
   }
   document.getElementById("fpga").innerHTML = fpga;
 
@@ -2886,7 +2876,7 @@ var WG = [
     who: "66 LEO satellites at 780 km: strong bursts, ±40 kHz Doppler — the proven Doppler-positioning workhorse.",
     live: function (st) { return '<span class="dim">not in the 1560–1576 MHz live capture window — band-survey rotations only</span>'; } },
   { id: "atsc", name: "ATSC ch35 pilot", f: 602.30944e6, col: "#80cbc4",
-    who: "Terrestrial digital-TV pilot carrier (channel ≈596–602 MHz), GPS-disciplined at the transmitter — a free atomic-grade reference through a TV antenna.",
+    who: "Terrestrial digital-TV pilot carrier (channel ≈596–602 MHz). It is useful for relative tracking through a TV antenna; transmitter discipline is unverified, so it is not an attested atomic reference.",
     live: function (st) {
       var ph = st.phase;
       if (!ph) return '<span class="dim">phase producer offline</span>';
@@ -3146,7 +3136,7 @@ var TOUR = [
   { sel: "#rfcard", title: "Inside the radio",
     text: "The hardware chain every sample travels — antenna, transceiver, ADC, FPGA timestamps, ARM cores, USB — with live values bolted on: tick rate, correction ppm, consensus." },
   { sel: "#leadcard", title: "The leaderboard",
-    text: "How tightly each independent method measures the same clock: bars are measured scatter with honest error bars, and labels say what's proven vs diagnostic vs projected." },
+    text: "How tightly each independent signal/receiver chain estimates common-reference drift: bars are measured scatter with honest error bars, and labels say what's proven vs diagnostic vs projected." },
   { sel: "#l0", title: "The course: L0 → L4",
     text: "Open L0 and read down: the quantum definition of the second, the physics of the wave, the math of the fix, the hardware, the software. The wave gallery animates every signal we can hear." },
   { sel: "#physcard", title: "The whole physical chain",
@@ -3341,9 +3331,9 @@ sweepFocus();
       out.push(svgEl("text", { x: x2, y: 141, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9, style: SVG_FONT }, note));
     }
     branch(170, "HackRF Pro \u20266450", "CLKIN (10 MHz) + P28.16 (1PPS) \u00b7 AA.250");
-    branch(630, "HackRF One \u2026922c", "CLKIN (10 MHz) + P28.16 (1PPS) \u00b7 Safe 0/0/0");
+    branch(630, "HackRF One \u2026922c", "CLKIN (10 MHz) + P28.16 (1PPS) \u00b7 ClearStream ATSC");
     out.push(svgEl("text", { x: 400, y: 182, "text-anchor": "middle", fill: "#7f96a3", "font-size": 9.5, style: SVG_FONT },
-      "matched-length SMA split star \u00b7 syntonized (10 MHz) & synchronized (1PPS) \u00b7 Pro P2 SMA free"));
+      "matched-length split star \u00b7 common 10 MHz + 1PPS wired \u00b7 phase/delay uncalibrated \u00b7 Pro P2 free"));
     return '<svg viewBox="0 0 800 196" width="640" role="img">' + out.join("") + "</svg>";
   }
 
@@ -3352,14 +3342,14 @@ sweepFocus();
       t: "Live sync \u2014 consensus of all references",
       s: "One number answering: how fast is this station\u2019s clock, right now?",
       b: [
-        "Every independent producer (WAAS GEO Doppler on the Pro, ATSC pilot on the One, band snapshots) measures the <i>same</i> clock its own way. The consensus is the robust combination of those votes; the sparkline is the raw FPGA tick-counter polls they are anchored to.",
+        "WAAS GEO Doppler on the Pro, the ATSC pilot on the One, and band snapshots are independent signal/receiver-chain estimates against a common 10 MHz source. Their consensus is a consistency observable, not proof of common phase or absolute truth; the FPGA tick-poll sparkline belongs to the Pro path only.",
         "Read the <b>shape</b>, not the level: PC/USB poll jitter (\u00b1\u200930 ppm) dwarfs the clock\u2019s own physics, so ramps and steps matter, the absolute offset does not.",
-        "<b>Honest status:</b> since the One\u2019s ATSC RF path went starved (2026-08-27), the station runs a single voter (Pro/WAAS). With fewer than two independent voters the consensus deliberately reports null \u2014 redundancy is missed, not faked."
+        "<b>Honest status:</b> the One\u2019s south-facing ClearStream restored the ATSC path on 2026-09-01. Voter availability remains dynamic and comes from fresh lock heartbeats; with fewer than two independent voters the consensus deliberately reports null \u2014 redundancy is missed, not faked."
       ],
       specs: [
         ["tick counter", "32 MHz nominal, FPGA fabric", "read via USB control poll"],
         ["poll cadence", "1 Hz", "heartbeat chart below"],
-        ["voters today", "1 of 2 (Pro live WAAS)", "One dark \u2014 see 60 Hz phase card"],
+        ["voters today", "dynamic: Pro GNSS + One ATSC when locked", "independent RF paths; trust fresh heartbeats"],
         ["measured drift", "\u22120.038 ns/s over 5.2 h (2026-08-28)", "Bodnar GPS-steering seen through the chain"]
       ],
       src: "Live: observations/state.tick.json + state.band.json (merged at /api/sync)."
@@ -3368,9 +3358,9 @@ sweepFocus();
       t: "Clock & discipline",
       s: "The reference every measurement is held to \u2014 and the loop that is deliberately not closed.",
       b: [
-        "Both radios are disciplined by the same GPSDO in a <b>Split Star</b>: Bodnar OUT2 (10 MHz) \u2192 Power Splitter \u2192 Pro P1 & One CLKIN. Each radio switches to its external 10 MHz CLKIN when streaming starts (verified with <code>hackrf_clock -i</code> after stream kick).",
-        "The WAAS-GEO Doppler discipline loop runs <b>shadow-only</b>: residuals and corrections are computed, logged and published, but the hardware correction register is never written. A previous actuation era collapsed the tracking loops on 122/122 writes (the firmware write path resets the Si5351 PLL); actuation stays gated behind HACKRF_GNSS_ACTUATE=1 until a capture-boundary-safe write path exists.",
-        "1PPS Synchronization is active via Bodnar OUT1 (1PPS) \u2192 Power Splitter \u2192 Pro P28 pin 16 & One P28 pin 16 (TRIGGER.IN). Both radios are syntonized and synchronized across matched-length cables."
+        "Both radios are fed from the same GPSDO in a <b>Split Star</b>: Bodnar OUT2 (10 MHz) \u2192 Power Splitter \u2192 Pro P1 & One CLKIN. Each radio selects its own external-reference path when streaming starts; the retained One probe established signal detection, not oscillator phase or topology continuity.",
+        "The WAAS-GEO Doppler discipline estimator runs <b>enforced shadow-only</b>: residuals and bounded proposals are computed, logged and published, but the hardware correction register is never written. A previous actuation era collapsed the tracking loops on 122/122 writes (the firmware write path resets the Si5351 PLL); the production write call is removed and the legacy environment override is rejected before radio open. Unity is the expected post-reset state, not continuous register readback.",
+        "Bodnar OUT1 (1PPS) is physically split to Pro and One P28 pin 16 (TRIGGER.IN) over nominally matched cables. No retained simultaneous armed capture calibrates trigger latency, cable skew, sample zero, or receiver delay, so this is wiring evidence rather than a synchronization result."
       ],
       svg: starSvg(),
       specs: [
@@ -3406,23 +3396,23 @@ sweepFocus();
         "Each stage shows its live value and the precision it can <i>honestly</i> claim \u2014 not the precision of the stage after it. Timestamp ticks, TDC bins, averaged PPS phase and carrier phase are different observables, not successive measurements of the same error.",
         "<b>Physics reality (2026-08-30):</b> Code phase has a systematic absolute floor of ~10–50 ns (iono diurnal, multipath, and 6.7–10 ns anchor error). <b>Sub-ns absolute code-phase is physically unreachable.</b>",
         "The < 1.0 ns gate is officially re-registered as a <b>carrier-phase TDEV stability claim</b> (and previous −0.038 ns/s figures were exploratory).",
-        "The 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) has functional A2 tap-0-anchored raw capture with explicit interior, composite-full-scale, and bubbled classes. Bubbled popcounts are not timing bins; absolute scale, DNL/INL, tap-0 transfer behavior and fine-time orientation remain open."
+        "The 48-tap carry-chain TDC on P28.16 (TRIGGER.IN) has an A2 source candidate with explicit interior, composite-full-scale, and bubbled classes, but A2 is not deployed on build 0x469. Historical captures are pre-A2. Bubbled popcounts are not timing bins; absolute scale, DNL/INL, tap-0 transfer behavior and fine-time orientation remain open."
       ],
       src: "Live: state.tracker.json + state.phase.json + observations/tdc_pps_run1.jsonl."
     },
     atsc: {
       t: "60 Hz carrier phase \u2014 ATSC ch35 pilot (diagnostic)",
-      s: "Millimetre-class relative displacement from a TV transmitter, currently dark.",
+      s: "Millimetre-class relative displacement from a TV transmitter through the south-facing ClearStream.",
       b: [
-        "The HackRF One tracks the ATSC ch35 pilot at 602.809 MHz; unwrapped carrier phase \u00d7 \u03bb (\u2248497.7 mm) gives sub-mm sensitivity to relative path change. Read the wiggles, not the offset \u2014 the absolute zero wanders with multipath and atmosphere.",
-        "<b>Current status: dark by design.</b> The One\u2019s whole RF path arrives starved (pilot \u221235\u201338 dB vs nominal, no LNA hump at L1 either) \u2014 physical cause unconfirmed, needs eyes on the antenna/feed/amp. All ATSC rows since 2026-08-27 18:25 are quarantined; the producer retries honestly and lets this row go STALE rather than publish noise locks (78% of its history was exactly that)."
+        "The HackRF One tracks the true ATSC ch35 pilot at 602.30944 MHz while tuning 500 kHz above it at 602.80944 MHz; unwrapped carrier phase \u00d7 \u03bb (\u2248497.7 mm) gives sub-mm sensitivity to relative path change. Read the wiggles, not the offset \u2014 the absolute zero wanders with multipath and atmosphere.",
+        "<b>Current topology:</b> south-facing ClearStream feed, LNA/VGA 40/44. Bias ON raised amplitude from ~0.05 to >8 and restored the validated lock, so preserve the running state. The antenna may be passive, but the complete coax/DC path is unresolved; identify any inline powered amp, injector and DC-pass element before changing power. Future starts require an explicit acknowledged bias-on profile and publish requested RF config. The 2026-08-27\u201329 starved/noise-lock era remains quarantined; ATSC lock does not establish GPS reception or physical CLKIN topology."
       ],
       specs: [
-        ["signal", "ATSC 3.0 ch35 pilot", "602.80944 MHz, continuous carrier"],
+        ["signal", "ATSC ch35 pilot", "602.30944 MHz; receiver center 602.80944 MHz"],
         ["observable", "unwrapped phase \u00d7 \u03bb", "\u03bb \u2248 497.7 mm"],
-        ["status", "dark (RF path starved)", "quarantine active \u2014 do not read old rows"]
+        ["status", "live/dynamic", "old dark-era rows quarantined; trust only fresh post-fix rows"]
       ],
-      src: "Live: observations/state.phase.json (STALE while dark \u2014 intended)."
+      src: "Live: observations/state.phase.json (fresh lock or honest lock:false heartbeat)."
     },
     position: {
       t: "Position fix \u2014 live",
@@ -3434,8 +3424,8 @@ sweepFocus();
       src: "Live: observations/state.position.json + position_history.jsonl."
     },
     bands: {
-      t: "Per-band drift \u2014 every source measures the same clock",
-      s: "One LO setting, two GNSS neighbourhoods \u2014 and the band that can\u2019t fit.",
+      t: "Per-band drift \u2014 independent chains, common reference",
+      s: "One Pro LO setting, two GNSS neighbourhoods \u2014 and the band that can\u2019t fit.",
       b: [
         "The tracker runs 16 Msps centred at 1568.25 MHz: BeiDou B1I lands at \u22127.15 MHz and GPS L1 / Galileo E1 / SBAS at +7.17 MHz \u2014 one LO, both constellations. Tonight\u2019s change (65fc0d8) sets the baseband filter explicitly to 15 MHz: the auto-selected 12 MHz put both signals at or past the filter edge.",
         "Rows marked STALE are fail-closed: the producer would rather show an old row dimmed than invent a fresh one. Snapshot rows (upper bands) come from band_producer\u2019s scheduled tracker-down windows; live rows come from the tracker itself.",
@@ -3497,9 +3487,9 @@ sweepFocus();
       t: "FPGA clock chain \u2014 where the precision comes from",
       s: "iCE40UP5K gateware: tick counter, correction register, TDC \u2014 and what each number really is.",
       b: [
-        "Four FPGA images coexist on the Pro. Slot 0 hosts the 48-tap carry-chain TDC; Slot 1 a coarse trigger latch; Slot 2 the 12-bit extended-precision RX (CIC + NCO, 54% logic cells, 0% of the 128 KB SPRAM used); production runs release 0x469 on all four slots (manifest-verified today).",
+        "Four FPGA images coexist on the Pro. Slot 0 hosts the 48-tap carry-chain TDC; Slot 1 a coarse trigger latch; Slot 2 the 12-bit extended-precision RX (CIC + NCO, 54% logic cells, 0% of the 128 KB SPRAM used). Release 0x469 self-reported BUILD_ID tags were smoke-tested on all four slots; flash bytes and deployed bitstream hashes were not read back.",
         "The tick counter is a free-running 32 MHz fabric counter \u2014 its polls feed the heartbeat chart. The clock-correction register (RADIO_CLOCK_CORRECTION, radio-interface index 23, fp_1_63 \u2014 it steers the Si5351C-synthesized sample/LO clocks, never the TCXO) is computed by the discipline loop in shadow mode only and never written. The 0x60\u20130x7F FPGA page exists only as a GPSDO design-doc register-map proposal \u2014 no gateware implements it.",
-        "<b>TDC status:</b> slot-0 external-trigger capture is functional. Run 1 occupancy suggested a conditional ~105.5 ps estimate, but retained provenance does not establish clock source/rate or uniform phase visitation; code 48 is composite. Absolute bin width, DNL/INL and fine-time orientation are therefore uncalibrated."
+        "<b>TDC status:</b> the retained pre-A2 Run 1 observed external-trigger responses, but it cannot establish an absolute scale. Its conditional ~105.5 ps estimate lacks clock source/rate and uniform-phase provenance, and code 48 is composite. A2 is source-only on this station; absolute bin width, DNL/INL and fine-time orientation remain uncalibrated."
       ],
       svg: chainSvg([
         { t: ["SGPIO / ADC IF"], s: "8-bit I/Q in" },
@@ -3834,7 +3824,7 @@ sweepFocus();
         paras: ["The microcontroller boots from SPI flash, loads the FPGA bitstream, speaks USB 2.0 High-Speed to the host, and services every control request: set frequency, set gains, read tick counter, write the clock-correction register.",
           "Core split: the Cortex-M4 runs the control plane (the green line shows the discipline loop's computed correction — SHADOW: logged, never written, because every actuation historically collapsed all tracker locks within a minute). The Cortex-M0 is a full-time assembly worker for SGPIO, moving interleaved I/Q into the USB queue — ~92% loaded at 20 Msps, which is why heavy SPI polling during streaming is a bad idea.",
           "This is also where firmware risk lives: the flash loader issues found in review (discarded read failures, 'queued reported as applied') are the reason only attested releases run on this board."],
-        specs: [["Cores", "Cortex-M4F @ 204 MHz (control) + Cortex-M0 (SGPIO dataplane)"], ["Firmware", "hackrf_usb — boots from W25Q32 flash, loads FPGA image from a slot"], ["Correction register", "RADIO_CLOCK_CORRECTION — steers Si5351C PLL-A fractional dividers; does NOT propagate to CLKOUT (PLL-B)"], ["Station law", "discipline is SHADOW by default (HACKRF_GNSS_ACTUATE=1 to actuate)"]],
+        specs: [["Cores", "Cortex-M4F @ 204 MHz (control) + Cortex-M0 (SGPIO dataplane)"], ["Firmware", "hackrf_usb — boots from W25Q32 flash, loads FPGA image from a slot"], ["Correction register", "RADIO_CLOCK_CORRECTION — steers Si5351C PLL-A fractional dividers; does NOT propagate to CLKOUT (PLL-B)"], ["Station law", "production discipline is enforced SHADOW-only; no runtime actuator override"]],
         links: [["LPC43xx (NXP)", "https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/lpc4300-cortex-m4-m0:LPC4300"], ["Hardware components", DOC_COMP]] } },
     { id: "usb", x: 1044, y: 452, w: 106, h: 82, t: ["USB-C"], s: "→ this Mac",
       lv: function (ST) { return ST && ST.consensus_ppm != null ? "consensus " + sgn(ST.consensus_ppm) + Math.abs(ST.consensus_ppm).toFixed(3) + " ppm" : null; },
@@ -3973,27 +3963,27 @@ sweepFocus();
   // ---------- HackRF One (…922c — ATSC/phase receiver) ----------
   var ONE_NODES = [
     { id: "ant", x: 10, y: 280, w: 122, h: 82, t: ["RF port (SMA)"], s: "ANT + bias-tee",
-      lv: function (ST) { var p = ST && ST.phase; return p ? (p.lock ? "phase LOCK" : "RF-dark · no lock") : null; },
-      tip: ["RF port — same idea, stricter limits", "50 Ω SMA with software bias (3.0–3.3 V, ≤50 mA). Absolute max input −5 dBm. Green: the LIVE status of this station's One — currently RF-dark."],
+      lv: function (ST) { var p = ST && ST.phase; return p ? (p.lock ? "phase LOCK" : "NO LOCK") : null; },
+      tip: ["RF port — same idea, stricter limits", "50 Ω SMA with software bias (3.0–3.3 V, ≤50 mA). Absolute max input −5 dBm. Green: the live status of the south-facing ClearStream ATSC path."],
       det: { h3: "RF port (One) — mind the −5 dBm",
         paras: ["Same concept as the Pro: one SMA, receive and transmit half-duplex, bias power up the coax for an active antenna. The differences that matter: no enhanced port protection, and a hard −5 dBm absolute maximum input — exceeding it can permanently damage the front-end.",
-          "Green status is live from the phase producer: this station's One is RF-dark — its ATSC pilot amplitude sits at 0.05–0.09 z against a 0.75 z acquisition floor (was 2.5–3.7 z healthy). The dark-mode heartbeats you see are the tombstone system working, not a lock.",
-          "Suspects on the bench: antenna path (whip vs patch confound), feedline, or the front-end itself. The fair test is the known-good AA.250 through a one-DC-pass splitter with the One's leg DC-blocked — not yet run."],
-        specs: [["Connector", "SMA female, 50 Ω"], ["Bias", "3.0–3.3 V, ≤ 50 mA, software-controlled"], ["ABSOLUTE MAX INPUT", "−5 dBm — exceed it and the board can be permanently damaged"], ["Station role", "ATSC pilot phase receiver @ 602.80944 MHz, 6 Msps — currently RF-dark"]],
+          "Green status is live from the phase producer. The south-facing ClearStream feed restored a pilot-class lock on 2026-09-01 with antenna-port power enabled; the downstream DC load remains unidentified. Old dark/noise-lock rows remain quarantined and a fresh NO LOCK heartbeat is still an honest outcome.",
+          "This ATSC path is not evidence that the One receives GPS. A future common-L1 test still needs a reviewed split/bias network, DC block on the One leg, zero-gain baseline and separate USB controller."],
+        specs: [["Connector", "SMA female, 50 Ω"], ["Bias", "ON in the validated 2026-09-01 lock; downstream DC load/path not yet identified"], ["ABSOLUTE MAX INPUT", "−5 dBm — exceed it and the board can be permanently damaged"], ["Station role", "ATSC pilot 602.30944 MHz; center 602.80944 MHz; 6 Msps"]],
         links: [["HackRF One overview", DOC_ONE]] } },
     { id: "fe", x: 172, y: 280, w: 130, h: 82, t: ["RF front-end"], s: "switches · filters · amp",
       tip: ["RF front-end (One)", "RX/TX switches, filter conditioning and the software pre-amp — the same recipe as the Pro, but WITHOUT the shielding can and the newer protection."],
       det: { h3: "RF front-end (One) — the unshielded generation",
-        paras: ["Functionally the same stage as on the Pro: half-duplex switching, conditioning filters, an ~11 dB software pre-amplifier (this station's One runs LNA 40 / VGA 44 on the ATSC path — high gain chasing a weak signal, itself a clue in the RF-dark investigation).",
+        paras: ["Functionally the same stage as on the Pro: half-duplex switching, conditioning filters, and an ~11 dB software pre-amplifier. The validated ClearStream-feed target is LNA 40 / VGA 44, RF amp off and antenna-port power on; what consumes the DC is still an open hardware-identification question, not a software defect.",
           "The generational differences are physical: no shielding can over the radio section, older protection, and a noisier USB Micro-B/power situation. The Pro's 'flatter frequency response' claim is measured against exactly this board.",
-          "Diagnostic note: the station law for unknown RF paths is amp/LNA/VGA all ZERO at first contact, then walk gain up while watching linearity — the current high-gain ATSC config predates that law and is part of why the RF-dark cause is still open."],
-        specs: [["Architecture", "half-duplex, switched RX/TX"], ["Pre-amp", "≈11 dB software-controlled"], ["vs Pro", "no shield, older protection, flatter-response baseline"], ["Station config", "LNA 40 / VGA 44 / amp 0 on the ATSC path (under review)"]],
+          "Safety note: every new or rewired RF path starts at amp/LNA/VGA 0/0/0 and walks gain up only after a clipping/power preflight. Preserve the current powered profile until the inline DC path is physically identified; this setting does not transfer to another antenna or splitter."],
+        specs: [["Architecture", "half-duplex, switched RX/TX"], ["Pre-amp", "≈11 dB software-controlled; target OFF"], ["vs Pro", "no shield, older protection, flatter-response baseline"], ["Station config", "LNA 40 / VGA 44 / amp 0 / bias 1; explicit reviewed profile required on restart"]],
         links: [["HackRF One overview", DOC_ONE]] } },
     { id: "rffc", x: 342, y: 280, w: 132, h: 82, t: ["RFFC5072"], s: "mixer + 1st LO synth",
       tip: ["RFFC5072 — same chip, same job", "Identical first-conversion mixer/synthesizer as on the Pro: wideband LO + mixer landing the tuned signal on the IF the transceiver accepts."],
       det: { h3: "RFFC5072 (One) — the shared gear-shifter",
         paras: ["HackRF One covers 1 MHz–6 GHz with the same dual-conversion trick as the Pro: this mixer's internal synthesizer provides the first LO, converting the tuned frequency to the ~2.x GHz IF.",
-          "Same clock caveat: its synthesizer reference comes from the board clock tree — on the One that means the plain 25 MHz-class crystal unless CLKIN is fed. This board's CLKIN is fed by the Bodnar star (matched cable vs the Pro), which is what makes its ATSC pilot measurements comparable to the Pro's GNSS ones at all."],
+          "Same clock caveat: its synthesizer reference comes from the board clock tree — on the One that means the plain 25 MHz-class crystal unless CLKIN is fed. This board's CLKIN is physically fed by the Bodnar star (matched cable vs the Pro), making its ATSC pilot a common-rate consistency diagnostic against the Pro path, not common phase or absolute clock truth."],
         specs: [["Function", "wideband mixer + fractional-N synthesizer (1st LO)"], ["Coverage", "1 MHz – 6 GHz operating (One)"], ["Firmware", "same rffc5071.c driver as the Pro"]],
         links: [["Datasheet (Qorvo)", DS_RFFC]] } },
     { id: "m2839", x: 514, y: 280, w: 140, h: 82, t: ["MAX2839 (r9)"], s: "r1–r8: MAX2837",
@@ -4002,8 +3992,8 @@ sweepFocus();
       det: { h3: "MAX2839 / MAX2837 — One's second conversion",
         paras: ["Same job as the Pro's MAX2831: take the IF from the RFFC5072 down to analog baseband I/Q, with host-set LNA/VGA gains and a programmable baseband filter. The part number tells you the board revision: r1–r8 carry the MAX2837, r9 the MAX2839 (a supply-chain substitution, functionally equivalent for users).",
           "The filter caveat that lives in the official docs: below 8 Msps the MAX2837/39's minimum 1.75 MHz filter bandwidth leaves aliases in-band — combined with the MAX5864 being unspecified below 8 MHz, 8 Msps is the practical floor on a One. Our ATSC path runs 6 Msps for legacy reasons and lives with the consequences.",
-          "Gain note: LNA 40 dB + VGA 44 dB on this board's ATSC path is near the top of the range — appropriate only when the incoming signal is genuinely weak, which is exactly what the RF-dark investigation is trying to prove or refute."],
-        specs: [["r9 part", "MAX2839 (this class of board)"], ["r1–r8 part", "MAX2837"], ["Filter floor", "min 1.75 MHz bandwidth → keep sample rates ≥ 8 Msps"], ["Station config", "602.80944 MHz (ATSC ch35 pilot), 6 Msps, LNA 40 / VGA 44"]],
+          "Gain note: LNA 40 dB + VGA 44 dB is the validated passive-ClearStream setting. It must be reset to zero before any active or unknown feed is attached."],
+        specs: [["r9 part", "MAX2839 (this class of board)"], ["r1–r8 part", "MAX2837"], ["Filter floor", "min 1.75 MHz bandwidth → keep sample rates ≥ 8 Msps where possible"], ["Station config", "center 602.80944 MHz; pilot −500 kHz; 6 Msps; LNA 40 / VGA 44"]],
         links: [["MAX2839 datasheet", DS_MAX2839]] } },
     { id: "m5864", x: 694, y: 280, w: 130, h: 82, t: ["MAX5864"], s: "ADC/DAC · 8-bit only",
       lv: function () { return "6 Msps · 8-bit I/Q"; },
@@ -4090,9 +4080,9 @@ sweepFocus();
     { x1: 132, y1: 321, x2: 172, y2: 321, label: "RF in", lx: 152, ly: 311,
       tip: ["RF in (One)", "The ATSC broadcast waveform enters here (602.8 MHz, 6 MHz channel). −5 dBm is the absolute ceiling — broadcast signals after a whip/preamp are far below it."],
       det: { h3: "Antenna port → front-end (One)",
-        paras: ["This station's One receives the ATSC ch35 broadcast pilot — a strong, always-on terrestrial signal whose 60 Hz-scattered pilot tones make an excellent frequency ruler for the clock chain.",
-          "The signal here is currently ~35–38 dB starved versus its healthy level — the open hardware question of the station. Everything on this diagram to the right of the port has been exonerated by the dark-mode diagnostics; the fault is physical, left of this wire."],
-        specs: [["Signal", "ATSC 8-VSB pilot @ 602.80944 MHz"], ["Status", "starved 35–38 dB — physical cause open"]], links: [] } },
+        paras: ["This station's One receives the ATSC ch35 broadcast pilot — a strong, continuous terrestrial carrier useful for relative phase/frequency tracking. Its transmitter timebase has not been independently attested.",
+          "The south-facing ClearStream restored a valid pilot-class lock on 2026-09-01. The old starved/noise-lock era is retained only as quarantined history; this diagram follows the fresh phase heartbeat."],
+        specs: [["Signal", "ATSC pilot @ 602.30944 MHz; tuned center 602.80944 MHz"], ["Status", "live/dynamic from state.phase.json"]], links: [] } },
     { x1: 302, y1: 321, x2: 342, y2: 321, label: "RF", lx: 322, ly: 311,
       tip: ["Front-end → mixer (One)", "Conditioned RF at the tuned frequency heads to the first mixer, as on the Pro."],
       det: { h3: "Front-end → RFFC5072 (One)",
@@ -4104,9 +4094,9 @@ sweepFocus();
         paras: ["The first LO mixes the ATSC channel into the 2.3–2.7 GHz acceptance band of the MAX2839 — identical architecture to the Pro, different part revision at the far end."],
         specs: [], links: [] } },
     { x1: 654, y1: 321, x2: 694, y2: 321, label: "analog I/Q", lx: 674, ly: 311,
-      tip: ["Baseband I/Q (One)", "The ATSC pilot as two analog voltages spinning at its offset from the LO — the offset the phase producer turns into a clock-drift vote."],
+      tip: ["Baseband I/Q (One)", "The ATSC pilot as two analog voltages spinning at its offset from the LO — the phase producer turns that combined transmitter/receiver offset into a relative-frequency diagnostic."],
       det: { h3: "MAX2839 → MAX5864 (analog baseband)",
-        paras: ["At baseband, the ATSC pilot is a narrow tone whose exact frequency equals the LO's error plus the transmitter's own (excellent) discipline. The phase producer's whole job is measuring that tone's wander against the Bodnar-referenced expectation."],
+        paras: ["At baseband, the ATSC pilot is a narrow tone whose measured offset contains both the receiver/LO error and the transmitter's unknown offset. The phase producer measures that combined tone wander against the Bodnar-referenced expectation; it does not attest the transmitter clock."],
         specs: [], links: [] } },
     { x1: 824, y1: 321, x2: 864, y2: 321, label: "8-bit I/Q", lx: 844, ly: 311,
       tip: ["Sample pairs (One)", "8-bit I and Q per AFE clock — no 12-bit mode, no timestamp nibble. Timing must come from the reference and trigger lines, not the stream."],
@@ -4170,14 +4160,15 @@ sweepFocus();
       + row("HackRF One", "CLKIN SMA = 10 MHz from splitter · CLKOUT SMA = idle")
       + row("Rules that bite", "Detection happens ONLY at RX/TX stream start. Verify with <code>hackrf_clock -i</code> after starting a stream.")
       + row("This station today", "Bodnar OUT2 \u2192 10 MHz Splitter \u2192 Pro P1 & One CLKIN (matched-length cables)"));
-    h += card("② TRIGGER — 1PPS sample synchronization",
-      row("What it is", "A 1PPS pulse from Bodnar OUT1 split to internal header P28 pin 16 (TRIGGER.IN) on both radios.")
+    h += card("② TRIGGER — 1PPS distribution; synchronization uncalibrated",
+      row("What it is", "A 1PPS pulse from Bodnar OUT1 physically split to internal header P28 pin 16 (TRIGGER.IN) on both radios; wiring alone does not prove synchronized capture.")
       + row("HackRF Pro", "P28 pin 16 = TRIGGER.IN (slot 0: TDC; slot 1: coarse latch; mutually exclusive)")
       + row("HackRF One", "P28 pin 16 = TRIGGER.IN (1PPS hardware arming)")
-      + row("Procedure", "Arm both boards within the same 1PPS second to align capture start without 1-second sample skew.")
+      + row("Required future procedure", "Use one reviewed simultaneous-arm transaction, retain per-board success and sample counts, then calibrate cable, trigger and receiver delay. No such claim-grade paired capture is retained today.")
       + row("This station today", "Bodnar OUT1 \u2192 1PPS Splitter \u2192 Pro P28.16 & One P28.16 (matched-length cables)"));
-    h += card("③ GROUND & RF — Shared AA.250 Active Antenna",
-      row("Same-signal RF", "Taoglas AA.250 active antenna \u2192 Power Splitter \u2192 Pro RF IN (DC-pass, bias-T on) & One RF IN (DC-blocked, bias-T off).")
+    h += card("③ GROUND & RF — Independent today; shared RF is a calibration rewire",
+      row("Current RF", "AA.250 \u2192 Pro GNSS; south-facing ClearStream \u2192 One ATSC. These are independent bands/transmitters and cannot yield a cross-radio RF lag.")
+      + row("Proposed same-signal RF", "Temporarily split one reviewed source to both radios. L1 needs a symmetric bias network; a single DC-pass leg cannot support a claim-grade RF-leg ABBA swap.")
       + row("Gain discipline", "HackRF One initialized at amp/LNA/VGA = 0/0/0 (safe mode) on the split active path to avoid front-end burnout or clipping.")
       + row("USB budget", "Pro (32 MB/s) + One (32 MB/s) = 64 MB/s aggregate throughput — must reside on SEPARATE USB root controllers.")
       + row("Geometry", "Common-RF calibration eliminates baseline spatial delay (~200 ps on 6 cm) before resuming carrier-phase baseline experiments."));
@@ -4262,7 +4253,7 @@ sweepFocus();
       + "<span>consensus <b>" + (ST.consensus_ppm != null ? sgn(ST.consensus_ppm) + Math.abs(ST.consensus_ppm).toFixed(3) + " ppm" : "—") + "</b></span>"
       + "<span>GPSDO NMEA <b>" + ((gd.nmea_fix_valid === true || (gd.nmea_fix_valid == null && gd.lock === true)) ? "fix · " + gd.n_sat + " sats · HDOP " + gd.hdop : "invalid/dark") + "</b></span>"
       + "<span>CLKIN soft-verify <b>" + (ST.clkin_soft_verified === true ? "locked" : (ST.clkin_soft_verified === false ? "FAILED" : "closed (dark)")) + "</b></span>"
-      + "<span>One <b>" + (ph.lock ? "phase lock" : "RF-dark") + "</b></span>"
+      + "<span>One <b>" + (ph.lock ? "phase lock" : "NO LOCK") + "</b></span>"
       + "<span>discipline <b>" + (d.correction_ppm != null ? "SHADOW " + sgn(d.correction_ppm) + Math.abs(d.correction_ppm).toFixed(2) + " ppm" : "—") + "</b></span>"
       + "<span>tracker <b>" + lockedSats(ST) + " sats locked</b></span>";
   }

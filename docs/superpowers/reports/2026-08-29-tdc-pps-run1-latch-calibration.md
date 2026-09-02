@@ -54,7 +54,8 @@ Therefore 79.74% code-48 occupancy is not an ordinary right-censored tap bin,
 and no absolute width, DNL/INL, 499 ps RMS, or fine-time LUT follows from this
 run. An independently swept/randomized or phase-tagged stimulus is required.
 
-This describes the retained pre-A2 run, not the current A2 capture contract.
+This describes the retained pre-A2 run, not the source-tree A2 capture
+contract, which is not deployed on the retained 0x469/API 0x0116 station.
 A2 preserves every nonzero tap-0-anchored raw word: strict prefixes 1..47 are
 `interior`, all ones is `composite-full-scale`, and anchored words with holes
 are `bubbled`. A bubbled word is valid mailbox/capture evidence, but its raw

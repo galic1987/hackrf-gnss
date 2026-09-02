@@ -26,6 +26,11 @@ CAPTURE_SCHEMA = "hackrf-pro-tdc-trigger-read-v2"
 PROTOCOL = "held-mailbox-handshake-v2"
 MANIFEST_SCHEMA = "hackrf-fpga-manifest-v2"
 TDC_ABI = "0xA2"
+RETIRED_MANUAL_TIMING_FIELDS = (
+    "manual_adclk_audit_receipt",
+    "manual_adclk_timing_report",
+    "manual_adclk_asc",
+)
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 SERIAL_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 BUILD_RE = re.compile(r"^0x[0-9a-fA-F]{3}$")
@@ -170,6 +175,17 @@ def _load_manifest(path: str) -> Tuple[bytes, Dict[str, Any], Dict[str, Any]]:
                 f"manifest timing evidence for {image['name']} has no boolean "
                 "manual_adclk_path_audit"
             )
+        if evidence["manual_adclk_path_audit"] is not False:
+            raise ValueError(
+                f"manifest timing evidence for {image['name']} must record "
+                "manual_adclk_path_audit=false; manual waivers are not release evidence"
+            )
+        if any(evidence.get(field) is not None
+               for field in RETIRED_MANUAL_TIMING_FIELDS):
+            raise ValueError(
+                f"manifest timing evidence for {image['name']} carries a "
+                "retired manual timing waiver receipt/artifact"
+            )
         achieved = evidence.get("achieved_mhz")
         if not isinstance(achieved, dict) or not achieved:
             raise ValueError(f"manifest timing evidence for {image['name']} has no achieved_mhz map")
@@ -179,10 +195,10 @@ def _load_manifest(path: str) -> Tuple[bytes, Dict[str, Any], Dict[str, Any]]:
     slot0_adclk = slot0_timing["achieved_mhz"].get("adclk_clk_$glb_clk")
     if type(slot0_adclk) not in (int, float):
         raise ValueError("manifest slot-0 timing evidence has no adclk domain")
-    if slot0_adclk < 40.0 and slot0_timing["manual_adclk_path_audit"] is not True:
+    if slot0_adclk < 40.0:
         raise ValueError(
-            "manifest slot-0 sub-40-MHz aggregate adclk requires the "
-            "report-hash-bound manual path audit"
+            "manifest slot-0 aggregate adclk timing must be at least 40 MHz; "
+            "a manual path audit cannot waive this release floor"
         )
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict) or provenance.get("dirty") is not False:

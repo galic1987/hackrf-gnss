@@ -4,7 +4,8 @@
 # ############################################################################
 # ##  MANUAL START ONLY.  This supervisor must be started BY A HUMAN, on    ##
 # ##  purpose, after reading this header. AUTOMATIC HARDWARE RECOVERY IS    ##
-# ##  DISABLED until every Pro client shares one atomic ownership lock.     ##
+# ##  DISABLED: production tracker/band clients now share pro_lease.py,     ##
+# ##  but legacy/manual libhackrf tools do not and recovery remains human.  ##
 # ##  It must NEVER run alongside                                           ##
 # ##  scripts/supervisor.sh (v1): two supervisors fight over the radio.     ##
 # ##  This script refuses to start if v1 is running, but that check is a    ##
@@ -30,7 +31,8 @@
 #
 # SUPERVISOR_MODE=recover is intentionally rejected. A future recovery
 # controller must make every libhackrf client acquire the same atomic Pro lock;
-# process-name scans are not an ownership protocol.
+# process-name scans are not an ownership protocol.  pro_lease.py makes the
+# production handoff atomic; it does not authorize an automatic reset.
 
 set -uo pipefail   # deliberately NOT -e: a supervisor must not die on a probe
 

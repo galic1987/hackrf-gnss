@@ -1,4 +1,9 @@
 #!/bin/bash
+# QUARANTINED: defaults to dead Pro #1 and uses the superseded timestamp/CLI
+# contract while changing antenna power. Retained as historical source only.
+echo "QUARANTINED: legacy stitch HIL; no radio was opened." >&2
+exit 78
+
 # stitch_test.sh — T8 step 6 live stitch test: two 8 Msps std captures taken
 # ~GAP s apart on the same tuning, each bracketed by FPGA timestamp reads, a
 # timestamp sidecar per capture, then the phase-continuity check in
@@ -14,7 +19,7 @@ FC="$1"; SECS="${2:-8}"; GAP="${3:-60}"; OUTDIR="${4:-.}"
 FMIN="${5:-300000}"; FMAX="${6:-3000000}"
 GNSS="$(cd "$(dirname "$0")/.." && pwd)"
 HACKRF_TOOLS="${HACKRF_TOOLS:-/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src}"
-S="${PRO_SERIAL:-0000000000000000977c64de2b557213}"
+S="${PRO_SERIAL:-QUARANTINED_NO_SERIAL}"
 FS=8000000
 TS="$(date +%Y%m%d_%H%M%S)"
 

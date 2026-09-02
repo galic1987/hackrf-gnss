@@ -18,6 +18,12 @@
 > stimulus evidence bound to the capture SHA-256. See
 > `scripts/tdc_sweep_window.sh` and `scripts/tdc_density_cal.py` for the current
 > fail-closed boundary.
+>
+> Repository boundary: run the offline seal/analyzer commands from
+> `/Volumes/Radiator 8TB/gnss/hackrf_gnss`. Release-manifest generation and
+> FPGA timing review belong to the companion firmware repository at
+> `/Volumes/Radiator 8TB/mac-archive/hackrf`; never assume the same cwd or a
+> similarly named ignored `build/` artifact.
 
 Executes step 6 of `docs/superpowers/plans/2026-08-30-shared-rf-calibration-plan.md`
 ("Free TDC Code-Density DNL Calibration") as a single checkpointed operator
@@ -100,15 +106,20 @@ scripts/tdc_sweep_window.sh [DURATION_S=14400] [OUT=observations/tdc_sweep_run1.
 START_TEMP_C=23.4 scripts/tdc_sweep_window.sh        # temp goes in the header
 ```
 
-1. Refuse if v1 alive or `maintenance.lock` exists. Create the lock; trap
-   EXIT/INT always restores (board reset → tracker relaunch → SIGCONT
-   band_producer → remove lock).
-2. SIGSTOP `band_producer` FIRST; pattern-broken `pkill -TERM` the tracker
+1. This procedure remains quarantined, but its replacement must use
+   `scripts/pro_lease.py gate` with the exact production serial and an
+   operator token—never create or remove `maintenance.lock` directly. The
+   gate is established before any stop and
+   normal clients double-check it around atomic `pro.radio.lock.d` acquisition.
+2. During the first deployment of lease-aware producers, SIGSTOP the already
+   loaded legacy `band_producer`; then gracefully stop the exact tracker
    (spec `2026-08-25-clock-write-continuity-experiment.md:127-133` — an intact
    pattern once self-matched the wrapper and live_radio kept streaming);
    sleep 3; verify `live_radio` exited (TERM the orphan; never −9; abort if
    the radio stays held).
-3. `hackrf_spiflash -R` with checked exit — abort on failure. sleep 6. A cold
+3. `pro_lease.py acquire --token-file … --wait-seconds 30` must succeed;
+   only then may the replacement issue `hackrf_spiflash -R` with checked
+   exit. Abort on failure. sleep 6. A cold
    boot with no stream started leaves the Si5351 on the internal TCXO: the
    calibration source is armed by *doing nothing*.
 4. Verify slot-0 TDC: reg 0x31 readable, reg 0x30 == 0x00 (RO self-test OFF —
@@ -119,7 +130,11 @@ START_TEMP_C=23.4 scripts/tdc_sweep_window.sh        # temp goes in the header
    sin**; then capture at 1 Hz: read 0x31, read the frozen thermometer map
    0x20–0x25, append run1-schema lines (`{"t":…, "reg31":…, "bytes":…}`).
    Checkpoint lines every 300 s; abort after 30 consecutive read failures.
-6. Restore via the trap and print the analysis command.
+6. Restore the verified production state while the maintenance lease remains
+   held. Release with the same token, start the tracker, verify its JSON lease
+   owner and stream health, then resume band producer. If acquisition never
+   occurred, use token-owned `cancel`; ambiguous/stale state remains gated for
+   manual inspection. Print the offline analysis command.
 
 ## Sample-size math
 

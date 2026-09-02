@@ -23,7 +23,7 @@ import json, os, subprocess, time, urllib.request
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 ENV = dict(os.environ,
            DYLD_LIBRARY_PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/libhackrf/src")
-PRO = "0000000000000000977c64de2b557213"
+PRO = "QUARANTINED_NO_SERIAL"
 API = "http://localhost:8090/api/sync"
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.discipline.json"
 POLL_S = 60.0
@@ -62,6 +62,13 @@ def radio_busy():
 
 
 def main():
+    print(
+        "QUARANTINED: legacy live clock actuator targets the dead Pro #1 and "
+        "violates the current shadow/unity policy; no radio was opened.",
+        file=__import__("sys").stderr,
+    )
+    return 78
+
     global corr, sign, probed, prev_resid
     note = "loop started"
     while True:
@@ -112,4 +119,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

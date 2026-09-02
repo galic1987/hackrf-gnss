@@ -1,4 +1,12 @@
 #!/bin/bash
+# QUARANTINED: this legacy entry point does not select a radio by immutable
+# serial, broadly kills every hackrf_transfer/recorder process, and enables
+# antenna power at high gain.  On the current station that can seize either
+# the tracker-owned Pro or the ClearStream-owned One and can energize the
+# wrong RF path.  Retain the old body below only as historical context.
+echo "QUARANTINED: unsafe unaddressed GPS capture; no process or radio was touched." >&2
+exit 78
+
 # Open-sky GPS L1 capture for a real meter-level position fix.
 #
 # BEFORE running: move the Taoglas AA.250 to a spot with a CLEAR VIEW OF THE SKY

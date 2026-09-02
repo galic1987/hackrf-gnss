@@ -1,4 +1,14 @@
-> **SUPERSEDED (2026-08-26)** — the 2026-08-25 archive retro found that every observable correction write (122/122, down to ±0.01 ppm) was followed by a tracker-wide lock collapse and ~1 min relock, contradicting this note's "phase-continuous / no capture-boundary requirement" verdict; the discipline loop now runs SHADOW-only (`HACKRF_GNSS_ACTUATE=1` to actuate). Authoritative state: `docs/superpowers/specs/2026-08-25-clock-write-continuity-experiment.md`. Retained for history; do not cite the verdict below.
+> **SUPERSEDED (2026-08-26; production actuator removed 2026-09-01)** — the 2026-08-25 archive retro found that every observable correction write (122/122, down to ±0.01 ppm) was followed by a tracker-wide lock collapse and ~1 min relock, contradicting this note's "phase-continuous / no capture-boundary requirement" verdict. Production `live_radio` is now enforced SHADOW-only: it contains no correction-write call and rejects the retired actuator environment variable before radio open. Authoritative state: `docs/superpowers/specs/2026-08-25-clock-write-continuity-experiment.md`. Retained for history; do not cite the verdict below.
+
+> **ERRATUM (2026-09-02, settled in the panel PLL audit):** this note's
+> mechanism for the One is WRONG. On Praline, CLKOUT is **PLL-B**-sourced —
+> `si5351c.c:592` (`IS_PRALINE` override: `clkout.pll = SI5351C_PLL_B`); the
+> `si5351c.c:472` PLL-A claim cited below is the generic non-Praline template.
+> A correction write resets **PLL-A only** (AFE/FPGA clocks), so CLKOUT never
+> drops and there is no "~2 ms CLKOUT dropout" for the One to survive — the
+> One's phase continuity is trivial, not a loop-bandwidth rescue. The Pro-side
+> conclusions (SGPIO gap, lock collapse) stand. Applies to every PLL-A/CLKOUT
+> statement below.
 
 # P0c gate: does a live clock-correction write break received phase continuity?
 

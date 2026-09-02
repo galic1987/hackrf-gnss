@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Poll HackRF Pro TDC status (0x31 bit0) and capture thermometer codes on toggles.
+"""QUARANTINED historical TDC poller; retained beside its evidence only.
+
+The original loop can accept a new PPS between its status and six separate
+data-byte reads, has no status-after bracket, no immutable build/source
+attestation, and no atomic station ownership. It is not a safe capture entry
+point and must not be redirected from the dead radio to the production Pro.
 
 External-trigger TDC mode (0x30=0): the PPS edge on P2 drives the carry chain
 directly (raw async, pre-synchronizer); the TDC freezes on the chain-detected
@@ -14,6 +19,12 @@ import re
 import subprocess
 import sys
 import time
+
+print(
+    "QUARANTINED: historical unbracketed TDC poller; no radio was opened.",
+    file=sys.stderr,
+)
+raise SystemExit(78)
 
 HACKRF_PRO = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src/hackrf_pro"
 RE_HEX = re.compile(r"0x([0-9a-fA-F]{2})")

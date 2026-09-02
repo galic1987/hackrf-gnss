@@ -2,30 +2,29 @@
 //!
 //! Same engine as live_track, but streams from the HackRF Pro directly via
 //! rs-hackrf (vendored, extended with open_by_serial + clock correction).
-//! Owning the device handle is what makes the DISCIPLINE LOOP possible:
-//! hackrf_open is exclusive, so when hackrf_transfer held the radio no other
-//! process could touch the clock-correction register (the v1 loop's actuator
-//! was unreachable behind the tracker). Here the same process streams and
-//! steers — control transfers interleave with bulk reads on one handle.
+//! Owning the device handle makes sample/timestamp telemetry deterministic:
+//! hackrf_open is exclusive, so a second capture cannot share the stream.
+//! Production discipline is SHADOW-ONLY. The historical correction-write
+//! path collapsed all tracker locks on 122/122 observed writes and has been
+//! removed from this binary; a runtime environment variable cannot restore it.
 //!
 //! Discipline v2 (the v1 runaway's lessons built in):
 //!   - feedback is UNSTEERED: mean Doppler of locked SBAS/WAAS GEO channels
 //!     (geographic ~zero-Doppler, GPS-disciplined transmitters), never the
 //!     ATSC phase tracker (whose own integrator absorbs ramps — feeding on
 //!     it sent v1 open-loop to +1.9 ppm)
-//!   - slew, never leap: <= STEP_MAX ppm per cycle
-//!   - excursion clamp at +/- CLAMP ppm
-//!   - stall detector (coarse mode only): 3 steps without >= 20%
-//!     improvement -> stop + alarm
-//!   - residual-plausibility gate (discipline::PlausibilityGate): no write
+//!   - proposed slew <= STEP_MAX ppm per cycle
+//!   - proposed excursion clamp at +/- CLAMP ppm
+//!   - residual-plausibility gate (discipline::PlausibilityGate): no proposal
 //!     while the locked-channel count collapses, while a feeding WAAS/GEO
 //!     channel is freshly relocked, on an impossible residual slew vs the
 //!     last accepted residual, or on stale inputs — the 2026-08-25 bogus
 //!     -0.37 ppm class (docs/p0c_clock_continuity.md)
 //!
 //! stdout: one JSON line per tracked PRN per second (same as live_track),
-//! plus {"discipline": {...}} once per cycle. usage: live_radio [serial]
-//! (serial precedence: argv[1] > $PRO_SERIAL > built-in Pro#2 default).
+//! plus {"discipline": {...}} once per cycle. Production usage is through
+//! tracker_producer.py; direct launches are rejected unless the child can
+//! prove the wrapper's token-owned Pro lease.
 
 use hackrf_gnss::discipline::PlausibilityGate;
 use hackrf_gnss::live::{Engine, Sys};
@@ -36,11 +35,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const FS: f64 = 16.0e6;
 const FC: u64 = 1_568_250_000;
 const F_L1: f64 = 1575.42e6;
-/// Production radio default: Pro#2. Pro#1 (…977c64de2b557213) died
+/// Production radio: Pro#2. Pro#1 (…977c64de2b557213) died
 /// 2026-08-27 (no power on any cable/charger, no DFU enumeration — J1/Q4
-/// input-path hardware fault, repair/RMA pending). Keep argv/$PRO_SERIAL
-/// overrides as the only way onto another radio.
+/// input-path hardware fault, repair/RMA pending). argv/$PRO_SERIAL remain
+/// parse-compatible, but the production-lease check rejects every other radio.
 const PRO: &str = "0000000000000000645061de252d6613";
+const LEASE_TOKEN_ENV: &str = "HACKRF_PRO_LEASE_TOKEN";
+const LEASE_OWNER: &str = "/Volumes/Radiator 8TB/gnss/observations/pro.radio.lock.d/owner.json";
 const CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_seed_cache.json";
 const CORR_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_corr_cache.json";
 const EPH_CACHE: &str = "/Volumes/Radiator 8TB/gnss/observations/tracker_eph.json";
@@ -50,13 +51,53 @@ const DISC_EVERY_S: f64 = 60.0;
 const STEP_MAX_PPM: f64 = 0.1;
 const CLAMP_PPM: f64 = 2.0;
 const DEADBAND_PPM: f64 = 0.01;
-const STALL_AFTER: usize = 3;
 
 fn now_f64() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[cfg(unix)]
+fn parent_pid() -> Option<u64> {
+    unsafe extern "C" {
+        fn getppid() -> i32;
+    }
+    let pid = unsafe { getppid() };
+    (pid > 0).then_some(pid as u64)
+}
+
+#[cfg(not(unix))]
+fn parent_pid() -> Option<u64> {
+    None
+}
+
+fn require_production_lease(serial: &str) -> Result<(), String> {
+    if serial != PRO {
+        return Err(format!("serial must be exact production Pro {PRO}"));
+    }
+    let token = std::env::var(LEASE_TOKEN_ENV)
+        .map_err(|_| format!("{LEASE_TOKEN_ENV} is required from tracker_producer"))?;
+    if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("lease token is malformed".to_string());
+    }
+    let text = std::fs::read_to_string(LEASE_OWNER)
+        .map_err(|e| format!("cannot read production lease owner: {e}"))?;
+    let owner: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("invalid lease owner JSON: {e}"))?;
+    let expected_parent =
+        parent_pid().ok_or_else(|| "cannot identify parent process".to_string())?;
+    let valid = owner.get("protocol").and_then(|v| v.as_u64()) == Some(1)
+        && owner.get("token").and_then(|v| v.as_str()) == Some(token.as_str())
+        && owner.get("role").and_then(|v| v.as_str()) == Some("tracker_producer/live_radio")
+        && owner.get("serial").and_then(|v| v.as_str()) == Some(PRO)
+        && owner.get("pid").and_then(|v| v.as_u64()) == Some(expected_parent)
+        && owner.get("maintenance").and_then(|v| v.as_bool()) == Some(false);
+    if !valid {
+        return Err("production lease owner does not match this child".to_string());
+    }
+    Ok(())
 }
 
 /// Declare the consumer thread real-time to the Mach scheduler: 8 ms of
@@ -76,7 +117,8 @@ fn set_realtime() {
     }
     unsafe extern "C" {
         fn mach_thread_self() -> u32;
-        fn thread_policy_set(tid: u32, flavor: i32, info: *const TimeConstraint, count: u32) -> i32;
+        fn thread_policy_set(tid: u32, flavor: i32, info: *const TimeConstraint, count: u32)
+        -> i32;
         fn mach_timebase_info(info: *mut TimebaseInfo) -> i32;
     }
     #[repr(C)]
@@ -99,9 +141,8 @@ fn set_realtime() {
         constraint: 12 * ticks_per_ms,
         preemptible: 1,
     };
-    let kr = unsafe {
-        thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, &p, COUNT)
-    };
+    let kr =
+        unsafe { thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, &p, COUNT) };
     eprintln!("live_radio: real-time thread policy set, kern_return {kr}");
 }
 
@@ -109,27 +150,37 @@ fn set_realtime() {
 fn set_realtime() {}
 
 fn main() {
+    // The former one-variable actuator override was a production footgun:
+    // inherited service environments could silently re-enable the exact
+    // write path that collapsed tracking on 122/122 observed writes. Reject
+    // the variable before opening a radio, regardless of its value. Any
+    // future actuation experiment belongs in a separate bench-only binary.
+    if std::env::var_os("HACKRF_GNSS_ACTUATE").is_some() {
+        eprintln!("live_radio: FATAL: HACKRF_GNSS_ACTUATE is retired; production is SHADOW-only");
+        std::process::exit(78);
+    }
     let a: Vec<String> = std::env::args().collect();
     let env_serial = std::env::var("PRO_SERIAL").ok();
-    let serial = a.get(1).map(|s| s.as_str()).or(env_serial.as_deref()).unwrap_or(PRO);
+    let serial = a
+        .get(1)
+        .map(|s| s.as_str())
+        .or(env_serial.as_deref())
+        .unwrap_or(PRO);
+    if let Err(e) = require_production_lease(serial) {
+        eprintln!("live_radio: FATAL: {e}");
+        std::process::exit(78);
+    }
     let epoch0 = now_f64();
     set_realtime();
-    // Discipline actuation gate. The 2026-08-25 retro analysis of the
+    // The 2026-08-25 retro analysis of the
     // telemetry archive showed every observable correction write (122/122,
     // down to +-0.01 ppm dither steps) followed by a tracker-wide lock
     // collapse and ~1 min relock: the firmware write path disables SGPIO,
     // reprograms Si5351 MS0/MS1 and resets PLL-A (radio.c/clock_gen.c), and
     // note_clock_step cannot save the loops through it. So the loop runs
-    // SHADOW by default — residuals and corrections are computed, logged and
-    // published, but the hardware is never written. HACKRF_GNSS_ACTUATE=1
-    // re-enables actuation once a capture-boundary-safe write path exists.
-    let actuate =
-        std::env::var("HACKRF_GNSS_ACTUATE").map(|v| v == "1").unwrap_or(false);
-    if !actuate {
-        eprintln!(
-            "live_radio: discipline loop in SHADOW mode (set HACKRF_GNSS_ACTUATE=1 to actuate)"
-        );
-    }
+    // SHADOW unconditionally — residuals and bounded proposals are computed,
+    // logged and published, but this binary contains no hardware write call.
+    eprintln!("live_radio: discipline estimator in enforced SHADOW-only mode");
 
     // Radio thread: the ASYNC streaming reader keeps 24 bulk transfers
     // queued (~190 ms of device-side slack) — the synchronous read_sync
@@ -138,8 +189,8 @@ fn main() {
     // transfers (64 ms) proved too thin under host build load: cargo/
     // nextpnr stalls of ~115 ms overflowed the queue every few minutes,
     // and each overflow forced a full channel realign — the churn that
-    // kept anchors from maturing. Corrections go through the control
-    // handle on the main thread, interleaved between transfers.
+    // kept anchors from maturing. The control handle is read-only here
+    // (drop counters and timestamp-counter samples).
     let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(512); // ~8 s of stream
     let drops = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let drops_r = drops.clone();
@@ -151,6 +202,26 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let board_id = match dev.board_id() {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("live_radio: immutable board ID read failed before configuration: {e}");
+            std::process::exit(78);
+        }
+    };
+    let actual_serial = match dev.board_partid_serialno() {
+        Ok((_part0, _part1, value)) => value,
+        Err(e) => {
+            eprintln!("live_radio: immutable serial read failed before configuration: {e}");
+            std::process::exit(78);
+        }
+    };
+    if board_id != 5 || actual_serial != PRO {
+        eprintln!(
+            "live_radio: immutable identity mismatch before configuration: board_id={board_id}, serial={actual_serial}"
+        );
+        std::process::exit(78);
+    }
     let r = (|| -> rs_hackrf::error::Result<()> {
         dev.set_sample_rate(FS as u32)?;
         // set_sample_rate auto-selects 75% of FS = 12 MHz; at FC=1568.25 the
@@ -162,7 +233,8 @@ fn main() {
         dev.set_lna_gain(40)?;
         dev.set_vga_gain(46)?;
         dev.set_amp_enable(false)?;
-        dev.set_antenna_enable(true)?; // AA.250 dual-stage LNA needs bias
+        // AA.250 dual-stage LNA needs bias.
+        dev.set_antenna_enable(true)?;
         // Star topology: both radios are CLKIN-slaved to the Bodnar GPSDO
         // directly and this Pro's CLKOUT port is unconnected — driving it
         // powers the Si5351C CLK3 driver for nothing and leaks near-field
@@ -191,8 +263,7 @@ fn main() {
                 Ok(data) => {
                     acc.extend_from_slice(&data);
                     if acc.len() >= 512 * 1024 {
-                        let full =
-                            std::mem::replace(&mut acc, Vec::with_capacity(512 * 1024));
+                        let full = std::mem::replace(&mut acc, Vec::with_capacity(512 * 1024));
                         let l = full.len() as u64;
                         if tx.try_send(full).is_err() {
                             drops_r.fetch_add(l, std::sync::atomic::Ordering::Relaxed);
@@ -213,14 +284,20 @@ fn main() {
     // Seed cache: skip the blind all-sky seed after a restart.
     if let Ok(text) = std::fs::read_to_string(CACHE) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if v["epoch"].as_f64().map(|e| epoch0 - e < 600.0).unwrap_or(false) {
+            if v["epoch"]
+                .as_f64()
+                .map(|e| epoch0 - e < 600.0)
+                .unwrap_or(false)
+            {
                 let (mut l1, mut b1i) = (Vec::new(), Vec::new());
                 for s in v["sats"].as_array().into_iter().flatten() {
                     let (Some(sys), Some(prn), Some(dopp)) = (
                         s["sys"].as_str().and_then(Sys::from_name),
                         s["prn"].as_u64().map(|p| p as usize),
                         s["dopp"].as_f64(),
-                    ) else { continue };
+                    ) else {
+                        continue;
+                    };
                     match sys {
                         Sys::Beidou => b1i.push((sys, prn, dopp)),
                         _ => l1.push((sys, prn, dopp)),
@@ -254,12 +331,10 @@ fn main() {
     // says otherwise. Only a write that succeeded THIS run makes the
     // correction "applied" (corr_applied, published); everything else is
     // belief, and downstream voters must not add it back.
-    let mut corr: f64 = std::fs::read_to_string(CORR_CACHE)
+    let cached_corr: f64 = std::fs::read_to_string(CORR_CACHE)
         .ok()
         .and_then(|t| t.trim().parse().ok())
         .unwrap_or(0.0);
-    // set true only by a successful hardware write below
-    let mut corr_written_this_run = false;
     // Sign: resid := doppler_meas/f, and downconversion negates the clock
     // error (f_bb = f_rf - f_lo), so resid = -(clock err) and the register
     // drives resid_new = resid - corr_step. Zero-seeking is corr += resid.
@@ -267,13 +342,10 @@ fn main() {
     // NB: the Iridium/tick estimators carry the OPPOSITE sign convention.
     // sign = +1 hardcoded: established empirically by the corr/resid march
     // (see above). The lock-noise made poke-probe verdicts inconclusive;
-    // the stall detector + clamp are the protections now.
+    // the proposal clamp and plausibility gate are the protections now.
     let sign = 1.0f64;
-    let mut steps: Vec<f64> = Vec::new(); // residuals at each applied step
-    let mut stalled = false;
     let mut last_disc = 0.0f64;
-    let mut last_corr_written = corr;
-    // residual-plausibility gate: no correction write on a dying tracker's
+    // residual-plausibility gate: no proposed correction from a dying tracker's
     // measurement (collapse / fresh relock / impossible slew / stale inputs)
     let mut gate = PlausibilityGate::new();
     // wall time of the newest 1 Hz channel report (the gate's staleness ref)
@@ -284,8 +356,7 @@ fn main() {
     // 24/7 — its attempts were pure USB contention). 5 s cadence, 200-sample
     // ring, published as state.tick.json in the shape the panel/series
     // producers already consume.
-    let mut tick_hist: std::collections::VecDeque<(f64, f64)> =
-        std::collections::VecDeque::new();
+    let mut tick_hist: std::collections::VecDeque<(f64, f64)> = std::collections::VecDeque::new();
     let mut last_tick: Option<(f64, u64)> = None;
     let mut last_tick_read = 0.0f64;
     let mut last_tick_write = 0.0f64;
@@ -405,127 +476,77 @@ fn main() {
             );
             let mut note = String::new();
             let mut resid: Option<f64> = None;
-            if stalled {
-                note = "STALLED — residual did not improve over 3 steps; holding".into();
-            } else if waas.is_empty() {
+            let mut proposed_corr: Option<f64> = None;
+            if waas.is_empty() {
                 note = "no locked WAAS GEO — holding".into();
             } else {
                 let mean = waas.iter().map(|w| w.0).sum::<f64>() / waas.len() as f64;
                 let r = mean / F_L1 * 1e6; // unsteered clock residual
                 resid = Some(r);
                 let waas_locks: Vec<f64> = waas.iter().map(|w| w.1).collect();
-                // measurement context untrustworthy: suppress the write and
+                // measurement context untrustworthy: suppress the proposal and
                 // say why (the note rides the discipline line into
                 // state.tracker.json, so the panel shows the gate working)
                 if let Err(reason) = gate.check(r, &waas_locks, now_wall - last_report_wall) {
-                    note = format!("gate: {reason} — suppressed write (residual {r:+.4} ppm)");
+                    note = format!("gate: {reason} — suppressed proposal (residual {r:+.4} ppm)");
                     eprintln!("live_radio: {note}");
                 } else if gate.recovered {
-                    note = format!("GATE RECOVERY — slew reference re-anchored after latch-up (residual {r:+.4} ppm)");
+                    note = format!(
+                        "GATE RECOVERY — slew reference re-anchored after latch-up (residual {r:+.4} ppm)"
+                    );
                     eprintln!("live_radio: {note}");
                 } else if r.abs() < DEADBAND_PPM {
-                    note = if actuate {
-                        format!("in deadband ({r:+.4} ppm) — loop closed")
-                    } else {
-                        format!("in deadband ({r:+.4} ppm) — nothing to correct (SHADOW: no loop is closed)")
-                    };
+                    proposed_corr = Some(0.0);
+                    note = format!(
+                        "in deadband ({r:+.4} ppm) — nothing to correct (SHADOW: no loop is closed)"
+                    );
                 } else {
                     // two modes: coarse steps converge fast, fine steps stop
                     // the dither-oscillation around zero (0.1 steps vs 0.01
                     // deadband oscillated and tripped the stall detector)
                     let fine = r.abs() < 0.15;
                     let step_limit = if fine { 0.03 } else { STEP_MAX_PPM };
-                    // The slew baseline must be the register's true content,
-                    // not the cache: the sacred restart always resets the
-                    // board (register -> unity), and only a successful write
-                    // THIS run makes corr hardware-true (round-11 review: the
-                    // shadow proposal and the first actuating write both
-                    // stepped from the cached -0.3378 ppm belief, defeating
-                    // the 0.1 ppm slew limit after a reset).
-                    let base = if corr_written_this_run { corr } else { 0.0 };
+                    // Production hardware remains at unity; the stale cache
+                    // is never a proposal baseline.
+                    let base = 0.0;
                     let target = (base + sign * r).clamp(-CLAMP_PPM, CLAMP_PPM);
                     let step = (target - base).clamp(-step_limit, step_limit);
                     let new_corr = ((base + step) * 1e4).round() / 1e4;
-                    if !actuate {
-                        // shadow: compute and log the would-be correction,
-                        // never touch the hardware (see the actuation gate at
-                        // startup); the cache is shown as intent, never as
-                        // the register's believed content
-                        note = format!(
-                            "SHADOW: would apply {new_corr:+.4} ppm from unity (residual {r:+.4}; cached intent {corr:+.4}) — actuation disabled"
-                        );
-                    // Only advance the software bookkeeping if the hardware
-                    // actually accepted the write + retune — otherwise the
-                    // loop's belief and the radio's state diverge silently.
-                    } else if let Err(e) = radio_ctrl.set_clock_corr_ppm(new_corr) {
-                        note = format!("clock-corr write FAILED ({e}) — software state not advanced");
-                        eprintln!("live_radio: {note}");
-                    } else if let Err(e) = radio_ctrl.tune(FC) {
-                        // the correction WRITE already landed in hardware —
-                        // software must adopt it even though the retune
-                        // failed, or the loop's belief diverges from the
-                        // radio (review round 6). Log loudly; the failed
-                        // retune only means the LO may not have re-synced.
-                        corr = new_corr;
-                        corr_written_this_run = true;
-                        note = format!("retune FAILED ({e}) after successful write — adopted {corr:+.4} ppm to match hardware");
-                        eprintln!("live_radio: {note}");
-                    } else {
-                        corr = new_corr;
-                        corr_written_this_run = true;
-                        // Firmware truth (radio.c): mid-stream, the correction
-                        // only re-programs the AFE/sample clock. The LO synth
-                        // is NOT re-programmed unless a frequency update runs
-                        // (its `freq_lo != applied_lo` guard skips when only
-                        // the correction changed) — so the RX path sees the
-                        // correction ONLY at config time. A same-freq retune
-                        // forces it. NOTE (2026-08-25 retro, 122/122 writes):
-                        // the write+retune path collapses ALL tracker locks
-                        // for ~1 min regardless — note_clock_step's Doppler
-                        // bookkeeping cannot save them; this branch is only
-                        // reachable with HACKRF_GNSS_ACTUATE=1.
-                        eng.note_clock_step(step); // shift loop bookkeeping by the step
-                        steps.push(r);
-                        if note.is_empty() {
-                            note = format!("applied {corr:+.4} ppm (residual {r:+.4})");
-                        }
-                    // stall detector only in coarse mode: near zero the
-                    // loop dithers within measurement noise by design
-                    if !fine && steps.len() > STALL_AFTER {
-                        let improved =
-                            r.abs() < 0.8 * steps[steps.len() - 1 - STALL_AFTER].abs();
-                        if !improved {
-                            stalled = true;
-                            note = format!(
-                                "STALLED — |resid| {r:+.4} not improving over {STALL_AFTER} steps; holding at {corr:+.4} ppm"
-                            );
-                        }
-                    }
-                    }
+                    proposed_corr = Some(new_corr);
+                    // Shadow: compute and log the would-be correction from
+                    // unity. There is deliberately no set_clock_corr_ppm or
+                    // same-frequency tune call in this production binary.
+                    note = format!(
+                        "SHADOW: would apply {new_corr:+.4} ppm from unity (residual {r:+.4}; cached historical intent {cached_corr:+.4}) — no production actuator"
+                    );
                 }
-            }
-            if corr != last_corr_written {
-                last_corr_written = corr;
-                let _ = std::fs::write(CORR_CACHE, format!("{corr}"));
             }
             let line = serde_json::json!({"discipline": {
                 "epoch": now_wall,
                 "residual_ppm": resid,
-                "correction_ppm": corr,
+                // Preserve correction_ppm as the panel's SHADOW intent API;
+                // applied hardware truth is separately explicit and unity.
+                "correction_ppm": proposed_corr.unwrap_or(0.0),
+                "proposed_correction_ppm": proposed_corr,
+                // Expected after the documented reset path, not a device
+                // register readback performed by this process.
+                "expected_applied_correction_ppm": 0.0,
+                "applied_correction_readback": false,
+                "cached_historical_intent_ppm": cached_corr,
                 "step_limit_ppm": STEP_MAX_PPM,
                 "clamp_ppm": CLAMP_PPM,
                 "sign": sign,
-                "stalled": stalled,
+                "stalled": false,
                 "waas_locked": waas.len(),
                 // shadow is a published runtime state (review round 4), and
                 // "loop closed" must never appear while shadowing
-                "actuate": actuate,
+                "actuate": false,
                 // the correction is "applied" only when THIS process wrote
                 // it successfully (review round 6: the cache is historical
                 // intent; the board reset in the restart procedure returns
                 // the hardware to unity)
-                "corr_applied": corr_written_this_run,
-                "note": if !actuate && !note.starts_with("SHADOW") {
+                "corr_applied": false,
+                "note": if !note.starts_with("SHADOW") {
                     format!("SHADOW (not actuating): {note}")
                 } else {
                     note
@@ -582,14 +603,14 @@ fn main() {
         if bytes_in / (2 * FS as u64 * 2) != last_log {
             last_log = bytes_in / (2 * FS as u64 * 2);
             eprintln!(
-                "live_radio: {:.1} s in, l1 {} chans [{}], b1i {} chans [{}], queue {}, corr {:+.4}, maxproc {:.0} ms",
+                "live_radio: {:.1} s in, l1 {} chans [{}], b1i {} chans [{}], queue {}, cached-intent {:+.4}, maxproc {:.0} ms",
                 bytes_in as f64 / 2.0 / FS,
                 eng.l1_band.channels.len(),
                 eng.l1_band.status(),
                 eng.b1i_band.channels.len(),
                 eng.b1i_band.status(),
                 rx.len(),
-                corr,
+                cached_corr,
                 max_proc_ms
             );
             max_proc_ms = 0.0;

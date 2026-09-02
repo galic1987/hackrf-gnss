@@ -2,6 +2,12 @@
 
 Date: 2026-08-27. Status: approved by user (2026-08-27 ~15:10 EDT).
 
+> **STATUS UPDATE (2026-09-01): HISTORICAL DESIGN, NOT A RUNBOOK.** The clock
+> topology and radio roles below were superseded. Current retained topology is
+> Pro #2 + AA.250 GNSS and HackRF One + south-facing ClearStream ATSC, with
+> split 10 MHz and 1PPS wiring. The One remains GPS/L-band-unproven; no shared
+> L1, sample-zero, receiver-delay, or cross-radio RF-phase claim follows.
+
 ## Goal and claim definition
 
 Demonstrate **sub-nanosecond timing precision/stability** (not absolute accuracy)
@@ -38,7 +44,8 @@ the "data-derived gate" label.
   blocked on it or on a deliberate Pro#2 flash decision.
 - Pro#2 (6450…): production tracker (16 Msps @ 1568.25 MHz; GPS L1 + B1I + E1 +
   SBAS), CLKIN = Bodnar out2 10 MHz (verified "clock signal detected"), stock
-  2026.01.3 firmware, discipline loop in SHADOW (HACKRF_GNSS_ACTUATE unset;
+  2026.01.3 firmware, discipline estimator enforced SHADOW-only (production
+  write call removed; `HACKRF_GNSS_ACTUATE` is rejected before radio open;
   hardware never written). Residual ~+0.007 ppm in deadband.
 - One (922c…): CLKIN = Bodnar out1 (reconfigured to 10 MHz). L-band unproven:
   5 acquisition tests (2 antennas incl. unpowered active patch, 8/10 Msps, max
@@ -177,7 +184,8 @@ triangle in Leg 1b.
   second radio while the tracker streams — a 10 Msps One capture on 2026-08-27
   13:21 coincided with the live_radio death and a 108-min zero-channel gap.
 - **Build law**: no cargo build / full test suite while the tracker is live.
-- **Shadow invariant**: HACKRF_GNSS_ACTUATE stays unset; clock correction is
+- **Shadow invariant**: production has no actuator call and rejects
+  `HACKRF_GNSS_ACTUATE`; clock correction is
   observe-only on the Bodnar-referenced radio.
 - **Antenna freeze**: no re-seating once Leg 1b starts; every move changes the
   constant being calibrated.
@@ -192,11 +200,13 @@ triangle in Leg 1b.
 
 - Flash failure → DFU recovery (rehearsed; factory images at
   /tmp/hackrf-2026.01.3/firmware-bin/hackrf_pro_usb.{dfu,bin}).
-- Tracker restart pattern (only): pattern-broken pkill, sleep 3,
-  `hackrf_spiflash -d <pro2> -R`, sleep 6, relaunch tracker_producer.py.
-  Never pkill -9.
-- band_producer respawner is unknown; `pgrep -fl band_producer` before any radio
-  work; SIGSTOP it for radio work, SIGCONT after.
+- Tracker restart pattern (only): token-owned `pro_lease.py gate` for the
+  exact Pro#2 serial, graceful exact stop, token-owned lease acquisition,
+  immediate `hackrf_spiflash -d <pro2> -R`, verified restoration, token-owned
+  release, then relaunch. Never pkill -9 or remove lock objects directly.
+- `band_producer` shares the atomic lease and skips while gated. During the
+  first deployment of the new guard, SIGSTOP the already-loaded legacy
+  process before freeing the tracker and SIGCONT it last.
 - TDC still zero freezes after pin swap → 0x36 splits bench-vs-board; production
   restored regardless.
 

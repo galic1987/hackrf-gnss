@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antenna A/B comparison on the BENCH HackRF Pro (spare/testing radio).
+"""Retired antenna A/B comparison; offline ``diff`` mode remains available.
 
 Captures per-band snapshots, each tuned so the target signal sits near
 zero IF (the acquisition binaries search Doppler around 0 IF and do NOT
@@ -24,14 +24,11 @@ Active antennas: the Pro bias-tee is 3.3 V/50 mA max — the antenna's 3-5 V
 rating is compatible only if its steady-state draw is under 50 mA; get the
 part's current rating before enabling bias.
 
-LAWS: the bench Pro (serial 645061de…) is the ONLY radio this tool may
-touch — the tracker owns Pro#1 and phase_producer owns the One 24/7
-(AGENTS.md); any other --serial is refused. Gain is FIXED at the tracker
-values (lna 40 / vga 46) so runs are comparable — never A/B with different
-gain. Bias-tee is OFF unless --bias is passed (active patch antennas want
-it; a passive whip does not; check the antenna is not a DC short first).
-Since the bench radio sits on the GPSDO chain, frequency error is identical
-across runs — differences are the antenna.
+QUARANTINE: there is no spare bench Pro in the current station. Pro #1 is
+dead; Pro #2 is the production GNSS receiver owned by the tracker; and the
+One is the ClearStream ATSC receiver owned by phase_producer. ``run`` exits
+before opening a radio. Existing JSON results can still be compared with
+``diff``; do not infer antenna gain from its "dB-ish" correlation ratio.
 """
 import json, os, subprocess, sys, time
 
@@ -39,7 +36,7 @@ import numpy as np
 
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 EX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "examples")
-BENCH = "0000000000000000645061de252d6613"   # Pro#2 — the ONLY allowed radio
+BENCH = "QUARANTINED_NO_SERIAL"
 FS = 8_000_000                   # per-band captures; signals sit near zero IF
 LNA, VGA = "40", "46"
 
@@ -146,6 +143,13 @@ def acquire(f32_l1, raw_b1i):
 def main():
     if len(sys.argv) < 3 or sys.argv[1] not in ("run", "diff"):
         sys.exit(__doc__)
+    if sys.argv[1] == "run":
+        print(
+            "QUARANTINED: Pro #2 is the tracker-owned production radio, not a "
+            "spare bench receiver; no radio was opened.",
+            file=sys.stderr,
+        )
+        raise SystemExit(78)
     if sys.argv[1] == "diff":
         a, b = sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "B"
         A = json.load(open(f"/tmp/antenna_{a}.json")).get("metrics", {})

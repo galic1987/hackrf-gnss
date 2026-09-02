@@ -7,11 +7,18 @@ deep-merges all observations/state.*.json with the legacy sync_state.json at
 lost-update race is possible. Runs until killed. Radio-safe: read-only, and
 tolerates transient failures (flash windows) by skipping cycles.
 """
-import json, re, subprocess, time, os
+import json, re, subprocess, time, os, sys
+
+print(
+    "QUARANTINED: legacy SPI poller targets the dead Pro #1 and can contend "
+    "with the production tracker; no radio was opened.",
+    file=sys.stderr,
+)
+raise SystemExit(78)
 
 PRO = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src/hackrf_pro"
 ENV = dict(os.environ, DYLD_LIBRARY_PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/libhackrf/src")
-SERIAL = "0000000000000000977c64de2b557213"
+SERIAL = "QUARANTINED_NO_SERIAL"
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.tick.json"
 POLL_S = 2.0
 

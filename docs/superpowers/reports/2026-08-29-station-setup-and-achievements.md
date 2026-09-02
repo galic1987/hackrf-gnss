@@ -48,7 +48,7 @@ continuous clean hour of clock-bias data exists yet.
  
  RF paths are independent in this retained configuration:
    AA.250 active GNSS patch -> HackRF Pro RF IN
-   ClearStream/bench feed   -> HackRF One RF IN (currently starved)
+   south-facing ClearStream -> HackRF One RF IN (ATSC operational 2026-09-01)
  A shared-RF splitter/ABBA calibration is proposed, not deployed evidence.
 
   HackRF Pro #1 (…977c…) — DEAD, out of the station. Never target it.
@@ -72,11 +72,20 @@ continuous clean hour of clock-bias data exists yet.
 
 | unit | role | status |
 |---|---|---|
-| HackRF Pro #2 `645061de` | production GNSS radio | live; release **0x469 manifest-verified on all 4 FPGA slots** (2026-08-28) |
-| HackRF One `922c63dc` | second clock witness | clock-detected, **RF-dark, GPS-unproven** (user owes physical RF-path inspection) |
+| HackRF Pro #2 `645061de` | production GNSS radio | live; release **0x469 self-reported BUILD_ID tags smoke-tested on all 4 FPGA slots** (2026-08-28); flash bytes/bitstream hashes were not read back |
+| HackRF One `922c63dc` | ATSC carrier-phase witness | clock-detected, **ClearStream ATSC operational, GPS-unproven**; use fresh `state.phase.json` for live lock state |
 | HackRF Pro #1 `977c` | — | dead |
 | Leo Bodnar LBE-1421 | station frequency reference | live; NMEA health probed at 5 s cadence (`gpsdo_probe`) |
 | Taoglas AA.250 | Pro #2 antenna (Ø86.4 mm active patch) | live |
+
+> **2026-09-01 ClearStream power finding:** commit d1bc6c0 records that
+> antenna-port power raised amplitude from ~0.05 to >8 and restored a real
+> lock. The running child therefore remains at `-p 1`; do not "correct" it
+> off. Although the antenna is described as passive, the complete coax/DC
+> path is unresolved and may contain an inline powered stage or injector.
+> Future starts require the explicit acknowledged bias-on profile and publish
+> requested RF config; identify the DC load at a controlled maintenance
+> boundary before changing it.
 
 ## 2. Software pipeline (all processes verified alive 19:00 EDT)
 
@@ -130,11 +139,12 @@ BeiDou 2, SBAS 2.**
    rows ≥ 3400), generation separation, missing-τ rejection. The 500 m
    poison gate is **pre-registered as data-derived** — verdicts using it
    are labeled exploratory.
-7. **Firmware integrity.** Release 0x469 attested on all four FPGA slots
+7. **Firmware identity smoke test.** Release 0x469 BUILD_ID tags were read on all four FPGA slots
    of the production radio; the invalid 0xE91 experiment (reversed
    FPGA-clock/trigger pin swap) quarantined to cold storage with hashes;
-   the misleading "calibrated TDC" claim retracted everywhere (499 ps is
-   a ring-oscillator self-test LSB, provisional).
+   this does not attest flash bytes or deployed bitstream hashes. The
+   misleading "calibrated TDC" claim is retracted: no external-trigger
+   calibration or 499 ps absolute floor follows from the retained run.
 8. **GPSDO health monitoring.** The reference's own NMEA is watched at
    5 s cadence with a 30 s TTL — a dead probe reads degraded, never
    healthy.
@@ -162,7 +172,7 @@ BeiDou 2, SBAS 2.**
 - **TDC external calibration is blocked:** the first sweep procedure was
   quarantined after review found a 10 MHz post-reset clock could be mislabeled
   as 40 MHz, non-atomic register reads, and no independent uniform-phase proof.
-- **The One is not a GPS receiver yet.** It runs an ATSC pilot stream, clock-detected but RF-dark (~0.02–0.05 z vs 0.75 z floor). Common-antenna shared-RF calibration sequence scheduled.
+- **The One is not a GPS receiver yet.** Its south-facing ClearStream now provides a valid ATSC pilot stream, but that does not establish L-band reception. The common-antenna shared-RF calibration remains a separate scheduled experiment.
 - **BDS carrier sign verified; inter-system bias unmodeled** — v3 clock-bias uses fixed-anchor clock solve with studentized rejection.
 - **The GPSDO discipline loop is design-only/shadow-only** — the correction register is computed, never written.
 
@@ -180,9 +190,10 @@ BeiDou 2, SBAS 2.**
    capture, direct clock/build/source attestation, and an independently swept
    or phase-tagged stimulus.
 4. **User-physical:** retain photos/labels for both splitters and matched
-   cables; inspect the One's RF path; perform a safe-gain shared-RF/ABBA test
-   only after the capture manifest and USB-root plan are frozen.
-4. **Then:** MT9 oracle validation (independent ephemeris cross-check),
+   cables; preserve the One's confirmed ClearStream ATSC path; perform a
+   safe-gain shared-RF/ABBA test as an explicit, reviewed RF rewire only
+   after the capture manifest and USB-root plan are frozen.
+5. **Then:** MT9 oracle validation (independent ephemeris cross-check),
    second-GEO promotion review for Tier-1 voting, GEO-in-solver ranging
    (needs SBAS pseudorange production in the tracker), TDC external
    swept-edge calibration (needs the PPS port).

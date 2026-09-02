@@ -1,7 +1,8 @@
 # Clock-write continuity — live experiment design (P1)
 
-Date: 2026-08-25. Status: design, awaiting a maintenance window (needs the
-user present; deliberately issues hardware writes).
+Date: 2026-08-25. Status: quarantined bench design. Production `live_radio`
+no longer contains a correction-write call; any future experiment needs a
+separate, reviewed bench-only actuator and an atomic maintenance lease.
 
 ## What is already proven (retro pass, 2026-08-25)
 
@@ -14,9 +15,9 @@ plus a forced same-freq retune that re-syncs the LO (`live_radio.rs` write
 path; `radio.c`, `clock_gen.c:331`). `note_clock_step` only shifts Doppler
 bookkeeping; it cannot save the loops through a physical hole.
 
-Consequence already deployed: the discipline loop runs SHADOW by default
-(`HACKRF_GNSS_ACTUATE=1` to actuate) — corrections are computed, logged,
-published, never written.
+Consequence already deployed: the discipline estimator is enforced SHADOW-only
+— corrections are computed, logged and published, never written. The retired
+`HACKRF_GNSS_ACTUATE` variable is rejected before the production radio opens.
 
 ## What remains unknown (this experiment answers)
 
@@ -106,7 +107,8 @@ on a fresh boot the register reads RADIO_UNSET (reported as 0 ppm), so a
 read RIGHT NOW settles the six-round-old unity question: 0/UNSET proves
 the applied bank never received a correction this boot. The full leg runs
 in a tracker-down window with the user present: read, one scripted write
-(HACKRF_GNSS_ACTUATE=1), read back, and state.tick.json before/after —
+through a separate reviewed bench-only actuator, read back, and
+state.tick.json before/after —
 that establishes what a write physically does to the tick rate. The tick
 half remains runnable any time. Re-actuation stays off the table until the
 leg has run.

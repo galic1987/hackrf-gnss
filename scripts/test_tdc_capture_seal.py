@@ -143,7 +143,7 @@ def test_seal_rejects_dirty_or_partial_manifest(tmp_path):
         )
 
 
-def test_seal_rejects_preclaimed_raw_hash_and_unaudited_slot0_timing(tmp_path):
+def test_seal_rejects_preclaimed_raw_hash_sub40_and_manual_waiver(tmp_path):
     raw = tmp_path / "raw.jsonl"
     out = tmp_path / "sealed.jsonl"
     manifest_path = tmp_path / "manifest.json"
@@ -164,7 +164,27 @@ def test_seal_rejects_preclaimed_raw_hash_and_unaudited_slot0_timing(tmp_path):
     write_raw(raw)
     manifest["timing"]["0_standard"]["achieved_mhz"]["adclk_clk_$glb_clk"] = 39.0
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ValueError, match="manual path audit"):
+    with pytest.raises(ValueError, match="at least 40 MHz"):
+        seal_capture(
+            str(raw), str(out), str(manifest_path), SERIAL,
+            "clock", "trigger", 40_000_000,
+        )
+
+    manifest = write_manifest(manifest_path)
+    manifest["timing"]["0_standard"]["manual_adclk_path_audit"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="manual_adclk_path_audit=false"):
+        seal_capture(
+            str(raw), str(out), str(manifest_path), SERIAL,
+            "clock", "trigger", 40_000_000,
+        )
+
+    manifest = write_manifest(manifest_path)
+    manifest["timing"]["0_standard"]["manual_adclk_audit_receipt"] = {
+        "claimed": "legacy waiver"
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="retired manual timing waiver"):
         seal_capture(
             str(raw), str(out), str(manifest_path), SERIAL,
             "clock", "trigger", 40_000_000,

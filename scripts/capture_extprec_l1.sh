@@ -1,4 +1,9 @@
 #!/bin/bash
+# QUARANTINED: defaults to dead Pro #1 and switches FPGA images without the
+# reviewed maintenance lease and verified restoration transaction.
+echo "QUARANTINED: legacy ext-precision capture cannot prove safe image restore; no radio was opened." >&2
+exit 78
+
 # capture_extprec_l1.sh — extended-precision (12-bit) GPS/Galileo L1 capture
 # on the HackRF Pro with the Taoglas AA.250.
 #
@@ -22,7 +27,7 @@ set -e
 BASE="${1:-extprec_l1}"
 SECS="${2:-60}"
 
-PRO_SERIAL="${PRO_SERIAL:-0000000000000000977c64de2b557213}"
+PRO_SERIAL="${PRO_SERIAL:-QUARANTINED_NO_SERIAL}"
 FS="${FS:-2500000}"      # up to 8000000 (4x decimation); see header
 FC=1574420000          # L1 at +1.0 MHz IF
 L="${L:-40}"           # IF gain — ext chain runs quiet, needs more than std

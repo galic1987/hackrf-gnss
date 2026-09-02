@@ -25,15 +25,18 @@ continuously beside the tracker.
 
 ## Global Constraints
 
-- **Build law (AGENTS.md:59-75):** NEVER run `cargo build`/`cargo test` while
-  `tracker_producer.py` runs. All build/test steps in this plan run inside a
-  tracker-down maintenance window, or are explicitly marked `[tracker-safe]`
-  (edits, Python runs, `nice -n 19 cargo check`).
-- Tracker restart pattern (only): pattern-broken pkill, sleep 3,
-  `hackrf_spiflash -d "$PRO_SERIAL" -R`, sleep 6, relaunch via
-  `nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log 2>&1 &`.
-  Never `pkill -9`.
-- SHADOW invariant: `HACKRF_GNSS_ACTUATE` stays unset; this feature is
+- **Build law (AGENTS.md):** NEVER run `cargo build`/`cargo test` while
+  `tracker_producer.py` runs. A build window must gate the exact production
+  serial with `pro_lease.py`, gracefully stop the tracker, acquire the lease,
+  and reset the board immediately; only then may a full build/test run while
+  the tracker remains down. Steps explicitly marked `[tracker-safe]` are
+  limited to lightweight offline work.
+- Tracker restart pattern (only): token-owned gate → graceful exact stop →
+  token-owned lease acquisition → immediate serial-addressed board reset →
+  staged work/restore → token-owned release → relaunch. Never `pkill -9` and
+  never remove lock objects directly.
+- SHADOW invariant: production `live_radio` has no actuator call and rejects
+  the retired `HACKRF_GNSS_ACTUATE` variable before radio open; this feature is
   observe-only by construction (reads state files only).
 - Antenna freeze: no antenna/cable moves during data collection; after any
   antenna event, FULL power-cycle of the radio (USB `-R` does not clear the
@@ -516,21 +519,29 @@ git commit -m 'clock_bias_analyzer: detrend + RMS + OADEV against the 1 ns claim
 
 **Files:** none new (operations only).
 
-- [ ] **Step 1: Enter window** — SIGSTOP band_producer (pattern pkill -STOP);
-  stop tracker (pattern pkill -TERM, sleep 3); full build + tests:
-  `cargo build --release --example clock_bias && cargo test --lib hatch`.
-- [ ] **Step 2: Restart tracker** (pattern above; board reset with
-  `hackrf_spiflash -d "$PRO_SERIAL" -R`). Confirm ≥ 5 GPS channels and
+- [ ] **Step 1: Enter the atomic window.** Use `scripts/pro_lease.py gate`
+  with the exact production serial and an operator token before any stop.
+  Pause a pre-lease legacy
+  `band_producer` only during first deployment, gracefully stop the exact
+  tracker, then require token-owned `pro_lease.py acquire` success. Reset the
+  board immediately—no build/test in the stop→reset gap.
+- [ ] **Step 2: Build while gated and reset.** With the tracker down and the
+  maintenance lease still held, run
+  `cargo build --release --example clock_bias && cargo test --lib hatch`,
+  then restore the verified production radio state. Release with the same
+  token; never create/remove `maintenance.lock` directly.
+- [ ] **Step 3: Restart tracker** after lease release. Confirm its JSON lease
+  owner, ≥ 5 GPS channels and
   `rho_m` rows fresh in `state.tracker.json`.
-- [ ] **Step 3: Launch the series producer** beside the tracker:
+- [ ] **Step 4: Launch the series producer** beside the tracker:
 
 ```bash
 cd /Volumes/"Radiator 8TB"/gnss/hackrf_gnss && \
   nohup ./target/release/examples/clock_bias >> /tmp/clock_bias.log 2>&1 &
 ```
 
-- [ ] **Step 4: SIGCONT band_producer.** Collect ≥ 1 h (3600 rows).
-- [ ] **Step 5: Verdict run** `[tracker-safe]`:
+- [ ] **Step 5: SIGCONT band_producer.** Collect ≥ 1 h (3600 rows).
+- [ ] **Step 6: Verdict run** `[tracker-safe]`:
   `python3 scripts/clock_bias_analyzer.py` — report RMS/OADEV and whether the
   sub-ns claim gates pass; archive output under
   `docs/superpowers/reports/2026-08-27-sub-ns-leg1-first-collection.md`.

@@ -1,7 +1,8 @@
 // Regression smoke for sync.html — run: `node web/smoke_sync.js` (live http://localhost:8090/api/sync)
 // or offline against a snapshot: `node web/smoke_sync.js web/test_fixture.json`. Exits nonzero on any failure.
 //
-// Extracts the page's <script>, runs it in a vm with a minimal DOM stub
+// Extracts the page's inline <script> blocks in document order, runs them in
+// one vm with a minimal DOM stub
 // (canvas ops counted per canvas id; any non-finite draw argument is a
 // violation), then drives render(live/empty/error/partial), the guided tour,
 // 3D replay, the current-fix glide and the sky-dome lerp against real data.
@@ -25,9 +26,12 @@ function loadData() {
 
 function main(live) {
   const html = fs.readFileSync(HTML_PATH, "utf8");
-  const m = html.match(/<script>([\s\S]*)<\/script>/);
-  if (!m) throw new Error("no <script> block in " + HTML_PATH);
-  const src = m[1];
+  const scripts = [];
+  const scriptRe = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRe.exec(html)) !== null) scripts.push(match[1]);
+  if (!scripts.length) throw new Error("no inline <script> block in " + HTML_PATH);
+  const src = scripts.join("\n;\n");
 
   const drawCounts = {}, nanViol = [];
   let anon = 0;
@@ -105,6 +109,18 @@ function main(live) {
     catch (e) { errors.push(name); console.log("FAIL " + name + " — " + (e && e.message || e)); }
   }
 
+  step("ATSC text does not claim unverified transmitter discipline", () => {
+    ["GPS-disciplined Tx", "ATSC ch35 pilot is GPS-disciplined",
+     "from GPS-disciplined ATSC", "GPS-disciplined at the transmitter",
+     "a free atomic-grade reference", "transmitter's own (excellent) discipline"]
+      .forEach((claim) => {
+        if (html.indexOf(claim) >= 0)
+          throw new Error("unsupported ATSC claim remains: " + claim);
+      });
+    if (html.indexOf("atsc_spread_ppm") >= 0)
+      throw new Error("retired ATSC spread telemetry is still rendered");
+  });
+
   step("render(data)", () => g.render(live));
   step("frames x5 after render", () => frames(5));
   step("render({}) empty", () => g.render({}));
@@ -122,6 +138,42 @@ function main(live) {
       throw new Error("position card did not render the partial-write pill");
   });
   step("render(data) after partial", () => g.render(live));
+  step("fresh WAAS discipline does not overwrite ATSC residual", () => {
+    const mixed = JSON.parse(JSON.stringify(live));
+    mixed.clock = Object.assign({}, mixed.clock || {}, {
+      residual_ppm: 0.123, residual_valid: true
+    });
+    mixed.discipline = Object.assign({}, mixed.discipline || {}, {
+      epoch: Date.now() / 1000, residual_ppm: 9.876,
+      correction_ppm: 0.0, actuate: false, corr_applied: false
+    });
+    g.render(mixed);
+    if (els["clock"].innerHTML.indexOf("0.123 ppm") < 0 ||
+        els["clock"].innerHTML.indexOf("9.876 ppm") >= 0)
+      throw new Error("WAAS estimator residual was mislabeled as the ATSC residual");
+  });
+  step("render(data) after residual provenance check", () => g.render(live));
+  // A dark phase producer deliberately publishes residual_ppm:null. JavaScript
+  // numeric coercion turns null into zero, so every display gate must test
+  // both undefined and null or it fabricates a live 0.000 ppm measurement.
+  step("render(dark phase: null residual stays absent)", () => {
+    const dark = JSON.parse(JSON.stringify(live));
+    dark.clock = Object.assign({}, dark.clock || {}, {
+      residual_ppm: null, residual_valid: false
+    });
+    dark.discipline = Object.assign({}, dark.discipline || {}, {
+      epoch: Date.now() / 1000, residual_ppm: 9.876,
+      correction_ppm: 0.0, actuate: false, corr_applied: false
+    });
+    if (dark.phase) dark.phase.lock = false;
+    g.render(dark);
+    if (els["clock"].innerHTML.indexOf("residual <b>") >= 0)
+      throw new Error("clock card rendered null residual as a measurement");
+    if (els["fpga"].innerHTML.indexOf("live residual <b>") >= 0 ||
+        els["fpga"].innerHTML.indexOf("uncorrected live residual <b>") >= 0)
+      throw new Error("FPGA card rendered null residual as a measurement");
+  });
+  step("render(data) after dark phase", () => g.render(live));
 
   // glide trigger: a newer, shifted fix (+ shifted sky) starts the lerps
   const live2 = JSON.parse(JSON.stringify(live));

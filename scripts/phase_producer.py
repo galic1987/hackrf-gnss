@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """60 Hz carrier-phase producer for the /sync panel ("phase producer").
 
-Tracks the ATSC ch35 pilot (true 602.30944 MHz, GPS-disciplined Tx,
+Tracks the ATSC ch35 pilot (true 602.30944 MHz; transmitter discipline is
+not independently attested,
 ~+43 dB over noise on the ClearStream) on the HackRF One. The deployed
 Split Star feeds the One's CLKIN directly from the Bodnar 10 MHz splitter;
 the Pro's CLKOUT is idle. CLKIN presence was checked while the One was free,
@@ -11,6 +12,15 @@ hackrf_transfer is held for the producer's whole lifetime, tuned
 500 kHz above the pilot so the line sits at -500 kHz (off the DC spike).
 Samples arrive over a FIFO (mkfifo) — never a spooling file — so disk
 usage is zero regardless of run length.
+
+This entry point is dedicated to the ClearStream path, whose DC topology is
+not yet identified.  The 2026-09-01 bias-on launch restored pilot amplitude
+from ~0.05 to >8 and produced a real lock (commit d1bc6c0), so automatically
+forcing bias off would discard the only validated configuration. Future
+starts require the explicit reviewed ``clearstream_bias_on_20260901`` profile
+and a matching acknowledgement; the legacy one-variable
+``HACKRF_ANT_POWER`` override is refused. Requested gains/amp/bias and the
+unresolved electrical status are logged and published with phase state.
 
 Epoch rate: 60 Hz (was 20 Hz). FS dropped 8 -> 6 Msps so a 60 Hz epoch is
 an integer 100000-sample block (16.67 ms); USB load drops 25% as a bonus.
@@ -36,15 +46,19 @@ Per 16.67 ms block (100k samples, 60 epochs/s):
   - residual frequency offset: the derotation is steered by the phase
     slope (integral control, 1-s updates) because the reference chain
     wanders ~1 Hz/min; the steered total vs nominal is the sub-Hz
-    clock-drift observable (~100x finer than the FFT method),
+    relative-frequency observable containing transmitter and receiver terms
+    (~100x finer than the FFT method),
   - per-epoch sigma: robust MAD std of the 2nd difference of the
     displacement epochs (drift/curvature and fade cycle-slips removed),
   - lock quality = block-mean magnitude (pilot amplitude); epochs where
     it collapses are flagged/dropped, sustained collapse drops the lock.
 
-If the transfer dies (USB hiccup), the stream is reopened and the phase
-re-locked: unwrap reference reset, lock=false until 2 s of stable
-amplitude.
+If the transfer dies (USB hiccup), the stream is reopened only after the old
+child is proven stopped, then phase re-locks: unwrap reference reset,
+lock=false until 2 s of stable amplitude. An unprovable stop exits 78 rather
+than overlapping two One owners. An advisory singleton lock closes races
+between lease-aware wrappers; the process scan remains as first-rollout/manual
+tool defense-in-depth.
 
 Acquisition SNR floor (SNR_FLOOR_DB, 2026-08-28 audit): the initial
 estimate AND every re-acquire must measure max-bin/median >= the floor or
@@ -66,13 +80,16 @@ read time, so no shared-file race is possible):
   sources row band "ATSC ch35" (kind ClockDriftPpm) — this REPLACES the
   old FFT-based ch35 row band_producer used to write (that code was
   removed; the phase producer owns the One full-time now).
-  state["clock"]["residual_ppm"] — kept live from this measurement.
+  state["clock"]["residual_ppm"] — conditional relative-frequency value from
+  this measurement; not transmitter-discipline attestation or HW readback.
 Appends observations/phase_history.jsonl at ~1 Hz.
 """
 import argparse
+import fcntl
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -96,6 +113,7 @@ FIFO = "/tmp/phase_producer.iq"
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.phase.json"
 HIST = "/Volumes/Radiator 8TB/gnss/observations/phase_history.jsonl"
 SERIES_STATE = "/Volumes/Radiator 8TB/gnss/observations/state.series.json"
+ONE_WRAPPER_LOCK = "/Volumes/Radiator 8TB/gnss/observations/phase_producer.one.lock"
 
 
 def _clkin_label():
@@ -153,21 +171,144 @@ LOCK_AMP_FRAC = 0.15
 ACQ_AMP_FLOOR = 0.75
 
 _proc = None                      # current hackrf_transfer child
+_wrapper_lock_fd = None           # atomic singleton lock for this One owner
+
+
+def clearstream_rf_config(environ):
+    """Return the explicitly acknowledged, evidence-backed RF configuration.
+
+    We do not yet know whether an inline powered amp/DC path exists.  Preserve
+    the bias-on state that restored the signal, but never infer it from one
+    inherited boolean environment variable.
+    """
+    profile = environ.get("HACKRF_ANTENNA_PROFILE")
+    expected = "clearstream_bias_on_20260901"
+    if profile != expected:
+        raise ValueError(
+            f"set HACKRF_ANTENNA_PROFILE={expected} only after reviewing the "
+            "ClearStream/inline-DC path; there is no implicit default"
+        )
+    if environ.get("HACKRF_RF_PROFILE_ACK") != expected:
+        raise ValueError(
+            f"HACKRF_RF_PROFILE_ACK must exactly match {expected}"
+        )
+    if "HACKRF_ANT_POWER" in environ:
+        raise ValueError("HACKRF_ANT_POWER is retired; select a reviewed profile")
+    # The acknowledgement names one exact evidence-backed profile, including
+    # gains.  Do not let inherited generic gain variables silently mutate it.
+    lna_gain, vga_gain = 40, 44
+    for key, expected_gain in (("HACKRF_LNA", lna_gain),
+                               ("HACKRF_VGA", vga_gain)):
+        if key in environ:
+            try:
+                supplied = int(environ[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be integer {expected_gain}") from exc
+            if supplied != expected_gain:
+                raise ValueError(
+                    f"{key}={supplied} does not match reviewed profile value "
+                    f"{expected_gain}; define and review a new profile instead")
+    return {
+        "antenna_profile": profile,
+        "lna_db": lna_gain,
+        "vga_db": vga_gain,
+        "rf_amp_requested": False,
+        "bias_tee_requested": True,
+        "hardware_readback": False,
+        "electrical_status": (
+            "unresolved: bias-on restored the pilot; identify any inline "
+            "powered amplifier and DC path before changing this profile"
+        ),
+        "evidence": "commit d1bc6c0, 2026-09-01",
+    }
 
 
 def log(msg):
     print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
 
 
-def one_busy():
-    """True if a hackrf_transfer command line mentions the One's serial."""
+def acquire_one_wrapper_lock(path=ONE_WRAPPER_LOCK):
+    """Atomically exclude a second lease-aware phase wrapper.
+
+    The lock is advisory for manual tools, so the post-lock legacy-process
+    check remains mandatory.  CLOEXEC prevents hackrf_transfer from retaining
+    the wrapper lock after this process exits.
+    """
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
     try:
-        out = subprocess.run(["pgrep", "-fl", "hackrf_transfer"],
-                             capture_output=True, text=True).stdout
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise RuntimeError(f"refusing unsafe phase wrapper lock at {path}")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        payload = json.dumps({"pid": os.getpid(), "serial": ONE,
+                              "role": "phase_producer"}) + "\n"
+        encoded = payload.encode()
+        if os.write(fd, encoded) != len(encoded):
+            raise RuntimeError(f"short metadata write to phase wrapper lock {path}")
+        os.fsync(fd)
     except Exception:
-        return False
-    return any(ONE in line and str(os.getpid()) not in line
-               for line in out.splitlines())
+        os.close(fd)
+        raise
+    return fd
+
+
+def _one_busy_from_ps(text, self_pid):
+    """Pure parser for a `ps` snapshot; malformed input fails closed."""
+    rows = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.strip().split(None, 3)
+        if len(fields) < 3:
+            return True
+        try:
+            pid, ppid = int(fields[0]), int(fields[1])
+        except ValueError:
+            return True
+        rows[pid] = (ppid, fields[2], fields[3] if len(fields) == 4 else "")
+
+    # A shell parent commonly embeds the complete launch line, including
+    # phase_producer.py.  Excluding self and every ancestor prevents that
+    # launcher text from manufacturing a permanent false "busy" condition.
+    excluded = set()
+    pid = self_pid
+    while pid and pid not in excluded:
+        excluded.add(pid)
+        pid = rows.get(pid, (0, "", ""))[0]
+
+    for pid, (_ppid, comm, args) in rows.items():
+        if pid in excluded:
+            continue
+        executable = os.path.basename(comm).lower()
+        if executable == "hackrf_transfer" and ONE in args:
+            return True
+        if executable.startswith("python"):
+            argv = [part.strip("'\"") for part in args.split()]
+            if any(os.path.basename(part) == "phase_producer.py" for part in argv):
+                return True
+    return False
+
+
+def one_busy():
+    """True for a legacy One transfer or another real Python phase wrapper."""
+    try:
+        result = subprocess.run(
+            # ucomm is the executable basename on macOS; unlike comm it cannot
+            # absorb the space in the /Volumes/Radiator 8TB path and shift the
+            # argv column.
+            ["ps", "-ww", "-axo", "pid=,ppid=,ucomm=,args="],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return True
+        return _one_busy_from_ps(result.stdout, os.getpid())
+    except Exception:
+        return True
 
 
 def wait_for_one():
@@ -176,41 +317,82 @@ def wait_for_one():
         time.sleep(3)
 
 
-def open_stream():
+def terminate_transfer(proc):
+    """Prove a transfer stopped; never reopen the One over a live child."""
+    if proc is None or proc.poll() is not None:
+        return True
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+        return proc.poll() is not None
+    except Exception as exc:
+        log(f"transfer pid {getattr(proc, 'pid', '?')} did not stop: {exc}")
+        return False
+
+
+class UnsafeStreamState(RuntimeError):
+    pass
+
+
+def open_stream(rf_config):
     """Launch one continuous transfer into the FIFO; return (proc, fd)."""
     global _proc
     wait_for_one()
     try:
         os.mkfifo(FIFO)
     except FileExistsError:
-        pass
-    lna_gain = os.environ.get("HACKRF_LNA", "40")
-    vga_gain = os.environ.get("HACKRF_VGA", "44")
-    # Antenna port power (3.3 V bias-tee) for active/mag-mount antennas;
-    # default off — enable only with a known 3-5 V external LNA antenna.
-    ant_power = os.environ.get("HACKRF_ANT_POWER", "0")
+        st = os.lstat(FIFO)
+        if not stat.S_ISFIFO(st.st_mode) or st.st_uid != os.getuid():
+            raise RuntimeError(f"refusing unsafe FIFO object at {FIFO}")
     cmd = [f"{TOOLS}/hackrf_transfer", "-d", ONE, "-f", str(int(F_TUNE)),
-           "-s", str(int(FS)), "-l", str(lna_gain), "-g", str(vga_gain), "-a", "0",
-           "-p", ant_power, "-r", FIFO]
+           "-s", str(int(FS)), "-l", str(rf_config["lna_db"]),
+           "-g", str(rf_config["vga_db"]), "-a", "0",
+           "-p", "1" if rf_config["bias_tee_requested"] else "0", "-r", FIFO]
     log("launching: " + " ".join(cmd))
-    proc = subprocess.Popen(cmd, env=ENV,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _proc = proc
-    # open non-blocking so a transfer that fails to start can't wedge us
-    fd = os.open(FIFO, os.O_RDONLY | os.O_NONBLOCK)
-    for _ in range(60):
-        if proc.poll() is not None:
-            os.close(fd)
-            raise RuntimeError(f"hackrf_transfer exited immediately "
-                               f"(rc={proc.returncode})")
-        r, _, _ = __import__("select").select([fd], [], [], 0.5)
-        if r:
-            break
-    else:
-        os.close(fd)
-        raise RuntimeError("no data on FIFO within 30 s of launch")
-    os.set_blocking(fd, True)
-    return proc, fd
+    proc, fd, previous_mask = None, None, None
+    try:
+        # Close the SIGTERM Popen->_proc window: shutdown must always see and
+        # stop a child before the wrapper singleton lock can disappear.
+        if hasattr(signal, "pthread_sigmask"):
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+        proc = subprocess.Popen(cmd, env=ENV,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        _proc = proc
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            previous_mask = None
+
+        # Open non-blocking so a transfer that fails to start cannot wedge us.
+        fd = os.open(FIFO, os.O_RDONLY | os.O_NONBLOCK)
+        for _ in range(60):
+            if proc.poll() is not None:
+                raise RuntimeError(f"hackrf_transfer exited immediately "
+                                   f"(rc={proc.returncode})")
+            r, _, _ = __import__("select").select([fd], [], [], 0.5)
+            if r:
+                break
+        else:
+            raise RuntimeError("no data on FIFO within 30 s of launch")
+        os.set_blocking(fd, True)
+        return proc, fd
+    except Exception as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if terminate_transfer(proc):
+            if _proc is proc:
+                _proc = None
+        else:
+            raise UnsafeStreamState(
+                "startup failed and transfer stop is unproven; restart forbidden") from exc
+        raise
+    finally:
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def read_into(fd, buf, nbytes):
@@ -499,36 +681,47 @@ def merge_state(phase, row, ppm):
     # ONLY this producer's keys go to its own file; the server merges
     # per-band "sources" rows and shallow-merges "clock" across files, so
     # nobody read-modify-writes shared state anymore.
+    residual_valid = bool(phase.get("lock") and ppm is not None)
     state = {
         "sources": [row],
         "phase": phase,
         "epoch": phase["epoch"],
-        # the panel's "residual (live, from GPS-disciplined ATSC pilots)" line
-        # is this measurement now — band_producer no longer touches the One
-        "clock": {"residual_ppm": round(ppm, 3)},
+        # The live residual is the observed ATSC pilot relative to the One's
+        # receiver timebase; it does not attest how the transmitter is
+        # disciplined.  A dark heartbeat retains the source row at
+        # its old epoch but must clear the scalar value; otherwise the fresh
+        # file epoch makes a stale residual look live.
+        "clock": {
+            "residual_ppm": round(ppm, 3) if residual_valid else None,
+            "residual_valid": residual_valid,
+        },
     }
     # NOTE: the old atsc_spread_ppm cleanup is gone — that key only ever
     # lived in the shared file, and band_producer no longer writes it.
     tmp = STATE + ".phase.tmp"      # unique tmp; atomic publish via os.replace
-    json.dump(state, open(tmp, "w"), indent=1)
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=1)
     os.replace(tmp, STATE)
 
 
 def shutdown(*_):
-    try:
-        if _proc and _proc.poll() is None:
-            _proc.terminate()
-    except Exception:
-        pass
-    sys.exit(0)
+    stopped = terminate_transfer(_proc)
+    if not stopped:
+        log("FATAL: One transfer stop unproven; no automatic restart is safe")
+    sys.exit(0 if stopped else 78)
 
 
 def main():
+    global _proc, _wrapper_lock_fd
     ap = argparse.ArgumentParser(description="ch35 pilot carrier-phase producer")
     ap.add_argument("--rate-hz", type=int, default=EPOCH_HZ,
                     help=f"epochs/s (must divide FS={int(FS)} with a "
                          f"DEC={DEC}-multiple block; default {EPOCH_HZ})")
     args = ap.parse_args()
+    try:
+        rf_config = clearstream_rf_config(os.environ)
+    except ValueError as exc:
+        sys.exit(f"unsafe RF configuration: {exc}")
     rate = args.rate_hz
     blk = FS / rate
     if blk != int(blk) or int(blk) % DEC:
@@ -537,15 +730,23 @@ def main():
     blk = int(blk)
     blk_bytes = blk * 2               # interleaved int8 I/Q
 
+    try:
+        _wrapper_lock_fd = acquire_one_wrapper_lock()
+    except Exception as exc:
+        log(f"FATAL: another phase wrapper owns the One or lock is unusable: {exc}")
+        return 78
+
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     log(f"phase producer starting — ch35 pilot {F_PILOT/1e6:.5f} MHz, "
         f"lambda {LAMBDA_MM:.2f} mm, {rate} epochs/s, One {ONE}")
+    log("RF config " + json.dumps(rf_config, sort_keys=True))
 
     while True:
         proc, fd, buf = None, None, None
+        reopen_safe = True
         try:
-            proc, fd = open_stream()
+            proc, fd = open_stream(rf_config)
             buf = bytearray()
             last_row = None                 # last published drift row (heartbeat)
             last_ppm = 0.0
@@ -568,6 +769,7 @@ def main():
                     "lambda_mm": round(LAMBDA_MM, 1),
                     "disp_mm": None, "sigma_mm": None,
                     "freq_off_hz": None, "lock": False,
+                    "rf_config": rf_config,
                     "series": [],
                 }
                 try:
@@ -579,8 +781,9 @@ def main():
                         # advertising the discarded cascade) is overwritten
                         # at once — bare lock:false, no source/clock values.
                         tmp = STATE + ".phase.tmp"
-                        json.dump({"phase": phase, "epoch": phase["epoch"]},
-                                  open(tmp, "w"), indent=1)
+                        with open(tmp, "w") as fh:
+                            json.dump({"phase": phase, "epoch": phase["epoch"]},
+                                      fh, indent=1)
                         os.replace(tmp, STATE)
                 except Exception as e:
                     log(f"dark heartbeat publish failed: {e}")
@@ -628,6 +831,7 @@ def main():
                             "lambda_mm": round(LAMBDA_MM, 1),
                             "disp_mm": None, "sigma_mm": None,
                             "freq_off_hz": None, "lock": False,
+                            "rf_config": rf_config,
                             "series": [],
                         }
                         try:
@@ -652,6 +856,7 @@ def main():
                                     if ep["sigma_mm"] is not None else None,
                         "freq_off_hz": round(ep["freq_off_hz"], 3),
                         "lock": ep["locked"],
+                        "rf_config": rf_config,
                         "series": series,
                     }
                     ppm = ep["ppm"]
@@ -662,7 +867,11 @@ def main():
                         "kind": "ClockDriftPpm",
                         "value": round(ppm, 4), "sigma": 0.005,
                         "ref_hz": F_PILOT, "epoch": round(t, 2),
-                        "sats": ["GPS-disciplined Tx"],
+                        "sats": ["ATSC pilot; Tx discipline unverified"],
+                        "transmitter_discipline_attested": False,
+                        "observable_scope": (
+                            "ATSC transmitter plus One receiver relative frequency"
+                        ),
                         # The Split Star feeds this radio directly from the
                         # Bodnar. clkin_soft_verified is only a common-rate
                         # liveness check; it cannot prove physical topology.
@@ -689,6 +898,9 @@ def main():
 
         except StreamDead as e:
             log(f"stream died: {e} — reopening, phase will re-lock")
+        except UnsafeStreamState as e:
+            log(f"FATAL: {e}")
+            reopen_safe = False
         except Exception as e:
             log(f"unexpected error: {e!r} — reopening")
         finally:
@@ -697,17 +909,16 @@ def main():
                     os.close(fd)
             except Exception:
                 pass
-            try:
-                if proc and proc.poll() is None:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            child = proc if proc is not None else _proc
+            if not terminate_transfer(child):
+                reopen_safe = False
+            elif _proc is child:
+                _proc = None
+        if not reopen_safe:
+            log("FATAL: transfer state is not proven stopped; wrapper exiting 78")
+            return 78
         time.sleep(2)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

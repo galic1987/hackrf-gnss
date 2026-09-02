@@ -15,19 +15,22 @@ HackRFs. Read this before touching anything that talks to the radios.
 - **HackRF One** `…922c63dc21748847` — owned by `scripts/phase_producer.py`
   (ATSC ch35 carrier-phase track). CLKIN fed by Bodnar OUT2 (10 MHz splitter)
   in the Split Star topology — not by any HackRF; no CLKOUT assertion
-  on the Pro is needed for the One's reference. Classification
-  (2026-08-28 review): **clock-detected, RF-dark, GPS-unproven** — CLKIN
-  reads "clock signal detected"; the ATSC RF path arrives starved
-  (~35–38 dB down, cause unconfirmed — physical look owed); it has never
-  run a GPS tracker, so every L-band claim for it is unproven until the
+  on the Pro is needed for the One's reference. Current classification
+  (2026-09-01): **clock-detected, ClearStream ATSC operational,
+  GPS-unproven**. The south-facing ClearStream feed restored a real ch35
+  pilot lock; current truth is the producer's fresh `state.phase.json`
+  heartbeat, never the historical dark-era notes. It has never run a GPS
+  tracker, so every L-band claim for it remains unproven until the
   AA.250-splitter test (one DC-pass leg, DC-block the One leg, zero-gain
-  baseline, separate USB controller) demonstrates real acquisitions.
+  baseline, separate USB controller) demonstrates real acquisitions. That
+  asymmetric test can establish L-band health only; it cannot calibrate
+  receiver delay or support a claim-grade RF-leg ABBA result.
 - **HackRF Pro #1** `…977c64de2b557213` — **DEAD 2026-08-27** (no power on
   any cable/charger incl. dumb charger and A-to-C, no DFU boot-ROM
   enumeration — J1/Q4 input-path hardware fault, repair/RMA pending). Do
-  NOT target this serial in any command; several bench scripts still carry
-  it as a default and must be run with `PRO_SERIAL=…6450…` until cleaned
-  up. When it returns from repair it re-enters as an independent bench radio.
+  NOT target this serial in any command. Legacy entry points that carried it
+  as a default are quarantined rather than redirected onto the production
+  radio. When it returns from repair it re-enters as an independent bench radio.
   Under the deployed Split Star it is not upstream of the One, so resetting or
   loading it cannot break the One's clock path. Verify each repaired radio's
   own CLKIN selection after its own stream start; do not resurrect the old
@@ -39,7 +42,11 @@ HackRFs. Read this before touching anything that talks to the radios.
 - **10 MHz**: Bodnar LBE-1421 OUT2 (10 MHz GPSDO output; output-lock state is not exposed by the current probe) → SMA Power Splitter → Pro#2 `…6450…` P1 CLKIN & HackRF One `…922c…` CLKIN (matched cables).
 - **1PPS**: Bodnar OUT1 (GPSDO 1PPS; output phase/holdover state is not exposed by the current probe) → SMA Power Splitter → Pro#2 P28 pin 16 (TRIGGER.IN) & HackRF One P28 pin 16 (TRIGGER.IN) (matched cables).
 
-Both radios hang directly off the GPSDO for both syntonization (10 MHz) and synchronization (1PPS). Hardware proof:
+Both radios hang directly off the GPSDO's split 10 MHz and 1PPS outputs.
+The shared 10 MHz provides a common frequency reference; the matched 1PPS
+cables establish physical distribution only. They do **not** by themselves
+prove sample-zero alignment, trigger latency, receiver delay, or RF-phase
+synchronization. Hardware evidence currently establishes:
 `hackrf_clock -d …922c… -i` reads "clock signal detected" at the One's
 CLKIN (checked 2026-08-28 with the One free) — NOT the ATSC row: the
 phase_history ppm "eras" (−3 / +0.53 / −1.7 ppm) are noise-lock artifacts
@@ -48,19 +55,38 @@ work — a 2026-08-29 re-scan with other classifiers could not reproduce the
 78.1%, see phase_history.QUARANTINE-README.txt; the quarantine stands on
 the verified unaudited pre-tombstone lock basis). The history file itself
 is QUARANTINED since 2026-08-29 10:35 EDT (renamed
-phase_history.jsonl.quarantine-noiselock-20260829; the writer creates a
-fresh file of post-floor rows only), and the One's ATSC watch at ch35 has been dark since the
-2026-08-27 re-cable — measured 2026-08-28 evening (producer's exact
-tune/gains): the pilot arrives STARVED ~35–38 dB (z-amp 0.053, C/N0
-20.2 dB-Hz vs the healthy 54–58 dB-Hz), frequency-stable at the exact
-pilot frequency, nothing pilot-class within ±1.5 MHz; L1 captures show
-no active-patch LNA hump either, so the One's whole RF path is degraded
-and the physical cause is UNCONFIRMED (passive patch / disconnected
-feed / dead amp — needs a physical look, not a software one). The fixed
-producer (f760504, absolute 0.75 z acquisition floor) runs and reports
-honest "pilot dark — not seeding" retries; every ATSC row since
-~2026-08-27 18:25 is starved-line era and quarantined; treat every
-pre-fix ATSC ppm reading as unverified. Clock switches happen ONLY at RX/TX
+phase_history.jsonl.quarantine-noiselock-20260829). Those pre-fix rows remain
+invalid. On 2026-09-01 the south-facing ClearStream feed restored a
+pilot-class signal. Commit d1bc6c0 records the key causal evidence: enabling
+antenna-port power raised amplitude from ~0.05 to >8, restored `lock:true`,
+and produced ~1 mm reported sigma. The currently running child therefore uses
+`-p 1`; preserve it. The antenna itself may be passive, but the complete coax
+path is electrically unresolved—identify any inline powered amp, injector,
+splitter DC-pass, and termination before claiming what consumes the DC or
+changing power. Future starts fail closed unless the reviewed
+`clearstream_bias_on_20260901` profile and matching acknowledgement are both
+explicit; the single `HACKRF_ANT_POWER` override is retired. The producer logs
+and publishes requested settings, not hardware readback. Do not restart merely
+to adopt source changes; use a controlled One maintenance window. Only after
+the inline path review, an exact graceful stop, and proof that the old
+`hackrf_transfer` is gone, the future launch form is:
+
+```sh
+cd "/Volumes/Radiator 8TB/gnss/hackrf_gnss"
+HACKRF_ANTENNA_PROFILE=clearstream_bias_on_20260901 \
+HACKRF_RF_PROFILE_ACK=clearstream_bias_on_20260901 \
+  nohup python3 scripts/phase_producer.py >> /tmp/phase_producer.log 2>&1 &
+```
+
+Both profile variables are mandatory; do not copy the legacy
+`HACKRF_ANT_POWER=1` launch. The reviewed profile fixes amp off, LNA/VGA
+40/44, and bias tee requested on; changing any of those requires a newly named
+and reviewed profile. With
+LNA/VGA 40/44 the producer
+publishes a fresh post-quarantine history and reports
+`lock:false` honestly if the pilot later disappears. A live lock establishes
+ATSC carrier tracking, not GPS capability or physical CLKIN topology.
+Clock switches happen ONLY at RX/TX
 begin (per radio) — connecting or reconfiguring a link does nothing until
 that radio's next stream start. The soft drift-lock verifier
 (series_producer, state.series.json `clkin_soft_verified`) returns True
@@ -73,7 +99,7 @@ the shadow loop's intent is ~0 by construction.
 
 **Clock & 1PPS Distribution (Deployed 2026-08-29):**
 - **10 MHz Syntonization:** Bodnar OUT2 (10 MHz) \u2192 SMA Power Splitter \u2192 Pro P1 (CLKIN) & One P1 (CLKIN) over matched cables.
-- **1PPS Synchronization:** Bodnar OUT1 (1PPS) \u2192 SMA Power Splitter \u2192 Pro P28.16 (TRIGGER.IN) & One P28.16 (TRIGGER.IN) over matched cables.
+- **1PPS Distribution:** Bodnar OUT1 (1PPS) \u2192 SMA Power Splitter \u2192 Pro P28.16 (TRIGGER.IN) & One P28.16 (TRIGGER.IN) over matched cables; capture synchronization remains uncalibrated.
 - **Pro P2 SMA:** Physically free and disabled (`set_clkout_enable(false)` in `live_radio`).
 - **Trigger Inputs:** Both Pro and One trigger via internal header **P28 pin 16 (TRIGGER.IN)**.
 
@@ -84,33 +110,76 @@ trigger on its configurable clock SMAs, but the station's PPS path is the
 header pin. An earlier revision of this file claimed the Pro was SMA-only
 for trigger; that was wrong. First external TDC PPS capture succeeded via
 P28.16 on 2026-08-29 (1 valid-toggle per pulse, thermometer codes).
-- Radio work (flashes, captures) requires stopping `tracker_producer` +
-  `live_radio` first. The Pro-free window that opens is `band_producer`'s
-  ONLY snapshot opportunity (`pro_owned()` fails closed while the tracker
-  is up), so never SIGSTOP it through the window — that is why band rows
-  never refreshed. Order: stop the tracker → SIGCONT `band_producer` and
-  give it the window's duration (its rows refresh nowhere else) → SIGSTOP
-  `band_producer` → board reset → restart the tracker → SIGCONT
-  `band_producer`. Restart from current binaries (they carry queued
-  fixes).
+- Radio work (flashes, captures) uses the atomic protocol in
+  `scripts/pro_lease.py`; `pgrep` and a plain file-exists check are not
+  ownership. Normal clients hold `pro.radio.lock.d` for the complete device
+  lifetime and check `maintenance.lock` before and after atomic acquisition.
+  `tracker_producer` passes its unguessable owner token to `live_radio`; the
+  child verifies the fixed owner JSON, wrapper parent PID, role, exact Pro #2
+  serial, and non-maintenance state before opening USB, then verifies the
+  immutable board ID/serial before its first configuration write. Direct
+  `live_radio` launches and alternate serials fail closed. The private exec
+  launcher unblocks SIGINT/SIGTERM inherited across the wrapper's protected
+  spawn window, so graceful termination remains possible. Locks are never
+  auto-reclaimed from PID liveness.
+
+  Deployment runbook (pre-stage everything first):
+
+  1. `python3 scripts/pro_lease.py gate --serial 0000000000000000645061de252d6613 --token-file /tmp/pro-maint.token`
+     creates the gate atomically. If deploying the lease code for the first
+     time, also pause the already-running legacy `band_producer` because an
+     old Python process has not loaded the new guard.
+  2. Gracefully stop the exact `tracker_producer`/`live_radio` processes.
+     The gate is already up, so a lease-aware band snapshot cannot take the
+     just-freed Pro.
+  3. `python3 scripts/pro_lease.py acquire --token-file /tmp/pro-maint.token --wait-seconds 30`
+     must succeed before any radio
+     command. Then reset the Pro immediately and perform only the staged work.
+  4. Restore the verified production image/config. Run `release` with the
+     same token file, start the tracker, use `pro_lease.py status` to verify
+     the tracker owns the lease, prove stream health, and resume
+     `band_producer` last.
+
+  If work aborts before `acquire`, `cancel` with the same token. If any command
+  reports malformed/stale state, stop: never `rm -rf` or infer ownership from
+  a dead PID. Inspect the exact JSON owner and radio state in a maintenance
+  window; all ambiguous states deliberately remain gated.
 - **Tracker restarts are only reliable after a board reset** (2026-08-24,
   three trials): SIGTERM or SIGKILL of `live_radio` can leave the Pro's
   USB streaming state wedged — the next `live_radio` then seeds deaf
-  ("seed done — 0 candidates" forever). Procedure: `pkill -TERM
-  tracker_producer.py; pkill -TERM -f examples/live_radio; sleep 3;
-  hackrf_spiflash -d 0000000000000000645061de252d6613 -R; sleep 6;
-  nohup python3 scripts/tracker_producer.py >> /tmp/tracker_producer.log &`.
-  Never `pkill -9` live_radio.
+  ("seed done — 0 candidates" forever). Do not use the retired raw
+  `pkill`/`hackrf_spiflash`/`nohup` restart sequence: it bypasses atomic
+  ownership and can race another producer. Follow the token-owned deployment
+  runbook above: create the gate, stop gracefully, acquire the maintenance
+  radio lease, reset immediately, restore/verify production state, release,
+  then start and health-check the tracker. Never `pkill -9` `live_radio`.
+  One-time transition caveat: an already-running pre-launcher child may have
+  inherited blocked SIGINT/SIGTERM. Try the wrapper shutdown first; if the
+  exact child PID remains, use only the signed runbook's bounded exact-PID
+  SIGHUP fallback, prove exit, acquire the lease, and reset immediately. Do
+  not use a name pattern or infer a clean USB state from process exit.
+  `tracker_producer` therefore never auto-reopens after unexpected
+  `live_radio` EOF/exit. While it still owns the lease it creates
+  `observations/tracker-reset-required.maintenance.token`, raises the
+  maintenance gate, releases only after the child is proven stopped, and
+  exits 78. Use that exact token with `pro_lease.py acquire`, reset/restore,
+  then `release`; do not merely relaunch the tracker.
   **The reset must IMMEDIATELY follow the kill — before ANY build/test**
   (2026-08-29 incident): the 11:07 window deferred the reset until after
   cargo build+test; the wedged Pro deepened from empty-serial to a full
   bus disconnect ([Removed] @ 0x100000, 11:23) and no host-side recovery
   (serial-addressed reset, unaddressed reset, libusb reset_device) could
   reach it — only a physical replug or spontaneous re-enumeration can.
-  Correct window order that satisfies BOTH laws: pkill → **board reset
-  first** → band rotation → build/test (tracker still down) → start
-  tracker. A recovery watcher (`/tmp/pro_recovery_watcher.sh`) now runs
-  the deferred window steps automatically when the Pro re-enumerates.
+  Correct deployment order: token-owned maintenance gate → pause competing
+  producers → graceful exact-process stop → acquire the maintenance radio
+  lease → **board reset immediately** → pre-staged flash/probes →
+  verified slot restoration → token-owned lease release →
+  start tracker → health soak → resume producers.
+  Never remove either lock object as a liveness shortcut. The ONLY sanctioned
+  stale-lease recovery is the pro_lease.py docstring transaction: raise the
+  maintenance gate, PROVE the recorded owner PID is dead, then remove the exact
+  stale object inside that window. The legacy recovery watcher is retired;
+  recovery is manual and fail-closed.
 - **Host build load kills the tracker** (2026-08-25, measured live): cargo/
   nextpnr stalls >115 ms overflow the ~190 ms USB transfer queue → `big
   gap` → full channel realign. NEVER run cargo builds/tests while
@@ -142,10 +211,10 @@ class). Producers with nothing to report must still heartbeat their file.
 
 | producer | file | notes |
 |---|---|---|
-| tracker_producer + live_radio | state.tracker.json | 1 Hz channels, discipline loop (in-process; **SHADOW by default since 2026-08-25** — every correction write was proven to collapse all tracker locks ~1 min, so corrections are computed/logged but never written unless `HACKRF_GNSS_ACTUATE=1`), tick counter reads |
+| tracker_producer + live_radio | state.tracker.json | 1 Hz channels, discipline estimator (in-process; **enforced SHADOW-only** — every correction write was followed by a tracker-wide collapse, the production write call and both direct/streaming Rust transport APIs are removed, and `HACKRF_GNSS_ACTUATE` is rejected before radio open; unity is an expected reset state, explicitly not register readback), tick counter reads |
 | phase_producer | state.phase.json | 60 Hz carrier phase; heartbeats `lock:false` when dark; re-acquires after 60 s dark |
 | series_producer | state.series.json | 30 s; rolling 1-h band series, consensus, spoof z-alerts (sigma floor 0.05 ppm); CLKIN soft-verify (ATSC−WAAS drift-lock over a 30-min paired diff, fail-closed null) as the ATSC-voter fallback gate while the hardware probe can't open the One |
-| band_producer | state.band.json | snapshot rotation — CANNOT snapshot while tracker owns the Pro; rows age, file heartbeats |
+| band_producer | state.band.json | snapshot rotation — shares the atomic Pro lease; skips while tracker owns it or maintenance is gated, so rows age while file heartbeats |
 | gpsdo_probe | state.gpsdo.json | 5 s; Bodnar LBE-1421 NMEA over USB CDC (`/dev/cu.usbmodem*`): `nmea_fix_valid`, fix quality, n_sat, HDOP, GSV SNR, TTL 30 s. A valid fresh GGA is navigation-receiver health only; it does **not** attest 10 MHz lock, PPS phase, UTC offset, or holdover. A dark/invalid probe is an operational warning, while a valid probe is never sufficient evidence for a clock claim |
 | position_producer | state.position.json | runs examples/live_fix every 5 min; refreshes BRDC from BKG HOURLY (the ±4 h ephemeris fit window makes a 6-h refresh guarantee a modeled-sky blind gap). Publication law (round-13, single gate `publish_position`): `position` is TRUSTED-only (redundant AND plausible); exact-but-plausible solves publish as `position_candidate`, plausibility-failing ones as `position_diagnostic`, and both untrusted classes preserve the last trusted `position` (honestly aging). Trust fields: `geometry_redundant`, `plausibility_pass`, `trusted_for_history` |
 | sky_producer | state.sky.json | 30 s; az/el from BRDC+live eph vs tracker: GPS/BDS/Galileo Kepler (Galileo SIS-ICD constants, GST≈GPST) + GLONASS PZ-90 state-vector RK4 — GLONASS is `cls:"predicted"` (G1 1602 MHz FDMA outside the L1 tune: sky map + trails only, never the tracked/absent/expected coverage counts or the learned mask); tracked/absent/unexpected; learns 5°×5° sky_mask.json (schema 2: provenance block — site identity, rig string from the tracker's GPS L1 source, created/learn-start epochs, pass counts; learning GATED on tracker health — fresh within ttl, ≥ MASK_MIN_LOCKED=8 locked, ≥80% of lock ages ≥ the 30 s window — gated passes classify but teach nothing, so receiver outages/realigns never paint the mask; schema- or site/rig-mismatched masks on load are moved to sky_mask.json.quarantine-* and learning restarts empty); appends sky_history.jsonl; per-sat alt_km/speed_mps/track_deg + 30-min recent_trails; re-reads **observations/site.json every pass** (the canonical anchor — no hardcoded coordinates anywhere; a missing anchor is an error heartbeat, never a guess) |
@@ -217,8 +286,10 @@ Custom HackRF Pro gateware/MCU: `/Volumes/Radiator 8TB/mac-archive/hackrf`
 (branch `upstream-pr-submit`). Multi-image blob: slot 0 = timing variant
 (std + TDC − notch), 1 = half_precision, 2 = ext_precision_rx (12-bit,
 nibble timestamps, CIC 4× = 8 Msps), 3 = ext_precision_tx. Build-ID regs
-0x3E/0x3F per image; `firmware/fpga/build/manifest_check.py` verifies all
-slots after every flash — never skip it.
+0x3E/0x3F per image; the tracked `firmware/fpga/manifest_check.py` performs
+the tag-level slot smoke test after every flash. The ignored `build/` copy is
+obsolete. Never run the checker during an active tracker or without explicit
+serial and restore arguments.
 
 ## Version control
 

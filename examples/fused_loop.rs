@@ -18,7 +18,7 @@ use std::io::Write;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const SERIAL: &str = "0000000000000000977c64de2b557213";
+const SERIAL: &str = "QUARANTINED_NO_SERIAL";
 const RX_LAT: f64 = 39.001;
 const RX_LON: f64 = -77.60732;
 const FC: f64 = 1626.25e6;
@@ -28,10 +28,18 @@ const FS: f64 = 4.0e6;
 const TICK_HZ: f64 = 32.0e6;
 
 fn epoch_now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 fn main() {
+    eprintln!(
+        "QUARANTINED: legacy fused_loop targets the dead Pro #1 and is not valid under the split-star unity/shadow policy; no radio was opened."
+    );
+    std::process::exit(78);
+
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 3 {
         eprintln!("usage: fused_loop <tle> <cycles> [capture_s] [settle_s]");
@@ -69,14 +77,34 @@ fn main() {
         let n = ((capture_s * FS) as u64).to_string();
         let epoch = epoch_now();
         let st = Command::new("hackrf_transfer")
-            .args(["-d", SERIAL, "-f", "1626250000", "-s", "4000000",
-                   "-l", "40", "-g", "46", "-p", "1", "-a", "0",
-                   "-n", &n, "-r", &iq_path])
+            .args([
+                "-d",
+                SERIAL,
+                "-f",
+                "1626250000",
+                "-s",
+                "4000000",
+                "-l",
+                "40",
+                "-g",
+                "46",
+                "-p",
+                "1",
+                "-a",
+                "0",
+                "-n",
+                &n,
+                "-r",
+                &iq_path,
+            ])
             .status();
         match st {
             Ok(s) if s.success() => {}
             _ => {
-                eprintln!("hackrf_transfer failed ({:?}); cycle skipped", st.map(|s| s.code()));
+                eprintln!(
+                    "hackrf_transfer failed ({:?}); cycle skipped",
+                    st.map(|s| s.code())
+                );
                 continue;
             }
         }
@@ -105,7 +133,9 @@ fn main() {
             "fused: {} obs ({} doppler) fix {} drift {:?} anchor {:?}",
             est.n_obs,
             obs.iter().filter(|o| o.kind == ObsKind::DopplerHz).count(),
-            est.fix.as_ref().map(|f| format!("{:+.4} {:+.4} s {:.2} km", f.lat_deg, f.lon_deg, f.sigma_km))
+            est.fix
+                .as_ref()
+                .map(|f| format!("{:+.4} {:+.4} s {:.2} km", f.lat_deg, f.lon_deg, f.sigma_km))
                 .unwrap_or_else(|| "none".into()),
             est.drift_ppm,
             est.tick0_utc,

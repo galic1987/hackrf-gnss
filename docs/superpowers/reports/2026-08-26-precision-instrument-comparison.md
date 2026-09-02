@@ -3,6 +3,12 @@
 Date: 2026-08-26 (evening, post-GPSDO window). All numbers measured on the
 live station today; nothing here is aspirational unless marked TARGET.
 
+> **HISTORICAL SNAPSHOT — NOT CURRENT STATION STATE.** Pro #1 subsequently
+> died. The retained station is Pro #2 + AA.250 for GNSS and HackRF One + the
+> south-facing ClearStream for ATSC, with split 10 MHz and 1PPS wiring. The
+> One has no demonstrated L-band/GNSS path, and no shared-RF or cross-radio
+> delay calibration has been performed. Current status lives in `AGENTS.md`.
+
 ## The instruments, ranked by what they actually achieve right now
 
 | Instrument / method | Measures | Live reading (today) | Demonstrated floor | Limit / target |
@@ -11,7 +17,7 @@ live station today; nothing here is aspirational unless marked TARGET.
 | WAAS GEO Doppler drift (Pro#1, tracker) | station clock error vs GEO carriers | +0.0006 ppm deadband (Bodnar-referenced); TCXO era was −0.34 ppm | ~±0.01 ppm (GEO orbital motion floor) | sub-ppb reality when referenced |
 | ATSC pilot carrier phase (One, phase_producer) | clock error + displacement stability | offset −0.052 ppm (= ch35 transmitter constant); displacement σ 13 mm/10 s best, 90 mm/10 s median today | σ ~13 mm (10 s) | sub-mm needs the P0b carrier contract |
 | FPGA tick counter (32 MHz, in-band nibble) | time quantization | 31.25 ns/tick, PC-poll jitter dominates host reads (median −0.02 ppm class) | 31.25 ns quantization | absolute epoch via 1PPS (bench item) |
-| Carry-chain TDC (slot 0) | sub-tick subdivision | 499 ps RMS — PROVISIONAL internal ring-oscillator self-test | 499 ps (internal) | external 1PPS swept-edge calibration pending |
+| Carry-chain TDC (slot 0) | sub-tick subdivision | historical 499 ps figure retracted for external-trigger calibration | no demonstrated absolute floor | independent swept-edge calibration pending |
 | Code PVT (live_fix) | position vs surveyed anchor | 6.3 m = solve RESIDUAL RMS (not error vs the anchor; the anchor itself is ~2 m class), 5 sats, 3D, fresh at publication (a preserved older trusted fix carries its own aging epoch) | ~2–5 m in good geometry | dm-class ceiling at L1-only (ionosphere); cm–mm needs short-baseline ∇Δ |
 | Carrier replica phase (tracker channels) | per-channel phase | ~84–101 mm/10 s class — diagnostic, not a true observable | same | 0.5 mm TARGET requires P0b (prompt residual + epoch + ambiguity) |
 | Band snapshots (band_producer) | per-band presence/drift | GATED OFF since round-11 (never touches the tracker-owned Pro) — off-tune bands show last measurement | — | can return on Pro#2 once it has a real antenna |
@@ -75,7 +81,8 @@ discipline:
 - The sub-mm formal claims need a real carrier observable — today's
   carrier number is an integrated-replica diagnostic at ~90 mm/10 s. The
   ladder rungs are DIFFERENT observables, not refinements of one error:
-  31.25 ns tick ≈ 9.4 m of light; 499 ps TDC ≈ 150 mm; 150 ps ≈ 45 mm;
+  31.25 ns tick ≈ 9.4 m of light; the historical 499 ps TDC rung is not
+  calibrated; 150 ps ≈ 45 mm;
   30–50 ps ≈ 9–15 mm; and carrier sub-mm additionally needs prompt
   residuals, sample epoch, ambiguity generation, slip/gap invalidation and
   calibrated hardware phase (the P0b contract — ledgered, not started).

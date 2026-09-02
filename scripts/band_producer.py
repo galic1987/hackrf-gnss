@@ -25,15 +25,15 @@ Integrity layer:
 Merges rows into observations/sync_state.json (keyed by band; other
 producers' rows preserved) and appends band_drift_history.jsonl.
 """
-import json, os, re, subprocess, time
+import json, os, re, signal, subprocess, time
 
 import numpy as np
+import pro_lease
 
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 ENV = dict(os.environ,
            DYLD_LIBRARY_PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/libhackrf/src")
-ONE = "0000000000000000922c63dc21748847"
-PRO = os.environ.get("PRO_SERIAL", "0000000000000000645061de252d6613")  # Pro#2 (Pro#1 977c… dead 2026-08-27, hw power fault)
+PRO = pro_lease.PRODUCTION_SERIAL  # Pro#2; no runtime retargeting
 EX = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/target/release/examples"
 SBAS = f"{EX}/sbas_acq"
 ACQ = f"{EX}/acquire_file"
@@ -84,87 +84,133 @@ ROTATING = {"GPS L1 C/A", "Galileo E1", "GLONASS G1", "BeiDou B1I",
 # ATSC pilots are owned by phase_producer.py now — see module docstring.
 
 
-def pro_owned():
-    """True while live_radio owns the Pro (the 24/7 tracker — AGENTS.md law).
-    The gate is the law itself, not a micro-mechanism: a second
-    hackrf_transfer against the busy Pro fails inside hackrf_open
-    (libusb set_configuration + claim_interface — the claim is at OPEN,
-    not start_rx), so no register writes ever land; the earlier commit's
-    EP0-retune story was WRONG (round-14 review). What contending cycles
-    actually did: process churn + 80 MB /tmp snapshot writes + acquisition
-    spawns coincided with stream gaps and tracker-wide reseeds (the
-    14:04:40 collapse followed a 131 ms stream gap; the gap's source is
-    correlation, not proof). What is verified: zero realigns and zero big
-    gaps since this gate went in. Unknown -> owned (fail closed)."""
+def unmanaged_pro_owned():
+    """Transitional diagnostic for a pre-lease live_radio process.
+
+    The atomic lease is the mutex.  This check runs only after acquiring it
+    and fails closed if process inspection is unavailable.
+    """
     try:
-        out = subprocess.run(["pgrep", "-f", "examples/live_radio"],
-                             capture_output=True, text=True).stdout.split()
-        return bool(out)
+        for pattern in ("hackrf_transfer", "examples/live_radio"):
+            result = subprocess.run(["pgrep", "-fl", pattern],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode not in (0, 1):
+                return True
+            if any(PRO in line for line in result.stdout.splitlines()):
+                return True
+        return False
     except Exception:
         return True
 
 
 def transfer(serial, f_hz, seconds, path, lna="32", vga="44", bias=False):
-    if serial == PRO and pro_owned():
-        return False
-    n = int(FS * seconds)
-    # Never let a leftover capture pass for a fresh one (round-11 review: a
-    # days-old file of the right size used to count as a successful capture
-    # and published stale IQ under a fresh epoch).
+    if serial != pro_lease.PRODUCTION_SERIAL:
+        raise pro_lease.ProLeaseProtocolError(
+            f"band_producer is fixed to production Pro {pro_lease.PRODUCTION_SERIAL}")
+    lease = None
     try:
-        os.unlink(path)
-    except OSError:
-        pass
-    t0 = time.time()
-    cmd = [f"{TOOLS}/hackrf_transfer", "-d", serial, "-f", str(int(f_hz)),
-           "-s", "8000000", "-l", lna, "-g", vga, "-a", "0",
-           "-n", str(n), "-r", path]
-    if bias:
-        cmd += ["-p", "1"]
-    try:
-        subprocess.run(cmd, capture_output=True, text=True,
-                       timeout=seconds + 30, env=ENV)
-    except Exception:
+        lease = pro_lease.acquire_client(
+            pro_lease.DEFAULT_OBS, f"band_producer snapshot {int(f_hz)}Hz", PRO)
+    except pro_lease.ProLeaseUnavailable:
         return False
+    except pro_lease.ProLeaseError as exc:
+        # A malformed/unwritable ownership state is not normal tracker
+        # contention.  Stop the producer instead of silently aging rows
+        # forever under a broken mutex.
+        print(f"band_producer: FATAL lease protocol failure: {exc}", flush=True)
+        raise
     try:
-        st = os.stat(path)
-    except OSError:
-        return False
-    return st.st_size >= n * 2 and st.st_mtime >= t0 - 1.0
+        # Protect a deployment transition where an old tracker process may
+        # predate the shared lease.  This is diagnostic defense-in-depth,
+        # not permission to open the radio.
+        if unmanaged_pro_owned():
+            return False
+        n = int(FS * seconds)
+        # Never let a leftover capture pass for a fresh one (round-11 review:
+        # a days-old file of the right size used to count as a successful
+        # capture and published stale IQ under a fresh epoch).
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"band_producer: refusing stale capture path {path}: {exc}",
+                  flush=True)
+            return False
+        t0 = time.time()
+        cmd = [f"{TOOLS}/hackrf_transfer", "-d", serial, "-f", str(int(f_hz)),
+               "-s", "8000000", "-l", lna, "-g", vga, "-a", "0",
+               "-n", str(n), "-r", path]
+        if bias:
+            cmd += ["-p", "1"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=seconds + 30, env=ENV)
+        except Exception:
+            return False
+        if result.returncode != 0:
+            return False
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        return st.st_size == n * 2 and st.st_mtime >= t0 - 1.0
+    finally:
+        if lease is not None:
+            try:
+                lease.release()
+            except pro_lease.ProLeaseError as exc:
+                # The persistent lock remains fail-closed.  Do not continue
+                # as if the radio were safely available.
+                print(f"band_producer: FATAL lease release failure: {exc}", flush=True)
+                raise
 
 
-def sync_producer_ctl(sig):
-    """Pause/resume the 2-s SPI poller so Pro snapshots open cleanly."""
-    try:
-        out = subprocess.run(["pgrep", "-f", "sync_producer.py"],
-                             capture_output=True, text=True).stdout.split()
-        for pid in out:
-            subprocess.run(["kill", sig, pid], capture_output=True)
-    except Exception:
-        pass
+def pause_sync_producer():
+    """Pause only real Python pollers; process-query failure is fatal."""
+    stopped = []
+    for pid in pro_lease.running_python_script_pids("sync_producer.py"):
+        try:
+            os.kill(pid, signal.SIGSTOP)
+            stopped.append(pid)
+        except OSError as exc:
+            resume_sync_producer(stopped)
+            raise pro_lease.ProLeaseProtocolError(
+                f"could not pause exact sync_producer pid {pid}: {exc}") from exc
+    return stopped
+
+
+def resume_sync_producer(pids):
+    """Resume the exact PIDs paused by this capture; never re-query by text."""
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except OSError as exc:
+            # A stopped legacy poller is an availability problem, while
+            # pretending it resumed would make the next maintenance decision
+            # unsafe. Stop this producer and require operator inspection.
+            raise pro_lease.ProLeaseProtocolError(
+                f"could not resume exact sync_producer pid {pid}: {exc}") from exc
 
 
 def clkin_ok():
-    """CLKIN-lock check on the One. The One is now held full-time by
-    phase_producer.py, so the device usually can't be opened here —
-    return None (unknown) in that case instead of a false LOST alarm."""
-    try:
-        r = subprocess.run([f"{TOOLS}/hackrf_clock", "-d", ONE, "-i"],
-                           capture_output=True, text=True, timeout=10, env=ENV)
-        if "CLKIN status" not in r.stdout:
-            return None                     # busy / unreadable, not "lost"
-        return "clock signal detected" in r.stdout
-    except Exception:
-        return None
+    """Return unknown without competing for the phase producer's One.
+
+    The One is a full-time streaming device.  Opening it with ``hackrf_clock``
+    merely to obtain a usually-busy read is not an ownership-safe liveness
+    check.  The retained bench probe and phase/series telemetry carry the
+    qualified evidence instead.
+    """
+    return None
 
 
 def measure_waas():
     """Discrete 5-s L1 snapshot on the Pro -> WAAS GEO Dopplers via sbas_acq."""
-    sync_producer_ctl("-STOP")
+    stopped = pause_sync_producer()
     try:
         ok = transfer(PRO, L1_HZ, 5.0, L1_SNAP, lna="40", vga="46", bias=True)
     finally:
-        sync_producer_ctl("-CONT")
+        resume_sync_producer(stopped)
     if not ok:
         return None, None
     d = np.fromfile(L1_SNAP, dtype=np.int8).astype(np.float32)
@@ -251,11 +297,11 @@ def sat_list(hits):
 
 def snap(f_hz, secs, path):
     """Discrete Pro snapshot, guarded against the 2-s SPI poller."""
-    sync_producer_ctl("-STOP")
+    stopped = pause_sync_producer()
     try:
         return transfer(PRO, f_hz, secs, path, lna="40", vga="46", bias=True)
     finally:
-        sync_producer_ctl("-CONT")
+        resume_sync_producer(stopped)
 
 
 def measure_galileo():
@@ -303,11 +349,11 @@ def measure_gps():
 
 
 def measure_glonass():
-    sync_producer_ctl("-STOP")
+    stopped = pause_sync_producer()
     try:
         ok = transfer(PRO, GLO_HZ, 5.0, GLO_SNAP, lna="40", vga="46", bias=True)
     finally:
-        sync_producer_ctl("-CONT")
+        resume_sync_producer(stopped)
     if not ok:
         return None
     try:
@@ -324,11 +370,11 @@ def measure_glonass():
 
 
 def measure_beidou():
-    sync_producer_ctl("-STOP")
+    stopped = pause_sync_producer()
     try:
         ok = transfer(PRO, B1I_HZ, 6.0, BDS_SNAP, lna="40", vga="46", bias=True)
     finally:
-        sync_producer_ctl("-CONT")
+        resume_sync_producer(stopped)
     if not ok:
         return None
     try:
@@ -351,6 +397,11 @@ def consensus(rows):
 
 
 def main():
+    requested_serial = os.environ.get("PRO_SERIAL", PRO)
+    if requested_serial != PRO:
+        print(f"band_producer: FATAL PRO_SERIAL must equal production Pro {PRO}",
+              flush=True)
+        return 78
     while True:
         epoch = time.time()
         rows, hist = [], {"t": epoch}
@@ -529,8 +580,12 @@ def main():
             except Exception:
                 state = {}
             state["epoch"] = epoch
+            # The One belongs to phase_producer.  Never refresh a historical
+            # CLKIN probe merely because this unrelated producer heartbeats.
+            state.setdefault("clock", {})["clkin_signal_present"] = None
             tmp = STATE + ".band.tmp"
-            json.dump(state, open(tmp, "w"), indent=1)
+            with open(tmp, "w") as fh:
+                json.dump(state, fh, indent=1)
             os.replace(tmp, STATE)
             time.sleep(45)
             continue
@@ -568,23 +623,21 @@ def main():
         state["sources"] = srcs
         state["epoch"] = epoch
         state.setdefault("clock", {})
-        # ATSC rows/residual_ppm/atsc_spread_ppm are owned by
-        # phase_producer.py now; nothing to update here.
+        # ATSC rows/residual_ppm are owned by phase_producer.py now. The old
+        # two-channel atsc_spread_ppm observable is retired, not refreshed.
         if mean is not None:
             # single-owner law (round-10): the cross-producer consensus_ppm
             # belongs to series_producer (state.series.json); this band-local
             # mean keeps its own key so the two never merge-race.
             state["band_consensus_ppm"] = round(mean, 4)
         state["alerts"] = alerts
-        # CLKIN tri-state (round-8/9b reviews): the r9 probe measures the
-        # CLKIN pin frequency in a 9-11 MHz window — i.e. "a 10 MHz-class
-        # signal is present", NOT proof the One's clocks run from it (that
-        # depends on the input switch state, which this read can't see; and
-        # the One is held full-time by phase_producer so the read usually
-        # can't even open it -> None). Never let "cabled" read as "locked".
+        # The historical bench probe established signal presence while the
+        # One was free. This producer never opens the streaming One, so its
+        # live value is deliberately unknown; phase/series carry soft liveness.
         state.setdefault("clock", {})["clkin_signal_present"] = locked
         tmp = STATE + ".band.tmp"   # unique tmp: sync/phase producers share STATE
-        json.dump(state, open(tmp, "w"), indent=1)
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=1)
         os.replace(tmp, STATE)
         with open(HIST, "a") as fh:
             fh.write(json.dumps(hist) + "\n")
@@ -592,4 +645,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

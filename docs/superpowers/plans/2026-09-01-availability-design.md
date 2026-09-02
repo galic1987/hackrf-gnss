@@ -1,5 +1,14 @@
 # Availability Design — breaking the n_sat>=5 wall (2026-09-01)
 
+> **Operational erratum (2026-09-01):** the proposed `<5 s` hot recovery is
+> infeasible under the proven Pro restart law. After unexpected stream EOF,
+> `tracker_producer` now raises a reset-required maintenance gate and exits 78;
+> it must not reopen until an operator acquires the token-owned lease, resets
+> the board, restores production state, releases the gate, and starts a fresh
+> tracker. A hot-recovery target may return only after a new continuity
+> mechanism proves that restart without reset is reliable. Lever 3 below is
+> therefore prevention/root-cause work, not automatic recovery.
+
 Three-analyst panel + synthesis over 24 h of sky_history (2,890 epochs), 9 days of
 satellite.parquet (2.59 M rows), live v4 clock_bias.jsonl (5,495 rows), and the
 v4 solve path read end-to-end. Adversarially grounded; projection arithmetic was
@@ -48,7 +57,7 @@ pseudorange.
 |---|---|---|---|---|
 | 1 | Galileo E1B ranging (I/NAV TOW anchor, RINEX GAL eph + BGD, drop sys filter) | +1.64 sats; P(n_sat≥5) 0.371→0.598 alone | fleet-code (largest: I/NAV decode) | fleet |
 | 2 | SBAS GEO ranging (PRN 131/135; MT9 eph already decoded) | +1.7 sats at ~100% duty, building-immune | fleet-code (small) | fleet |
-| 3 | Producer stability (fix stream-EOF restarts, fast hot-recovery) + slip-tolerant gate (drop the slipped sat, keep the epoch; safe at n_sat≥6) | recovers ~4.5 h/day; MANDATORY for the hour | fleet-code | fleet |
+| 3 | Producer stability (prevent/root-cause stream EOF; no hot reopen) + slip-tolerant gate (drop the slipped sat, keep the epoch; safe at n_sat≥6) | avoids up to ~4.5 h/day only if failures are prevented; MANDATORY for the hour | fleet-code + reset-required operations | fleet/operator |
 | 4 | Acquisition tuning (rediscovery 900→120-300 s; threshold 2.5→~2.0 seeded) | attacks the −10 sky→tracker loss; est. +1–3 tracked | config/fleet | fleet |
 | 5 | Antenna re-siting to full-sky/zenith view (the GPS patch — the ClearStream on the One is the ATSC anchor, not a GNSS lever) | +14 visible, ~+4 tracked; margin + geometry, NOT required for the hour | bench, scheduled window | operator |
 | 6 | A/B gate: publish flagged (ab_membership_match:false + both n_sat) instead of silent skip | ~0 availability; pure observability | trivial | fleet |
@@ -60,8 +69,10 @@ pseudorange.
 Projected published n_sat {5:2%, 6:19%, 7:39%, 8:28%, 9:9%, 10:2%}, mean 7.3,
 P(≥5)=1.00, P(≥6)=0.98. Measured counterfactual: a real 420 s total-outage window
 re-scored with GAL+SBAS ranging → 412/412 epochs publishable, 95.4% quality.
-Longest quality segment: 193 s today → tens of minutes on 1+2 → hour-scale once
-restarts and slip handling (3) land. Fallback if strict slips==0 is
+Longest quality segment: 193 s today → tens of minutes on 1+2 → hour-scale only
+after stream failures are prevented (<2/day) and slip handling (3) lands. A
+failure still incurs the bounded operator reset transaction; it is not a
+five-second hot recovery. Fallback if strict slips==0 is
 non-negotiable: re-register leg-1 as "≥98% quality epochs over 3,600 s, no gap
 >30 s" — reachable on 1+2 alone.
 
@@ -70,6 +81,9 @@ non-negotiable: re-register leg-1 as "≥98% quality epochs over 3,600 s, no gap
 - Lever 1: GAL rho_m non-null on live rows; residual RMS not degraded (GGTO/ISB
   folds into the existing unmodeled ISB — watch it); A/B gate exercised.
 - Lever 2: PRN 131/135 rho rows flagged as GEO-class for leg-1 weighting.
-- Lever 3: restarts <2/day or hot-recovery <5 s; slip-drop only at n_sat≥6.
+- Lever 3: unexpected stream failures <2/day through demonstrated prevention;
+  no automatic/hot reopen. Every remaining EOF must leave the reset-required
+  gate active and require the operator reset transaction. Slip-drop only at
+  n_sat≥6.
 - Lever 6: at least one flagged mismatch observed in a week, or the gate is
   provably never tripping (either answer is information — today it's neither).

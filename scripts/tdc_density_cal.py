@@ -52,6 +52,11 @@ CAPTURE_SCHEMA = "hackrf-pro-tdc-trigger-read-v2"
 CAPTURE_PROTOCOL = "held-mailbox-handshake-v2"
 MANIFEST_SCHEMA = "hackrf-fpga-manifest-v2"
 TDC_ABI = "0xA2"
+RETIRED_MANUAL_TIMING_FIELDS = (
+    "manual_adclk_audit_receipt",
+    "manual_adclk_timing_report",
+    "manual_adclk_asc",
+)
 MAX_JSON_LINE_BYTES = 64 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_JSON_NUMBER_CHARS = 128
@@ -795,20 +800,26 @@ def _load_artifact_manifest(
                 failures.append(
                     f"manifest timing {name} manual_adclk_path_audit must be boolean"
                 )
-            elif slot != 0 and manual_audit:
+            elif manual_audit is not False:
                 failures.append(
                     f"manifest timing {name} manual_adclk_path_audit must be false"
                 )
-            elif slot == 0 and isinstance(clocks, dict):
+            if any(entry.get(field) is not None
+                   for field in RETIRED_MANUAL_TIMING_FIELDS):
+                failures.append(
+                    f"manifest timing {name} carries a retired manual timing "
+                    "waiver receipt/artifact"
+                )
+            if slot == 0 and isinstance(clocks, dict):
                 adclk_mhz = _finite_float(clocks.get("adclk_clk_$glb_clk"))
                 if adclk_mhz is None or adclk_mhz <= 0.0:
                     failures.append(
                         "manifest slot-0 timing must record adclk_clk_$glb_clk"
                     )
-                elif manual_audit is not (adclk_mhz < 40.0):
+                elif adclk_mhz < 40.0:
                     failures.append(
-                        "manifest slot-0 manual_adclk_path_audit must be true "
-                        "exactly when aggregate adclk timing is below 40 MHz"
+                        "manifest slot-0 aggregate adclk timing must be at least "
+                        "40 MHz; manual waivers are not release evidence"
                     )
 
     if failures:

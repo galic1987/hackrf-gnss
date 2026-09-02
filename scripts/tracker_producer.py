@@ -5,11 +5,13 @@ Wraps examples/live_radio, which OWNS the HackRF Pro: 16 Msps centred on
 1568.25 MHz (spans 1560.25-1576.25: BeiDou B1I 1561.098 + GPS L1 1575.42 +
 Galileo E1 + WAAS/SBAS in one capture), bias-tee ON for the AA.250. The
 radio-owning design replaced hackrf_transfer + FIFO because hackrf_open is
-exclusive: with a transfer process holding the claim, the clock-correction
-register was unreachable and the v1 discipline loop had no actuator.
-live_radio closes the clock loop in-process (WAAS GEO Doppler -> correction
-register, slew-limited, stall-detected, sign-probed) and prints one JSON
-line per tracked PRN per second plus {"discipline": {...}} per cycle.
+exclusive.  live_radio computes and publishes the WAAS-GEO clock-discipline
+proposal in SHADOW mode, but it has no correction-write call and the streaming
+control handle exposes no clock-correction command: the 122/122 historical
+writes collapsed all tracker locks. The Rust transport exposes no direct or
+streaming clock-correction write API.
+It prints one JSON line per tracked PRN per second plus
+{"discipline": {...}} per cycle.
 
 This wrapper maintains per-satellite state and publishes ONLY its own file,
 observations/state.tracker.json (tmp + os.replace; the Rust server
@@ -30,16 +32,20 @@ deep-merges all observations/state.*.json at /api/sync read time):
   "L1 / WAAS (live)" (distinct from band_producer's snapshot row
   "L1 / WAAS") — this upgrades the consensus voter to a 1 Hz cadence.
 
-Radio discipline: band_producer still runs and keeps taking its snapshot
-transfers on the Pro; while this producer owns the radio those fail and its
-rows go stale — ACCEPTABLE (its retention logic keeps old rows dimmed; the
-upper-band rotation is effectively paused). band_producer is NOT killed.
+Radio discipline: this wrapper and band_producer share the atomic lease in
+scripts/pro_lease.py.  The tracker holds it for the complete live_radio child
+lifetime; band snapshots skip while it is held and their rows age.  A
+maintenance gate blocks both before the tracker is stopped, so band_producer
+cannot seize the just-freed device.  pgrep is diagnostic only, never the
+ownership primitive. band_producer is NOT killed during normal operation.
 sync_producer is paused (SIGSTOP) only during startup. The OTHER
 radio (HackRF One ...922c63dc21748847, phase producer) is strictly
 off-limits — this script never touches it.
 
-If the tracker dies (USB hiccup), it is relaunched after a short pause; the
-seed cache brings tracking back in ~15-30 s.
+If the tracker dies (USB hiccup/EOF), this wrapper raises a durable
+reset-required maintenance gate and exits 78. It never reopens the Pro in the
+same process: hardware history requires an immediate board reset before a
+reliable restart. The seed cache only accelerates the post-reset reacquisition.
 """
 import json
 import os
@@ -49,6 +55,8 @@ import sys
 import threading
 import time
 
+import pro_lease
+
 TOOLS = "/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/hackrf-tools/src"
 ENV = dict(os.environ,
            DYLD_LIBRARY_PATH="/Volumes/Radiator 8TB/mac-archive/hackrf/host/build/libhackrf/src")
@@ -56,79 +64,153 @@ PRO = os.environ.get("PRO_SERIAL", "0000000000000000645061de252d6613")  # Pro#2 
 FS = 16_000_000
 FC = 1_568_250_000
 STATE = "/Volumes/Radiator 8TB/gnss/observations/state.tracker.json"
+FAILURE_TOKEN_FILE = (pro_lease.DEFAULT_OBS /
+                      "tracker-reset-required.maintenance.token")
 # live_radio owns the radio itself (hackrf_open is exclusive — with a
 # separate hackrf_transfer holding the claim, NOTHING else could steer the
 # clock-correction register; that was the v1 discipline actuator dead-end).
 TRACKER = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/target/release/examples/live_radio"
+UNBLOCKED_EXEC = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/scripts/exec_unblocked.py"
 L1_HZ = 1575.42e6
 C_MPS = 299792458.0
 MY_BAND = "L1 / WAAS (live)"
 
 _xfer = None          # hackrf_transfer child
 _rust = None          # live_track child
+_pro_lease = None     # atomic lease held for the complete child lifetime
 
 
 def log(msg):
     print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
 
 
-def pro_busy():
-    """True if another hackrf_transfer command line mentions the Pro."""
+def unmanaged_pro_busy():
+    """Transitional diagnostic after acquiring the real lease.
+
+    This catches an old, non-lease-aware live_radio/hackrf_transfer process.
+    Query failure is busy (fail closed).  It is not the mutex.
+    """
     try:
-        out = subprocess.run(["pgrep", "-fl", "hackrf_transfer"],
-                             capture_output=True, text=True).stdout
-    except Exception:
+        for pattern in ("hackrf_transfer", "examples/live_radio"):
+            result = subprocess.run(["pgrep", "-fl", pattern],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode not in (0, 1):
+                return True
+            if any(PRO in line for line in result.stdout.splitlines()):
+                return True
         return False
-    me = str(os.getpid())
-    return any(PRO in line and me not in line for line in out.splitlines())
+    except Exception:
+        return True
 
 
-def wait_for_pro():
-    while pro_busy():
-        log("another hackrf_transfer holds the Pro — waiting")
-        time.sleep(3)
+def wait_for_pro_lease():
+    """Wait without opening hardware until the gate and lease both permit it."""
+    global _pro_lease
+    while True:
+        previous_mask = None
+        try:
+            # Do not allow a graceful signal in the mkdir→global-owner gap;
+            # SIGKILL may still leave a stale lock, intentionally fail-closed.
+            if hasattr(signal, "pthread_sigmask"):
+                previous_mask = signal.pthread_sigmask(
+                    signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+            lease = pro_lease.acquire_client(
+                pro_lease.DEFAULT_OBS, "tracker_producer/live_radio", PRO)
+            _pro_lease = lease
+        except pro_lease.ProLeaseUnavailable as exc:
+            log(f"Pro lease unavailable — {exc}; waiting")
+            time.sleep(3)
+            continue
+        except pro_lease.ProLeaseError as exc:
+            log(f"FATAL: Pro lease protocol failure — {exc}")
+            raise
+        finally:
+            if previous_mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        if unmanaged_pro_busy():
+            lease.release()
+            _pro_lease = None
+            log("unmanaged legacy Pro owner detected after lease — waiting")
+            time.sleep(3)
+            continue
+        return lease
 
 
 def sync_producer_pids():
-    try:
-        out = subprocess.run(["pgrep", "-f", "sync_producer.py"],
-                             capture_output=True, text=True).stdout
-        return [int(p) for p in out.split() if int(p) != os.getpid()]
-    except Exception:
-        return []
+    """Real Python pollers only; parent-shell launch text never matches."""
+    return pro_lease.running_python_script_pids("sync_producer.py")
 
 
 def pause_sync_producer():
     """SIGSTOP sync_producer during transfer startup only (it polls the same
     USB); returns the pids so the caller can SIGCONT them right after."""
-    pids = sync_producer_pids()
-    for p in pids:
+    stopped = []
+    for p in sync_producer_pids():
         try:
             os.kill(p, signal.SIGSTOP)
-        except Exception:
-            pass
-    return pids
+            stopped.append(p)
+        except OSError as exc:
+            for prior in stopped:
+                try:
+                    os.kill(prior, signal.SIGCONT)
+                except OSError:
+                    pass
+            raise pro_lease.ProLeaseProtocolError(
+                f"could not pause exact sync_producer pid {p}: {exc}") from exc
+    return stopped
 
 
 def open_stream():
-    """Launch the radio-owning tracker; return the process."""
-    global _rust
-    wait_for_pro()
-    stopped = pause_sync_producer()
+    """Acquire the lease, launch the tracker, and return both."""
+    global _rust, _pro_lease
+    lease = wait_for_pro_lease()
+    stopped = []
+    rust = None
+    previous_mask = None
     try:
-        rust_err = open("/tmp/live_track.stderr.log", "ab", buffering=0)
-        rust = subprocess.Popen([TRACKER, PRO], env=ENV,
-                                stdout=subprocess.PIPE,
-                                stderr=rust_err, text=False)
+        stopped = pause_sync_producer()
+        # Keep graceful shutdown signals blocked from immediately before
+        # Popen until the child is stored globally.  Without this, SIGTERM in
+        # the Popen->_rust gap can release the lease while live_radio remains
+        # alive and owns the USB device.
+        if hasattr(signal, "pthread_sigmask"):
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+        child_env = dict(ENV)
+        child_env["HACKRF_PRO_LEASE_TOKEN"] = lease.token
+        with open("/tmp/live_track.stderr.log", "ab", buffering=0) as rust_err:
+            rust = subprocess.Popen([sys.executable, UNBLOCKED_EXEC, TRACKER, PRO],
+                                    env=child_env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=rust_err, text=False)
         _rust = rust
         log(f"tracker (radio-owning) pid {rust.pid}")
-        return None, rust
+        return None, rust, lease
+    except Exception:
+        # A child that reached Popen may already have opened the board.  Prove
+        # it stopped and arm the reset-required gate before freeing ownership.
+        child_stopped = terminate_child(rust)
+        gate_safe = rust is None
+        if rust is not None and child_stopped:
+            gate_safe = arm_reset_required_gate()
+        if child_stopped and gate_safe:
+            try:
+                lease.release()
+                if _pro_lease is lease:
+                    _pro_lease = None
+            except pro_lease.ProLeaseError as exc:
+                log(f"FATAL: startup lease release failed: {exc}")
+        else:
+            log("FATAL: startup child/gate state unproven; retaining Pro lease")
+        raise
     finally:
         for p in stopped:
             try:
                 os.kill(p, signal.SIGCONT)
             except Exception:
                 pass
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def read_consensus():
@@ -207,19 +289,10 @@ def publish(sats, now, disc=None):
             
         mean_d = sum_d / len(waas)
         ppm = mean_d / L1_HZ * 1e6
-        # doppler_hz is measured AFTER the hardware clock-correction register
-        # (resid = raw - corr, per the discipline march). Every other drift
-        # voter (ATSC ch35 via CLKOUT, PC clock) measures the RAW TCXO, so
-        # add the correction back — otherwise the row votes ~0 into a
-        # consensus of -0.47 and pulls it to a meaningless midpoint.
-        # BUT (review round 6): the cache is historical intent, not applied
-        # truth — after the restart procedure's board reset the register is
-        # unity while the cache still believes. Add back only a correction
-        # this live_radio process verifiably wrote (actuate + corr_applied).
-        disc_d = disc or {}
-        corr = disc_d.get("correction_ppm") or 0.0
-        if disc_d.get("actuate") and disc_d.get("corr_applied"):
-            ppm += corr
+        # Production live_radio is enforced SHADOW-only. correction_ppm is a
+        # proposal and applied_correction_readback is false, so it must never
+        # be added to this measured Doppler row as though it were hardware
+        # truth.
         srcs.append({
             "band": MY_BAND,
             "name": "WAAS GEO Doppler (MT9 GeoCorrected) · Pro+AA.250, 1 Hz tracker",
@@ -235,34 +308,95 @@ def publish(sats, now, disc=None):
     if srcs:
         state["sources"] = srcs
     tmp = STATE + ".tracker.tmp"
-    json.dump(state, open(tmp, "w"), indent=1)
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=1)
     os.replace(tmp, STATE)
     return len(waas)
 
 
+def terminate_child(p):
+    """Gracefully stop one child; never free its lease while it may be alive."""
+    if not p or p.poll() is not None:
+        return True
+    try:
+        p.terminate()
+        p.wait(timeout=5)
+        return p.poll() is not None
+    except Exception as exc:
+        log(f"child pid {getattr(p, 'pid', '?')} did not stop cleanly: {exc}")
+        return False
+
+
+def arm_reset_required_gate():
+    """Block every new Pro owner after an unexpected tracker failure.
+
+    This runs while the tracker lease is still held.  If an operator already
+    gated maintenance, that gate is sufficient.  Otherwise create a durable
+    token next to observations so the reset runbook can acquire/release it.
+    Failure to prove a gate returns False and the caller retains its lease.
+    """
+    if pro_lease.maintenance_gate_active(pro_lease.DEFAULT_OBS):
+        log("maintenance gate already active after tracker failure")
+        return True
+    try:
+        pro_lease.create_maintenance_gate(
+            pro_lease.DEFAULT_OBS,
+            "tracker-failure-reset-required",
+            FAILURE_TOKEN_FILE,
+            PRO,
+        )
+        log(f"RESET REQUIRED: maintenance gate armed; token {FAILURE_TOKEN_FILE}")
+        return True
+    except pro_lease.ProLeaseError as exc:
+        # A concurrent operator gate may have won after our first check.
+        if pro_lease.maintenance_gate_active(pro_lease.DEFAULT_OBS):
+            log("maintenance gate won tracker-failure race")
+            return True
+        log(f"FATAL: could not arm reset-required gate: {exc}")
+        return False
+
+
 def shutdown(*_):
-    for p in (_rust, _xfer):
+    global _pro_lease
+    children_stopped = all([terminate_child(p) for p in (_rust, _xfer)])
+    gate_safe = _pro_lease is None
+    release_ok = True
+    if children_stopped and _pro_lease:
+        gate_safe = arm_reset_required_gate()
+    if children_stopped and gate_safe:
         try:
-            if p and p.poll() is None:
-                p.terminate()
-        except Exception:
-            pass
-    sys.exit(0)
+            if _pro_lease:
+                _pro_lease.release()
+                _pro_lease = None
+        except Exception as exc:
+            log(f"FATAL: Pro lease release failed during shutdown: {exc}")
+            release_ok = False
+    else:
+        log("FATAL: gate/child state unproven; leaving atomic lease in place")
+    sys.exit(0 if children_stopped and gate_safe and release_ok else 78)
 
 
 def main():
+    global _pro_lease
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    if "HACKRF_GNSS_ACTUATE" in os.environ:
+        log("FATAL: HACKRF_GNSS_ACTUATE is retired; production tracker is SHADOW-only")
+        return 78
+    if PRO != pro_lease.PRODUCTION_SERIAL:
+        log(f"FATAL: PRO_SERIAL must be exact production serial {pro_lease.PRODUCTION_SERIAL}")
+        return 78
     log(f"tracker producer starting — {FS/1e6:.0f} Msps @ {FC/1e6:.3f} MHz "
         f"(B1I+L1+E1+SBAS), Pro {PRO}")
     while True:
-        xfer, rust = None, None
+        xfer, rust, lease = None, None, None
         try:
-            xfer, rust = open_stream()
+            xfer, rust, lease = open_stream()
             sats = {}            # (sys, prn) -> latest report dict
             disc = {}            # latest discipline line from live_radio
             lock = threading.Lock()
             dead = threading.Event()
+            contract_violation = []
 
             def reader():
                 while True:
@@ -276,8 +410,14 @@ def main():
                         continue
                     with lock:
                         if "discipline" in r:
+                            d = r["discipline"]
+                            if d.get("actuate") or d.get("corr_applied"):
+                                contract_violation.append(
+                                    "live_radio reported forbidden clock actuation")
+                                dead.set()
+                                return
                             disc.clear()
-                            disc.update(r["discipline"])
+                            disc.update(d)
                         else:
                             # r["epoch"] is the SAMPLE-ACCURATE stream epoch
                             # (3107967) and lags wall clock by the engine's
@@ -316,22 +456,29 @@ def main():
                             f"{nwaas} WAAS in drift row")
                         last_n = len(snap)
                 time.sleep(0.2)
+            if contract_violation:
+                raise RuntimeError(contract_violation[0])
             raise RuntimeError("tracker stdout EOF")
         except Exception as e:
-            log(f"stream problem: {e} — reopening")
+            log(f"stream problem: {e} — automatic reopen forbidden; board reset required")
         finally:
-            for p in (rust, xfer):
+            children_stopped = all([terminate_child(p) for p in (rust, xfer)])
+            gate_safe = lease is None
+            if children_stopped and lease:
+                gate_safe = arm_reset_required_gate()
+            if children_stopped and gate_safe:
                 try:
-                    if p and p.poll() is None:
-                        p.terminate()
-                        p.wait(timeout=5)
-                except Exception:
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
-        time.sleep(2)
+                    if lease:
+                        lease.release()
+                except Exception as e:
+                    log(f"FATAL: Pro lease release failed: {e}")
+                else:
+                    if _pro_lease is lease:
+                        _pro_lease = None
+            else:
+                log("FATAL: reset gate/child state unproven; lease retained, wrapper stopping")
+        return 78
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -4,7 +4,7 @@
 //! the matching doppler_fix invocation.
 //!
 //! usage: pass_windows <tle_path> [hours_ahead] [min_elevation_deg]
-use hackrf_gnss::gps::{geodetic_to_ecef, load_tle_named, GpsSat};
+use hackrf_gnss::gps::{GpsSat, geodetic_to_ecef, load_tle_named};
 use hackrf_gnss::pass::find_windows;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,15 +72,27 @@ fn main() {
         .into_iter()
         .filter(|s| !s.name.contains("DEB") && seen.insert(s.name.clone()))
         .collect();
-    let t0 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+    let t0 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
     let age_days = sats.iter().map(|s| t0 - s.epoch_unix).fold(0.0, f64::max) / 86400.0;
-    eprintln!("{} satellites (deduped), TLE oldest epoch {:.1} days before now", sats.len(), age_days);
-    eprintln!("window TIMES carry the TLE's along-track error (~seconds per day of age) -- plan, don't trust to the second");
+    eprintln!(
+        "{} satellites (deduped), TLE oldest epoch {:.1} days before now",
+        sats.len(),
+        age_days
+    );
+    eprintln!(
+        "window TIMES carry the TLE's along-track error (~seconds per day of age) -- plan, don't trust to the second"
+    );
 
     let rx = geodetic_to_ecef(RX_LAT, RX_LON, 0.0);
     let windows = find_windows(&sats, rx, RX_LAT, RX_LON, t0, hours, 30.0, min_el);
     if windows.is_empty() {
-        println!("no 2+ satellite windows above {:.0} deg in the next {:.0} h", min_el, hours);
+        println!(
+            "no 2+ satellite windows above {:.0} deg in the next {:.0} h",
+            min_el, hours
+        );
         return;
     }
     for (i, w) in windows.iter().enumerate() {
@@ -94,7 +106,10 @@ fn main() {
             w.quality
         );
         for s in &w.sats {
-            println!("     {:<18} el max {:4.1}  az {:5.1}..{:5.1}", s.name, s.el_max, s.az_min, s.az_max);
+            println!(
+                "     {:<18} el max {:4.1}  az {:5.1}..{:5.1}",
+                s.name, s.el_max, s.az_min, s.az_max
+            );
         }
     }
     println!();
@@ -103,12 +118,20 @@ fn main() {
         let n = (dur_s * FS) as u64;
         let epoch = w.t_start as u64;
         let path = format!("/tmp/iri_pass_{}.iq", epoch);
-        println!("#{} capture (start {} = {}):", i + 1, epoch, local_string(w.t_start));
         println!(
-            "  hackrf_transfer -d 0000000000000000977c64de2b557213 -f 1626250000 -s 4000000 -l 40 -g 46 -p 1 -a 0 -n {} -r {}",
-            n * 2, path
+            "#{} capture (start {} = {}):",
+            i + 1,
+            epoch,
+            local_string(w.t_start)
         );
-        println!("  then: ./target/release/examples/doppler_fix {} --cap {},{:.0},4000000,8,{}", &a[1], path, dur_s, epoch);
+        println!(
+            "  capture recipe intentionally omitted: use the current maintenance-locked runbook with an explicit full serial and reviewed RF power/gain state ({} complex samples -> {})",
+            n, path
+        );
+        println!(
+            "  then: ./target/release/examples/doppler_fix {} --cap {},{:.0},4000000,8,{}",
+            &a[1], path, dur_s, epoch
+        );
         println!("  (epoch is the transfer START; if you timestamp late, use mtime - dur instead)");
     }
 }

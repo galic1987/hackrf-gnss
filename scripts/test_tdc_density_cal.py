@@ -822,7 +822,7 @@ def test_duplicate_keys_nan_and_missing_terminal_newline_fail_closed(tmp_path):
     assert "must end with a newline" in joined
 
 
-def test_manifest_must_cover_four_slots_timing_and_manual_adclk_audit(tmp_path):
+def test_manifest_must_cover_four_slots_and_reject_timing_waivers(tmp_path):
     data = tmp_path / "manifest_structure.jsonl"
     complete_capture(data, balanced_codes())
 
@@ -845,8 +845,34 @@ def test_manifest_must_cover_four_slots_timing_and_manual_adclk_audit(tmp_path):
     rewrite_manifest_and_rebind(data, unaudited_slow_adclk)
     slow = analyze_capture(data)
     assert slow["capture_integrity_valid"] is False
-    assert "manual_adclk_path_audit must be true" in (
+    assert "aggregate adclk timing must be at least 40 MHz" in (
         " ".join(slow["calibration_gate_fails"])
+    )
+
+    complete_capture(data, balanced_codes())
+
+    def manual_waiver(manifest):
+        entry = manifest["timing"][manifest["images"][0]["name"]]
+        entry["manual_adclk_path_audit"] = True
+
+    rewrite_manifest_and_rebind(data, manual_waiver)
+    waived = analyze_capture(data)
+    assert waived["capture_integrity_valid"] is False
+    assert "manual_adclk_path_audit must be false" in (
+        " ".join(waived["calibration_gate_fails"])
+    )
+
+    complete_capture(data, balanced_codes())
+
+    def legacy_receipt(manifest):
+        entry = manifest["timing"][manifest["images"][0]["name"]]
+        entry["manual_adclk_audit_receipt"] = {"claimed": "legacy waiver"}
+
+    rewrite_manifest_and_rebind(data, legacy_receipt)
+    receipt = analyze_capture(data)
+    assert receipt["capture_integrity_valid"] is False
+    assert "retired manual timing waiver receipt" in (
+        " ".join(receipt["calibration_gate_fails"])
     )
 
 
