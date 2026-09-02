@@ -19,13 +19,22 @@ use std::collections::HashMap;
 const MU_E: f64 = 3.986005e14; // WGS-84 gravitational parameter, m^3/s^2
 const OMEGA_E: f64 = 7.2921151467e-5; // Earth rotation rate, rad/s (ICD)
 const F_REL: f64 = -4.442807633e-10; // relativistic clock constant
+/// Galileo gravitational parameter (OS SIS ICD 2.1 Table 66) — equals the
+/// BDS value, NOT the GPS MU_E; omega_E is the GPS value (Table 66).
+pub const MU_GAL: f64 = 3.986004418e14;
+/// Galileo relativistic clock constant F = -2 sqrt(mu)/c^2 (ICD Eq. 15;
+/// GPS: -4.442807633e-10).
+pub const F_REL_GAL: f64 = -4.442807309e-10;
 const WEEK_S: f64 = 604800.0;
 const PI: f64 = std::f64::consts::PI;
 
 /// One satellite's broadcast ephemeris (SI units, angles in radians).
 /// `sys`: 0 = GPS, 1 = BeiDou (BDS ephemeris times are stored as
 /// GPST-equivalent seconds-of-week — BDT SOW + 14 s — so one t_tx timescale
-/// serves every constellation; see beidou_d1.rs).
+/// serves every constellation; see beidou_d1.rs), 2 = Galileo (GST is
+/// GPST-aligned — GST TOW == GPST TOW, GST WN 0 == GPS week 1024 — so
+/// toe/toc are stored unshifted and `week` is the continuous GPS-aligned
+/// week the RINEX E record carries; see parse_rinex_gal).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BrdcEph {
     #[serde(default)]
@@ -538,8 +547,15 @@ pub fn wrap_tk(mut tk: f64) -> f64 {
 
 /// Satellite ECEF position (metres) at GPS time-of-week `t` (IS-GPS-200 20-IV).
 pub fn sat_pos_ecef(e: &BrdcEph, t: f64) -> [f64; 3] {
+    sat_pos_ecef_impl(e, t, MU_E)
+}
+
+/// The shared Keplerian pipeline, mu-parameterized (spec 2026-09-02 §5.1:
+/// the Galileo user algorithm is the IS-GPS-200 Table 20-IV form verbatim —
+/// ICD Table 66 — so the constants are parameters, not a fork).
+fn sat_pos_ecef_impl(e: &BrdcEph, t: f64, mu: f64) -> [f64; 3] {
     let a = e.sqrt_a * e.sqrt_a;
-    let n0 = (MU_E / (a * a * a)).sqrt();
+    let n0 = (mu / (a * a * a)).sqrt();
     let tk = wrap_tk(t - e.toe);
     let mk = e.m0 + (n0 + e.delta_n) * tk;
     let ek = kepler_e(mk, e.e);
@@ -558,14 +574,260 @@ pub fn sat_pos_ecef(e: &BrdcEph, t: f64) -> [f64; 3] {
 
 /// Satellite clock correction dt_sv (seconds), incl. relativity and L1 group delay.
 pub fn sat_clock(e: &BrdcEph, t: f64) -> f64 {
+    sat_clock_impl(e, t, MU_E, F_REL)
+}
+
+/// Shared clock polynomial + relativity - group delay, constant-parameterized
+/// (the `- e.tgd` slot is TGD for GPS and BGD(E1,E5b) for Galileo — the ICD
+/// Eq. 17 single-frequency E1 correction has the same sign and shape).
+fn sat_clock_impl(e: &BrdcEph, t: f64, mu: f64, f_rel: f64) -> f64 {
     let dt = wrap_tk(t - e.toc);
     let poly = e.af0 + e.af1 * dt + e.af2 * dt * dt;
     let a = e.sqrt_a * e.sqrt_a;
-    let n0 = (MU_E / (a * a * a)).sqrt();
+    let n0 = (mu / (a * a * a)).sqrt();
     let tk = wrap_tk(t - e.toe);
     let mk = e.m0 + (n0 + e.delta_n) * tk;
     let ek = kepler_e(mk, e.e);
-    poly + F_REL * e.e * e.sqrt_a * ek.sin() - e.tgd
+    poly + f_rel * e.e * e.sqrt_a * ek.sin() - e.tgd
+}
+
+// ------------------------------------------------------------- Galileo I/NAV
+//
+// Ephemeris evaluation + RINEX-3 `E` record parser for the E1-B ranging
+// lever (spec docs/superpowers/specs/2026-09-02-galileo-inav-ranging-spec.md
+// §5). Lives beside the GPS parser (round-11 helper/parity reuse: fld /
+// df_strict / detect_ang_unit / i0_sane / RinexParse are shared verbatim)
+// rather than in the live-decoder module — the solve emitter needs exactly
+// this and nothing of the symbol-domain machinery. Every numeric behavior
+// below is pinned against the python reference (scripts/inav_reference.py)
+// via tests/fixtures/inav/rinex_gal_eval.json + ggto_bgd_vectors.json.
+
+/// RINEX 3.04 Galileo Data Sources bits (gLAB reference; verified on live
+/// brdc_latest.rnx 2026-09-02: 258 = F/NAV (bit1|bit8), 513/516/517 = I/NAV).
+pub const DS_INAV_E1B: u16 = 1 << 0; // I/NAV E1-B
+pub const DS_INAV_E5B: u16 = 1 << 2; // I/NAV E5b-I (same message)
+pub const DS_CLOCK_E5B_E1: u16 = 1 << 9; // af0-2 are the (E5b,E1) pair -> I/NAV
+
+/// SISA acceptance band (metres). RINEX writes the SISA(E1,E5b) index as
+/// metres; ICD Table 76 maps index 0..=125 to 0..6 m and 255 = NAPA ("no
+/// accuracy prediction available"), which RINEX conventionally writes as
+/// -1. The URA-equivalent gate is fail-closed: anything outside [0, 6] m
+/// (NAPA, spare indices, garbage) rejects the record at selection.
+pub const SISA_MAX_M: f64 = 6.0;
+
+/// Satellite ECEF position (metres) at GST time-of-week `t` — the Keplerian
+/// pipeline with Galileo constants (ICD Table 66: mu == the BDS value,
+/// omega_E == the GPS value).
+pub fn sat_pos_ecef_gal(e: &BrdcEph, t: f64) -> [f64; 3] {
+    sat_pos_ecef_impl(e, t, MU_GAL)
+}
+
+/// Galileo dt_sv (seconds) for the single-frequency E1 user: the (E1,E5b)
+/// broadcast clock (ICD Eq. 13-14) + relativity, MINUS BGD(E1,E5b) per ICD
+/// §5.1.5 Eq. 17 (f1 = E1) — the exact analogue of the GPS `- e.tgd` term.
+/// parse_rinex_gal stores BGD(E1,E5b) in `e.tgd`, so the shared impl's
+/// subtraction IS the Eq. 17 correction.
+pub fn sat_clock_gal(e: &BrdcEph, t: f64) -> f64 {
+    sat_clock_impl(e, t, MU_GAL, F_REL_GAL)
+}
+
+/// Satellite ECEF (metres) at transmit time, Sagnac-rotated into the
+/// reception frame, plus clock correction (s) and geometric range (m) —
+/// the Galileo twin of `beidou_d1::sat_at_txtime_bds` (tau = 0.075 start,
+/// two iterations, clock at t_tx - tau) with the GPS omega_E (Table 66).
+/// `t_tx` is the GST time of week, GPST-equivalent up to the GGTO the
+/// emitter applies upstream (spec §5.4 Option B).
+pub fn sat_at_txtime_gal(e: &BrdcEph, t_tx: f64, rx_m: [f64; 3]) -> ([f64; 3], f64, f64) {
+    let mut tau = 0.075;
+    let mut s = [0.0f64; 3];
+    for _ in 0..2 {
+        let s0 = sat_pos_ecef_gal(e, t_tx - tau);
+        let th = OMEGA_E * tau;
+        let (ct, st) = (th.cos(), th.sin());
+        s = [s0[0] * ct + s0[1] * st, -s0[0] * st + s0[1] * ct, s0[2]];
+        let d = [s[0] - rx_m[0], s[1] - rx_m[1], s[2] - rx_m[2]];
+        tau = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_LIGHT;
+    }
+    let dt = sat_clock_gal(e, t_tx - tau);
+    let d = [s[0] - rx_m[0], s[1] - rx_m[1], s[2] - rx_m[2]];
+    let rng = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (s, dt, rng)
+}
+
+/// Parse the Galileo records of a RINEX-3 MIXED navigation file, keeping the
+/// newest VALID I/NAV issue per PRN. F/NAV-clocked twins are skipped BY
+/// DESIGN (not counted as rejections — every SV legitimately appears twice;
+/// see [`parse_rinex_gal_nav`]); malformed/unhealthy/NAPA records are
+/// rejected and logged.
+pub fn parse_rinex_gal(text: &str) -> HashMap<u8, BrdcEph> {
+    let r = parse_rinex_gal_nav(text);
+    if r.rejected > 0 {
+        eprintln!(
+            "parse_rinex_gal: {} GAL record(s) rejected (unit {:?})",
+            r.rejected, r.unit
+        );
+    }
+    r.ephs
+}
+
+/// Full Galileo-record parse with the rejection ledger.
+///
+/// CRITICAL selection gate (spec §5.2): GAL records appear TWICE per SV —
+/// I/NAV and F/NAV issues with DIFFERENT clock parameters (F/NAV af0-2 are
+/// the (E1,E5a) pair, I/NAV the (E5b,E1) pair, ICD Table 69) and different
+/// BGD slots. Only records whose Data Sources field has bit 9 (E5b,E1
+/// clock pair) AND bit 0|2 (I/NAV broadcast) are selected; an F/NAV record
+/// (live file: 258) is skipped silently — it is the expected twin stream,
+/// not a defect — while a malformed or out-of-range Data Sources field
+/// rejects. Health (RINEX Galileo SV-health bitfield: bit 0 = E1-B DVS,
+/// bits 1-2 = E1-B HS) is hard-excluded on nonzero E1-B bits, and the
+/// SISA gate ([`SISA_MAX_M`]) rejects NAPA/-1 and out-of-band values —
+/// both fail-closed at selection, mirroring the GPS/BDS health law.
+/// Angle units ride the same per-constellation vote as GPS/BDS (RINEX-3
+/// mandates radians; live E records conform).
+///
+/// Field mapping into [`BrdcEph`]: toe/toc are GST SOW stored UNSHIFTED
+/// (GST is GPST-aligned); `week` is the record's continuous GPS-aligned
+/// GAL week; `tgd` carries BGD(E1,E5b) (orbit-6 field 4) so
+/// [`sat_clock_gal`] applies Eq. 17 through the shared `- tgd` slot;
+/// `iodc` carries the 10-bit IODnav (it tags the whole batch, clock
+/// included — the 8-bit `iode` slot cannot hold it and stays None);
+/// `health` stores the E1-B bits (always 0 for an accepted record).
+pub fn parse_rinex_gal_nav(text: &str) -> RinexParse {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut hdr = 0usize;
+    while hdr < lines.len() && !lines[hdr].contains("END OF HEADER") {
+        hdr += 1;
+    }
+    hdr += 1;
+    let unit = detect_ang_unit(&lines, hdr, 'E');
+    let mut out: HashMap<u8, BrdcEph> = HashMap::new();
+    let mut rejected = 0usize;
+    let mut i = hdr;
+    while i < lines.len() {
+        let ln = lines[i];
+        if ln.is_empty() || !ln.starts_with('E') || i + 7 >= lines.len() {
+            i += 1;
+            continue;
+        }
+        let b: Vec<&str> = (0..7).map(|k| lines[i + 1 + k]).collect();
+        // Data Sources (orbit line 6 = b[4], field 2) decides I/NAV vs
+        // F/NAV BEFORE the strict parse: the F/NAV twin is a different
+        // message stream skipped by design, not a malformed record.
+        match df_strict(fld(b[4], 23, 42)) {
+            Some(ds) if (0.0..=1023.0).contains(&ds) && ds.fract() == 0.0 => {
+                let dsi = ds as u16;
+                if dsi & DS_CLOCK_E5B_E1 != 0 && dsi & (DS_INAV_E1B | DS_INAV_E5B) != 0 {
+                    match parse_gal_record(ln, &b, unit) {
+                        Some(e) => {
+                            out.entry(e.prn)
+                                .and_modify(|cur| {
+                                    // RINEX GAL weeks are continuous
+                                    // (GPS-aligned), so (week, toe) is
+                                    // rollover-exact, as GPS/BDS.
+                                    if (e.week, e.toe) > (cur.week, cur.toe) {
+                                        *cur = e.clone();
+                                    }
+                                })
+                                .or_insert(e);
+                        }
+                        None => rejected += 1,
+                    }
+                }
+                // else: F/NAV-clocked twin — expected, silently skipped
+            }
+            _ => rejected += 1, // malformed/absent Data Sources: fail closed
+        }
+        i += 8;
+    }
+    RinexParse { ephs: out, rejected, unit }
+}
+
+/// One 8-line Galileo nav record -> BrdcEph, STRICT (same round-11 law as
+/// the GPS/BDS parsers: any malformed consumed field rejects; the caller
+/// has already applied the I/NAV Data Sources gate). RINEX 3.04 E-record
+/// layout (spec §5.2): L1 epoch (toc, GAL time == GPST frame) + af0-2;
+/// orbit 1 IODnav, Crs, Delta n, M0; orbit 2 Cuc, e, Cus, sqrtA; orbit 3
+/// toe, Cic, OMEGA0, Cis; orbit 4 i0, Crc, omega, OMEGAdot; orbit 5 IDOT,
+/// Data Sources, GAL week (continuous, GPS-aligned); orbit 6 SISA, SV
+/// health, BGD(E1,E5a), BGD(E1,E5b); orbit 7 transmission time.
+fn parse_gal_record(ln: &str, b: &[&str], unit: AngUnit) -> Option<BrdcEph> {
+    let ang = unit.factor()?; // Ambiguous fails closed: no guessed unit
+    let prn = u8::try_from(iparse_strict(fld(ln, 1, 3))?).ok()?;
+    let (y, mo, d) = (
+        iparse_strict(fld(ln, 4, 8))?,
+        iparse_strict(fld(ln, 9, 11))?,
+        iparse_strict(fld(ln, 12, 14))?,
+    );
+    let (h, mi, s) = (
+        iparse_strict(fld(ln, 15, 17))?,
+        iparse_strict(fld(ln, 18, 20))?,
+        iparse_strict(fld(ln, 21, 23))?,
+    );
+    let f = |l: usize, j: usize| df_strict(fld(b[l], 4 + j * 19, 4 + (j + 1) * 19));
+    let i0_raw = f(3, 0)?;
+    if !i0_sane(i0_raw, unit) {
+        return None;
+    }
+    // IODnav: 10-bit (ICD Table 40) — out of range rejects
+    let iodnav = f(0, 0)?;
+    if !(0.0..=1023.0).contains(&iodnav) || iodnav.fract() != 0.0 {
+        return None;
+    }
+    // SISA(E1,E5b): the URA-equivalent gate, FAIL-CLOSED — NAPA (-1),
+    // spare-index and garbage values never range (spec work order).
+    let sisa = f(5, 0)?;
+    if !(0.0..=SISA_MAX_M).contains(&sisa) {
+        return None;
+    }
+    // SV health bitfield (orbit 6 field 2): bit 0 = E1-B DVS, bits 1-2 =
+    // E1-B HS (RINEX 3.04 Table A8). Nonzero E1-B bits are hard-excluded
+    // (two-sided health law, as GPS health / BDS SatH1). Bits for E5a/E5b
+    // do not gate the E1 user. Blank is NOT tolerated here: the same
+    // orbit-6 line already parsed strictly for SISA/BGD, and an E record
+    // without health cannot prove E1-B validity — fail closed.
+    let health_raw = f(5, 1)?;
+    if !(0.0..=511.0).contains(&health_raw) || health_raw.fract() != 0.0 {
+        return None;
+    }
+    let e1b_health = (health_raw as u16 & 0x7) as u8;
+    if e1b_health != 0 {
+        return None;
+    }
+    Some(BrdcEph {
+        sys: 2,
+        prn,
+        // IODnav tags the whole batch (ephemeris AND clock, ICD §5.1.9.2):
+        // the 16-bit iodc slot holds the 10-bit value; the 8-bit iode slot
+        // cannot and stays None. fit_h: E records carry no fit interval.
+        iode: None,
+        iodc: Some(iodnav as u16),
+        fit_h: None,
+        af0: df_strict(fld(ln, 23, 42))?,
+        af1: df_strict(fld(ln, 42, 61))?,
+        af2: df_strict(fld(ln, 61, 80))?,
+        crs: f(0, 1)?,
+        delta_n: f(0, 2)? * ang,
+        m0: f(0, 3)? * ang,
+        cuc: f(1, 0)?,
+        e: f(1, 1)?,
+        cus: f(1, 2)?,
+        sqrt_a: f(1, 3)?,
+        toe: f(2, 0)?, // GST SOW, GPST-equivalent unshifted
+        cic: f(2, 1)?,
+        omega0: f(2, 2)? * ang,
+        cis: f(2, 3)?,
+        i0: i0_raw * ang,
+        crc: f(3, 1)?,
+        omega: f(3, 2)? * ang,
+        omega_dot: f(3, 3)? * ang,
+        idot: f(4, 0)? * ang,
+        week: f(4, 2)?, // continuous GPS-aligned GAL week (RINEX)
+        health: Some(e1b_health), // always 0 here (gated above)
+        tgd: f(5, 3)?, // BGD(E1,E5b): the Eq. 17 E1 correction slot
+        toc: gps_sow(y, mo, d, h, mi, s), // GAL epochs are GPST-frame
+        rx_epoch: None,
+    })
 }
 
 pub const C_LIGHT: f64 = 299_792_458.0;
@@ -890,6 +1152,211 @@ G01 2026 08 20 00 00 00-1.000000000000D-04 0.000000000000D+00 0.000000000000D+00
         let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{blank_health}"));
         assert_eq!(r.rejected, 0);
         assert_eq!(r.ephs[&7].health, None);
+    }
+
+    // ------------------------------------------------- Galileo (window-run)
+    //
+    // Every number below is PINNED from tests/fixtures/inav/
+    // rinex_gal_eval.json (generated and proven by the running python
+    // reference scripts/inav_reference.py + its 61-test suite, 2026-09-02).
+    // The RINEX lines are the live brdc_latest.rnx E02 record verbatim.
+
+    const GAL_E02: &str = "\
+E02 2026 09 01 20 00 00 6.600067717955e-05 2.685851541173e-12 0.000000000000e+00
+     2.700000000000e+01 1.567812500000e+02 3.000124967247e-09 2.036137310846e+00
+     7.089227437973e-06 3.099278546870e-04 1.248344779015e-05 5.440630514145e+03
+     2.448000000000e+05-3.911554813385e-08-2.069042130333e+00-2.793967723846e-08
+     9.611374355521e-01 7.159375000000e+01 4.523971024409e-02-5.452012812503e-09
+    -2.857261873569e-11 5.160000000000e+02 2.434000000000e+03 0.000000000000e+00
+     3.120000000000e+00 0.000000000000e+00-3.026798367500e-09-3.958120942116e-09
+     2.454640000000e+05                                                         ";
+
+    /// Fixture receiver ECEF (m) the python evaluations used.
+    const GAL_RX_M: [f64; 3] = [4_278_600.0, 636_800.0, 4_672_300.0];
+
+    #[test]
+    fn parse_rinex_gal_pins_the_fixture_record() {
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{GAL_E02}"));
+        assert_eq!(r.rejected, 0, "live E02 record must parse clean");
+        assert_eq!(r.unit, AngUnit::Radians, "live E records are radians");
+        let e = &r.ephs[&2];
+        assert_eq!(e.sys, 2);
+        assert_eq!(e.prn, 2);
+        // every value below is the python reference's parse, JSON-pinned
+        assert_eq!(e.toc, 244_800.0, "GAL epochs are GPST-frame SOW");
+        assert_eq!(e.toe, 244_800.0);
+        assert_eq!(e.week, 2434.0, "continuous GPS-aligned GAL week");
+        assert_eq!(e.af0, 6.600067717955e-05);
+        assert_eq!(e.af1, 2.685851541173e-12);
+        assert_eq!(e.af2, 0.0);
+        assert_eq!(e.iodc, Some(27), "IODnav rides the 16-bit iodc slot");
+        assert_eq!(e.iode, None);
+        assert_eq!(e.crs, 156.78125);
+        assert_eq!(e.delta_n, 3.000124967247e-09);
+        assert_eq!(e.m0, 2.036137310846);
+        assert_eq!(e.cuc, 7.089227437973e-06);
+        assert_eq!(e.e, 3.099278546870e-04);
+        assert_eq!(e.cus, 1.248344779015e-05);
+        assert_eq!(e.sqrt_a, 5440.630514145);
+        assert_eq!(e.cic, -3.911554813385e-08);
+        assert_eq!(e.omega0, -2.069042130333);
+        assert_eq!(e.cis, -2.793967723846e-08);
+        assert_eq!(e.i0, 0.9611374355521);
+        assert_eq!(e.crc, 71.59375);
+        assert_eq!(e.omega, 4.523971024409e-02);
+        assert_eq!(e.omega_dot, -5.452012812503e-09);
+        assert_eq!(e.idot, -2.857261873569e-11);
+        assert_eq!(e.health, Some(0));
+        assert_eq!(e.tgd, -3.958120942116e-09, "tgd slot = BGD(E1,E5b)");
+        assert_eq!(e.fit_h, None);
+        assert_eq!(e.rx_epoch, None);
+    }
+
+    #[test]
+    fn sat_at_txtime_gal_matches_the_python_reference() {
+        // (t_sow, txtime sat ECEF, txtime clock, txtime range) pinned from
+        // rinex_gal_eval.json record E02 (python sat_at_txtime_gal). The
+        // pipelines are op-identical f64, so agreement is sub-mm / sub-fs;
+        // the tolerances leave room only for libm last-ulp differences.
+        let cases: [(f64, [f64; 3], f64, f64); 3] = [
+            (
+                244_800.0,
+                [6_028_192.559060952, 19_797_645.48543666, 21_169_201.834917065],
+                6.600396567344267e-05,
+                25_344_562.414655928,
+            ),
+            (
+                245_700.0,
+                [5_221_120.744260678, 21_458_410.291688666, 19_716_744.25471923],
+                6.600642454210922e-05,
+                25_705_312.747089297,
+            ),
+            (
+                246_600.0,
+                [4_584_601.6703967005, 23_039_374.239954162, 18_019_196.92649376],
+                6.600889121425358e-05,
+                26_078_892.36845369,
+            ),
+        ];
+        let ephs = parse_rinex_gal(&format!("{RNX_HDR}{GAL_E02}"));
+        let e = &ephs[&2];
+        for (t, pos, clk, rng) in cases {
+            let (s, dt, r) = sat_at_txtime_gal(e, t, GAL_RX_M);
+            for k in 0..3 {
+                assert!(
+                    (s[k] - pos[k]).abs() < 1e-3,
+                    "t {t} axis {k}: {} vs pinned {}",
+                    s[k],
+                    pos[k]
+                );
+            }
+            assert!((dt - clk).abs() < 1e-15, "t {t} clock {dt} vs {clk}");
+            assert!((r - rng).abs() < 1e-3, "t {t} range {r} vs {rng}");
+        }
+    }
+
+    #[test]
+    fn gal_clock_subtracts_bgd_e1e5b() {
+        // ggto_bgd_vectors.json bgd_case: at toe, clock_e1 = clock_e1e5b -
+        // BGD(E1,E5b) (ICD Eq. 17, f1 = E1). Both sides pinned.
+        let ephs = parse_rinex_gal(&format!("{RNX_HDR}{GAL_E02}"));
+        let e = &ephs[&2];
+        let dt = sat_clock_gal(e, 244_800.0);
+        assert!((dt - 6.600396590403022e-05).abs() < 1e-15, "clock_e1 {dt}");
+        // and removing the BGD recovers the broadcast (E1,E5b) clock
+        let mut no_bgd = e.clone();
+        no_bgd.tgd = 0.0;
+        let dt_pair = sat_clock_gal(&no_bgd, 244_800.0);
+        assert!((dt_pair - 6.60000077830881e-05).abs() < 1e-15, "clock_e1e5b {dt_pair}");
+        assert!(dt > dt_pair, "negative BGD must ADD when subtracted");
+    }
+
+    #[test]
+    fn gal_constants_differ_from_gps_where_the_icd_says() {
+        assert_eq!(MU_GAL, 3.986004418e14);
+        assert_ne!(MU_GAL, MU_E, "GAL mu is the BDS value, not GPS");
+        assert_eq!(F_REL_GAL, -4.442807309e-10);
+        assert_ne!(F_REL_GAL, F_REL);
+        // omega_E is shared with GPS (ICD Table 66) — sat_at_txtime_gal
+        // deliberately reuses OMEGA_E, unlike BDS's 7.2921150e-5.
+        assert_eq!(OMEGA_E, 7.2921151467e-5);
+    }
+
+    #[test]
+    fn fnav_twin_records_are_skipped_not_rejected() {
+        // Data Sources 258 (bit1|bit8) is the F/NAV twin carrying the
+        // (E1,E5a) clock pair — wrong for the E1 user equation. It must
+        // neither enter the map nor count as a rejection (every SV appears
+        // twice by design; live file verified 2026-09-02).
+        let fnav = GAL_E02.replace("5.160000000000e+02", "2.580000000000e+02");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{fnav}"));
+        assert!(r.ephs.is_empty(), "F/NAV clock must never range E1");
+        assert_eq!(r.rejected, 0, "the twin stream is expected, not a defect");
+        // I/NAV twin alongside: only the I/NAV record selects, even when
+        // the F/NAV twin is listed first
+        let both = format!("{RNX_HDR}{fnav}\n{GAL_E02}");
+        let r = parse_rinex_gal_nav(&both);
+        assert_eq!(r.ephs.len(), 1);
+        assert_eq!(r.ephs[&2].tgd, -3.958120942116e-09, "I/NAV BGD slot");
+        // 513 (bit0|bit9) and 517 (bit0|bit2|bit9) also pass the gate
+        for ds in ["5.130000000000e+02", "5.170000000000e+02"] {
+            let rec = GAL_E02.replace("5.160000000000e+02", ds);
+            let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{rec}"));
+            assert_eq!(r.ephs.len(), 1, "ds {ds} is I/NAV");
+        }
+        // a malformed Data Sources field fails closed as a rejection
+        let bad = GAL_E02.replace("5.160000000000e+02", &" ".repeat(19));
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{bad}"));
+        assert!(r.ephs.is_empty());
+        assert_eq!(r.rejected, 1);
+    }
+
+    #[test]
+    fn gal_health_and_sisa_gates_fail_closed() {
+        // E1-B DVS bit set (health 1): hard-excluded at selection
+        let sick = GAL_E02
+            .replace("3.120000000000e+00 0.000000000000e+00", "3.120000000000e+00 1.000000000000e+00");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{sick}"));
+        assert!(r.ephs.is_empty(), "nonzero E1-B health bits must never range");
+        assert_eq!(r.rejected, 1);
+        // E1-B HS = 2 (Extended Operations Mode, bits 1-2) likewise
+        let eom = GAL_E02
+            .replace("3.120000000000e+00 0.000000000000e+00", "3.120000000000e+00 4.000000000000e+00");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{eom}"));
+        assert!(r.ephs.is_empty());
+        // E5a-only health bits (bit 3 = 8) do NOT gate the E1 user
+        let e5a = GAL_E02
+            .replace("3.120000000000e+00 0.000000000000e+00", "3.120000000000e+00 8.000000000000e+00");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{e5a}"));
+        assert_eq!(r.ephs.len(), 1, "E5a health must not gate E1-B");
+        assert_eq!(r.ephs[&2].health, Some(0), "stored health is the E1-B bits");
+        // SISA NAPA (-1): the URA-equivalent gate rejects fail-closed
+        let napa = GAL_E02.replace(" 3.120000000000e+00", "-1.000000000000e+00");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{napa}"));
+        assert!(r.ephs.is_empty(), "NAPA must never range");
+        assert_eq!(r.rejected, 1);
+        // SISA above the 6 m ICD band likewise
+        let big = GAL_E02.replace(" 3.120000000000e+00", " 7.000000000000e+00");
+        let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{big}"));
+        assert!(r.ephs.is_empty());
+    }
+
+    #[test]
+    fn gal_newest_issue_selection_is_week_rollover_exact() {
+        // same PRN across the week boundary, mirroring the GPS test: the
+        // fresh issue (week+1, small toe) displaces the old one.
+        let old = GAL_E02
+            .replace("2.448000000000e+05-3.911554813385e-08", "6.040000000000e+05-3.911554813385e-08");
+        let new = GAL_E02
+            .replace("2.448000000000e+05-3.911554813385e-08", "2.000000000000e+02-3.911554813385e-08")
+            .replace("2.434000000000e+03", "2.435000000000e+03");
+        for order in [format!("{old}\n{new}"), format!("{new}\n{old}")] {
+            let r = parse_rinex_gal_nav(&format!("{RNX_HDR}{order}"));
+            assert_eq!(r.rejected, 0);
+            let e = &r.ephs[&2];
+            assert_eq!(e.week, 2435.0, "the next-week issue must win");
+            assert_eq!(e.toe, 200.0);
+        }
     }
 
     #[test]

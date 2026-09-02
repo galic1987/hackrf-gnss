@@ -285,6 +285,11 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
             # additive v4 field (2026-09-02 GEO ranging): absent on older
             # rows, which carried no SBAS measurements — default 0
             n_sbas = _json_int(r.get("n_sbas", 0))
+            # additive v4 field (2026-09-02 Galileo I/NAV ranging, lever
+            # 1): absent on pre-GAL rows, which carried no GAL
+            # measurements — default 0 keeps every historical row passing
+            # the generalized identity below unchanged
+            n_gal = _json_int(r.get("n_gal", 0))
             n_fresh = _json_int(r["n_fresh"])
             n_pred = _json_int(r["n_pred"])
             slips = _json_int(r["slips"])
@@ -300,9 +305,9 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
                 or not isinstance(r.get("gen"), str)
                 or not r["gen"].strip()
                 or not isinstance(r.get("ab_membership_match"), bool)
-                or min(n_sat, n_gps, n_bds, n_sbas, n_fresh, n_pred,
+                or min(n_sat, n_gps, n_bds, n_sbas, n_gal, n_fresh, n_pred,
                        slips) < 0
-                or n_gps + n_bds + n_sbas != n_sat):
+                or n_gps + n_bds + n_sbas + n_gal != n_sat):
             continue
         normalized = dict(r)
         normalized.update({"epoch": epoch, "clock_ns": clock_ns,
@@ -311,7 +316,7 @@ def analyze(rows, min_rows=MIN_ROWS, all_gens=False, parse_errors=0,
                            "residual_rms_m_uw": rms_uw,
                            "n_sat": n_sat, "n_gps": n_gps,
                            "n_bds": n_bds, "n_sbas": n_sbas,
-                           "n_fresh": n_fresh,
+                           "n_gal": n_gal, "n_fresh": n_fresh,
                            "n_pred": n_pred, "slips": slips})
         schema_rows.append(normalized)
     rep["n_schema"] = len(schema_rows)

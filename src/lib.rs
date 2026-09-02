@@ -11,6 +11,7 @@ pub mod inmarsat;
 pub mod beidou;
 pub mod beidou_d1;
 pub mod galileo;
+pub mod galileo_inav;
 pub mod e5b;
 pub mod e5;
 pub mod upper_l;

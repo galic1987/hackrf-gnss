@@ -111,13 +111,29 @@ impl Sys {
 /// period off. The propagation and flip-dip logic in the body exist to make
 /// the tooth choice immune to both.
 fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) -> f64 {
+    // Per-channel nav units (Galileo generalization — spec 4.2): one
+    // tracking epoch is exactly one code period for every sys here, so the
+    // epoch duration doubles as the nominal comb-tooth period (1 ms for
+    // GPS/SBAS/BDS -> 1000 teeth/s, 4 ms for E1B -> 250 teeth/s). GPS/BDS
+    // slice 20 ms bits out of the 1 ms prompt queue into nav_bits, so
+    // their nav unit is 0.02 s and the emitted count is nav_bits.len();
+    // Galileo's nav unit IS the 4 ms symbol (one prompt per epoch, no bit
+    // sync — the symbol edge is a code wrap by construction, so there is
+    // no within-bit epoch ambiguity at all) and abs_bit is an ABSOLUTE
+    // symbol index against nav_abs_ms + nav_ms.len() (nothing is ever
+    // sliced out of the queue; gal_tick drains it in place).
+    let t_epoch = ch.ns_epoch as f64 / ch.fs;
+    let (t_unit, emitted) = match ch.sys {
+        Sys::Galileo => (t_epoch, ch.nav_abs_ms as f64),
+        _ => (0.02, ch.nav_bits.len() as f64),
+    };
     // abs_bit is always BEHIND the emitted-bit count (the newest complete
     // subframe ends >= 300 bits before the stream edge): this difference is
     // negative, so it MUST be computed in f64 — the usize subtraction
     // underflowed and wrapped to ~3.7e17 s, which is exactly the frozen
     // rho_m = 1.1e26 m garbage seen live.
-    let t_bit_approx = t_proc - ch.nav_ms.len() as f64 / 1000.0
-        + 0.02 * (abs_bit as f64 - ch.nav_bits.len() as f64);
+    let t_bit_approx = t_proc - ch.nav_ms.len() as f64 * t_epoch
+        + t_unit * (abs_bit as f64 - emitted);
     // the comb period is MEASURED by tooth counting (see track_comb), not
     // derived from carrier_freq: a marginal channel can hold a sustained
     // carrier bias of 60-280 Hz while staying code-locked, and the carrier
@@ -152,12 +168,20 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
         // the true boundary and a confident snap IS the true tooth. Older
         // channels can sit confidently on the WRONG tooth, so the gate
         // closes with age and an established anchor is never disturbed by
-        // a wandered approximation.
-        if d_tx >= 0.0 && d_tx < 120.0 && ch.nav_bits.len() < 4500 {
+        // a wandered approximation. (Age is nav-stream time: 90 s of 20 ms
+        // bits for GPS/BDS; Galileo counts total 4 ms symbols instead —
+        // its queue is drained in place, so emitted alone under-counts.)
+        let young = match ch.sys {
+            Sys::Galileo => {
+                (ch.nav_abs_ms as f64 + ch.nav_ms.len() as f64) * t_epoch < 90.0
+            }
+            _ => ch.nav_bits.len() < 4500,
+        };
+        if d_tx >= 0.0 && d_tx < 120.0 && young {
             let q = (t_wrap - t_bit_approx) / t_code;
             let cand = t_wrap - t_code * q.round();
             let conf = (q - q.round()).abs(); // teeth from approx to its snap
-            let expected = prev_t_bit + (d_tx * 1000.0).round() * t_code;
+            let expected = prev_t_bit + (d_tx / t_epoch).round() * t_code;
             let d_teeth = ((cand - expected) / t_code).abs();
             if conf <= 0.25 && (0.5..=1.5).contains(&d_teeth) {
                 eprintln!(
@@ -185,7 +209,7 @@ fn anchor_stream_time(ch: &mut Channel, t_proc: f64, abs_bit: usize, t_tx: f64) 
             return prev_t_bit;
         }
         if d_tx > 0.0 && d_tx < 120.0 {
-            let periods = (d_tx * 1000.0).round();
+            let periods = (d_tx / t_epoch).round();
             let m = ((t_wrap - prev_t_bit) / t_code - periods).round();
             let t_prop = t_wrap - t_code * m;
             if (t_prop - t_bit_approx).abs() < 15.0e-3 {
@@ -302,11 +326,17 @@ pub struct Channel {
     slip: bool,
     /// total phase breaks since channel creation (diagnostic)
     pub slip_count: u32,
-    // nav demod state (GPS LNAV 50 bps): prompt-I per 1 ms epoch, the
-    // discovered 20 ms bit boundary, and the emitted bit stream
+    // nav demod state: prompt-I per tracking epoch (1 ms for GPS LNAV /
+    // BDS D1 / SBAS; 4 ms for Galileo E1B, where each entry IS one
+    // 250 sym/s I/NAV symbol and gal_tick both scans and drains the
+    // queue in place), the discovered 20 ms bit boundary (GPS/BDS only),
+    // and the emitted bit stream
     nav_ms: Vec<f64>,
-    /// Absolute 1 ms-prompt index of nav_ms[0], advanced by EVERY drain of
-    /// nav_ms below (bit sync, bit slicing, the 200k cap, sbas_tick). The
+    /// Absolute prompt index of nav_ms[0] — in units of the channel's
+    /// tracking epoch (1 ms; 4 ms SYMBOLS on Galileo, whose gal_tick space
+    /// this defines) — advanced by EVERY drain of
+    /// nav_ms below (bit sync, bit slicing, the 200k cap, sbas_tick,
+    /// gal_tick, note_gap). The
     /// SBAS 2 ms pairing holds a constant ABSOLUTE grid through it: a
     /// straddling leftover ms shifts the queue head, and a queue-relative
     /// parity latch would then flip the pairing every other second (the
@@ -472,6 +502,35 @@ pub struct Channel {
     /// an integer SNT second (DO-229 — SNT is held within 50 ns of GPST),
     /// so this is the SBAS twin of the LNAV subframe TOW boundary.
     sbas_frame_ms: Option<u64>,
+    /// Galileo I/NAV ephemeris word caches (Sys::Galileo only): newest
+    /// CRC-validated words 1-4. Like the SBAS correction caches they are
+    /// CRC-proven records and survive fades, gaps and reseeds — the batch
+    /// gate (same IODnav across all four, ICD 5.1.9.2) and the newest-issue
+    /// (week, toe) ordering decide what installs, not the break.
+    gal_w1: Option<crate::galileo_inav::GalWord1>,
+    gal_w2: Option<crate::galileo_inav::GalWord2>,
+    gal_w3: Option<crate::galileo_inav::GalWord3>,
+    gal_w4: Option<crate::galileo_inav::GalWord4>,
+    /// Newest word 5 (iono/BGD/health/GST). It carries NO IODnav — ICD
+    /// 5.1.9.2 pairs it with the current 1-4 batch by RECENCY — and it is
+    /// REQUIRED before an assembled batch may install: assembling without
+    /// it would fabricate health 0 and a zero BGD (fail-closed).
+    gal_w5: Option<crate::galileo_inav::GalWord5>,
+    /// Newest GST week (mod 4096), from word 5 or a word 0 with Time=='10'.
+    gal_wn: Option<u16>,
+    /// Newest VALID broadcast GGTO (word 10) with its t_proc apply stamp.
+    /// The all-ones invalid sentinel EVICTS the cache (fail-closed: publish
+    /// nothing rather than a stale offset). Published as ggto_ns/ggto_age_s
+    /// on ranging rows; the clock_bias emitter converts t_tx GST->GPST with
+    /// it (spec 5.4 Option B).
+    gal_ggto: Option<(crate::galileo_inav::Ggto, f64)>,
+    /// Polarity of the last CRC-validated page (+1 upright, -1 inverted).
+    /// Observability only: every page proves its own polarity through
+    /// sync+CRC, and a Costas half-cycle flip moves no symbol timing (the
+    /// code comb and the epoch count are polarity-blind), so a proven flip
+    /// is logged, never an anchor break — the sbas_par_prev analogue with
+    /// nothing to fail-close.
+    gal_pol: Option<i8>,
 }
 
 /// Borre 2nd-order loop-filter time constants (see gps::track).
@@ -576,6 +635,14 @@ impl Channel {
             sbas_grid_ms0: None,
             sbas_grid_valid_from: 0,
             sbas_frame_ms: None,
+            gal_w1: None,
+            gal_w2: None,
+            gal_w3: None,
+            gal_w4: None,
+            gal_w5: None,
+            gal_wn: None,
+            gal_ggto: None,
+            gal_pol: None,
         }
     }
 
@@ -795,11 +862,15 @@ impl Channel {
         self.sec_prompt += ip * ip + qp * qp;
         self.sec_noise += inz * inz + qnz * qnz; // off-code replica: pure noise
         self.sec_epochs += 1;
-        // nav demod: collect prompt-I per 1 ms epoch (GPS LNAV, BeiDou D1,
-        // and SBAS/WAAS — the Costas loop carries the data on ip; SBAS
-        // epochs are 1 ms like GPS, one push per epoch, drained per second
-        // by sbas_tick). Cap at ~3 min.
-        if matches!(self.sys, Sys::Gps | Sys::Beidou | Sys::Sbas) {
+        // nav demod: collect prompt-I per epoch (the Costas loop carries the
+        // data on ip). GPS LNAV / BeiDou D1 / SBAS: 1 ms epochs, one push
+        // per epoch. Galileo E1B: one 4 ms epoch integrates exactly ONE
+        // 250 sym/s I/NAV symbol (no secondary code on E1B; the CS25 pilot
+        // code rides E1C only), so one push per epoch IS the symbol stream —
+        // page sync replaces bit sync entirely (gal_tick drains per second,
+        // so the cap never binds there either). Cap at ~3 min of 1 ms
+        // prompts (~13 min of 4 ms symbols).
+        if matches!(self.sys, Sys::Gps | Sys::Beidou | Sys::Sbas | Sys::Galileo) {
             self.nav_ms.push(ip);
             if self.nav_ms.len() > 200_000 {
                 let drop = self.nav_ms.len() - 200_000;
@@ -949,6 +1020,207 @@ impl Channel {
             self.nav_ms.drain(..20);
             self.nav_abs_ms += 20;
         }
+    }
+
+    /// Galileo E1B I/NAV page scan + word harvest + TOW anchor, called once
+    /// per second from end_second's Sys::Galileo arm (the find_subframes
+    /// analogue; availability lever 1). `from` is the ABSOLUTE symbol index
+    /// to scan from — already backed off by GAL_RESCAN_BACK, so the last
+    /// validated page stays findable and, when it carries a TOW word, re-
+    /// anchors via the d_tx == 0 law while it remains in the window. Returns
+    /// the CRC-validated page count in the window (the report's nav_subs).
+    ///
+    /// Structure (spec 4.1): nav_ms holds one soft prompt per 4 ms epoch ==
+    /// one 250 sym/s symbol; queue slot i is absolute symbol nav_abs_ms + i.
+    /// There is NO bit sync (the symbol edge IS a code-period boundary by
+    /// construction), so page sync + CRC-24Q replace both bit sync and
+    /// parity. The epoch bookkeeping is deterministic — exactly one push per
+    /// processed epoch — so symbols are lost only at input gaps, which
+    /// note_gap fail-closes by clearing the queue and re-basing the scan
+    /// cursor; unlike SBAS there is no 2 ms pairing ambiguity and therefore
+    /// no provable insert/delete event that could void an established
+    /// anchor.
+    fn gal_tick(&mut self, t_proc: f64, from: usize, band: &'static str) -> usize {
+        use crate::galileo_inav as gi;
+        if self.sys != Sys::Galileo {
+            return 0;
+        }
+        let base = self.nav_abs_ms as usize;
+        let from_idx = from.max(base) - base;
+        if self.nav_ms.len() < from_idx + gi::PAGE_SYMS {
+            return 0;
+        }
+        let soft: Vec<f32> = self.nav_ms[from_idx..].iter().map(|&v| v as f32).collect();
+        let pages = gi::find_pages(&soft);
+        let mut new_words = false;
+        // newest TOW-bearing page: (absolute index of its even-part sync
+        // symbol, decoded TOW). find_pages returns oldest-first.
+        let mut anchor_page: Option<(usize, u32)> = None;
+        for p in &pages {
+            let abs_sym = base + from_idx + p.sym_index;
+            if let Some(prev) = self.gal_pol {
+                if prev != p.polarity {
+                    // Both sides CRC-proven: a real Costas half-cycle slip
+                    // happened between the pages (the sbas_tick pairing-flip
+                    // settlement analogue). It moves NO symbol timing, so
+                    // the anchor stands — observability only.
+                    eprintln!(
+                        "live[{band}]: GAL PRN {} page polarity flip ({prev:+} -> {:+})",
+                        self.prn, p.polarity
+                    );
+                }
+            }
+            self.gal_pol = Some(p.polarity);
+            // Alert pages (PT=1) are CRC-proven but carry no word: content
+            // discarded fail-closed (check_page yields word: None). Unknown
+            // word types parse to None (dispatch on the DECODED type, never
+            // the nominal sub-frame slot — the ICD marks it indicative).
+            let Some(wbits) = p.check.word.as_ref() else { continue };
+            let Some(w) = gi::parse_word(wbits) else { continue };
+            match w {
+                gi::InavWord::W1(x) => {
+                    self.gal_w1 = Some(x);
+                    new_words = true;
+                }
+                gi::InavWord::W2(x) => {
+                    self.gal_w2 = Some(x);
+                    new_words = true;
+                }
+                gi::InavWord::W3(x) => {
+                    self.gal_w3 = Some(x);
+                    new_words = true;
+                }
+                gi::InavWord::W4(x) => {
+                    self.gal_w4 = Some(x);
+                    new_words = true;
+                }
+                gi::InavWord::W5(x) => {
+                    self.gal_wn = Some(x.wn);
+                    if x.tow <= 604_799 {
+                        anchor_page = Some((abs_sym, x.tow));
+                    }
+                    self.gal_w5 = Some(x);
+                    new_words = true;
+                }
+                gi::InavWord::W6(x) => {
+                    if x.tow <= 604_799 {
+                        anchor_page = Some((abs_sym, x.tow));
+                    }
+                }
+                gi::InavWord::W0(x) => {
+                    // WN/TOW valid ONLY with Time == '10' — parse_word
+                    // already fail-closed x.time to None otherwise.
+                    if let Some((wn, tow)) = x.time {
+                        self.gal_wn = Some(wn);
+                        if tow <= 604_799 {
+                            anchor_page = Some((abs_sym, tow));
+                        }
+                    }
+                }
+                gi::InavWord::W10(x) => match x.ggto {
+                    // newest broadcast governs; the all-ones invalid
+                    // sentinel EVICTS the cache (fail-closed)
+                    Some(g) => self.gal_ggto = Some((g, t_proc)),
+                    None => self.gal_ggto = None,
+                },
+            }
+        }
+        // TOW anchor (spec 4.1): Galileo TOW names the start of ITS OWN
+        // page — the leading edge of the even part's first sync symbol, a
+        // code-period boundary (ICD 4.1.5) — and is GPST-equivalent up to
+        // the GGTO. No GPS-style (tow_next-1)*6, no BDS +14 s. The stream
+        // instant is refined to the 4 ms code-period comb by the
+        // generalized anchor_stream_time (250 teeth/s; one symbol = one
+        // code period, so there is no within-bit ambiguity to audit).
+        if let Some((abs_sym, tow)) = anchor_page {
+            if tow % 2 == 0 {
+                // E1-B even parts start at ODD GST seconds (ICD Table 38):
+                // nominal-only sanity, log-only, never a gate (spec S3).
+                eprintln!(
+                    "live[{band}]: GAL PRN {} decoded even TOW {tow} (nominally odd on E1-B)",
+                    self.prn
+                );
+            }
+            let t_tx = tow as f64;
+            let t_bit = anchor_stream_time(self, t_proc, abs_sym, t_tx);
+            self.anchor = Some((t_bit, t_tx));
+            self.anchor_t = t_proc;
+        }
+        // Ephemeris batch: words 1-4 must share one IODnav (assemble gates)
+        // and word 5 is REQUIRED (health/BGD/WN evidence), recency-paired.
+        if new_words {
+            if let (Some(w1), Some(w2), Some(w3), Some(w4), Some(w5)) = (
+                self.gal_w1.as_ref(),
+                self.gal_w2.as_ref(),
+                self.gal_w3.as_ref(),
+                self.gal_w4.as_ref(),
+                self.gal_w5.as_ref(),
+            ) {
+                if let Some(ge) =
+                    gi::assemble_ephemeris(w1, w2, w3, w4, Some(w5), self.gal_wn)
+                {
+                    let mut e = ge.eph;
+                    if e.prn != 0 && e.prn as usize != self.prn {
+                        // a cross-SVID word 4 under this PRN's CRC-clean
+                        // pages would be a decode-identity fault: never
+                        // install another SV's orbit here (fail-closed)
+                        eprintln!(
+                            "live[{band}]: GAL PRN {} word-4 SVID {} mismatch — batch rejected",
+                            self.prn, e.prn
+                        );
+                    } else {
+                        // two-sided SV-health law, mirroring the GPS/BDS
+                        // arms (round-14): an unhealthy batch is rejected,
+                        // a strictly newer unhealthy issue evicts the
+                        // stale-healthy incumbent, and a same-issue health
+                        // flip evicts identically. health is the E1B
+                        // HS<<1|DVS composite (0 = healthy).
+                        let newer = self.eph.as_ref().map_or(true, |cur| {
+                            (e.week, e.toe) > (cur.week, cur.toe)
+                        });
+                        let same_issue = self.eph.as_ref().is_some_and(|cur| {
+                            (e.week, e.toe) == (cur.week, cur.toe)
+                        });
+                        if let Some(h) = e.health.filter(|&h| h != 0) {
+                            eprintln!(
+                                "live[{band}]: self-decoded I/NAV ephemeris for GAL PRN {} rejected — E1B HS<<1|DVS {h}",
+                                self.prn
+                            );
+                            if newer || same_issue {
+                                self.eph = None;
+                            }
+                        } else if newer {
+                            e.prn = self.prn as u8;
+                            eprintln!(
+                                "live[{band}]: {}I/NAV ephemeris for GAL PRN {} (IODnav {} week {} toe {:.0})",
+                                if self.eph.is_some() { "refreshed " } else { "self-decoded " },
+                                self.prn, ge.iodnav, e.week, e.toe
+                            );
+                            self.eph = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(last) = pages.last() {
+            self.nav_scanned = base + from_idx + last.sym_index + gi::PAGE_SYMS;
+        }
+        // Drain consumed symbols in place: keep exactly the next scan's
+        // window (floor nav_scanned - GAL_RESCAN_BACK), plus a hard
+        // 5000-symbol (20 s) cap while nothing validates. Without a
+        // per-second drain the queue would grow to process_epoch's 200k
+        // cap, whose one-element-per-epoch drain is a 1.6 MB memmove
+        // every 4 ms — the SBAS lesson, applied here.
+        let keep_from = self.nav_scanned.saturating_sub(gi::GAL_RESCAN_BACK).max(base);
+        let mut drop = (keep_from - base).min(self.nav_ms.len());
+        if self.nav_ms.len() - drop > 5000 {
+            drop = self.nav_ms.len() - 5000;
+        }
+        if drop > 0 {
+            self.nav_ms.drain(..drop);
+            self.nav_abs_ms += drop as u64;
+        }
+        pages.len()
     }
 
     /// SBAS/WAAS message decode, called once per second (like nav_tick):
@@ -1462,6 +1734,18 @@ impl Channel {
         self.sbas_reset_decoder(false);
         self.bit_off = None;
         self.nav_ms.clear();
+        // Galileo: sbas_reset_decoder(false) above zeroed nav_abs_ms and
+        // cleared nav_ms — the absolute SYMBOL identity space restarted, so
+        // the scan cursor restarts with it (a stale cursor would map
+        // post-reseed symbols onto pre-reseed indices) and the polarity
+        // latch, a property of the old Costas pull-in, is released. The
+        // established anchor and the CRC-validated word/GGTO caches SURVIVE
+        // like their GPS/SBAS twins: a reseed is no proof they were wrong —
+        // ANCHOR_MAX_AGE_S and newest-issue ordering retire them.
+        if self.sys == Sys::Galileo {
+            self.nav_scanned = 0;
+            self.gal_pol = None;
+        }
     }
 
     /// Terminate the WHOLE SBAS decode generation: the decoder window, the
@@ -1658,9 +1942,13 @@ pub struct SatReport {
     pub code_phase: f64,
     pub lock_s: f64,
     pub epoch: f64,
-    /// decoded nav bits (0/1), polarity unresolved (Costas) — lnav handles it
+    /// Nav demod-health count. GPS/BDS: decoded nav bits (0/1, polarity
+    /// unresolved — lnav handles it). Galileo: total 4 ms I/NAV symbols
+    /// collected since (re)seed (page sync replaces bit sync; no sliced
+    /// bit stream exists).
     pub nav_bits: usize,
-    /// parity-valid LNAV subframes decoded from those bits
+    /// parity-valid LNAV/D1 subframes (GPS/BDS) or CRC-valid I/NAV pages
+    /// (Galileo) in this second's re-scan window
     pub nav_subs: usize,
     /// true pseudorange in metres (Some once a TOW anchor exists)
     pub rho_m: Option<f64>,
@@ -1687,6 +1975,19 @@ pub struct SatReport {
     /// the clock_bias emitter's GEO ranging both consume it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sbas_geonav: Option<GeoNavPub>,
+    /// Broadcast GST-GPST offset (GGTO, I/NAV word 10, ICD 5.1.8 Eq. 23)
+    /// evaluated at this row's t_tx, in ns. Sys::Galileo rows with a fresh
+    /// ranging anchor AND a cached valid word 10 AND a known GST week only;
+    /// absent otherwise — never 0.0-as-unknown (fail-closed). The
+    /// clock_bias emitter converts t_tx GST->GPST with it:
+    /// t_tx_gpst = t_tx - ggto_ns*1e-9 (dt_systems = t_Galileo - t_GPS;
+    /// spec 5.4 Option B — the residual folds into the unmodeled ISB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ggto_ns: Option<f64>,
+    /// Stream-time age (s) of the cached word-10 GGTO, on the same rows as
+    /// ggto_ns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ggto_age_s: Option<f64>,
 }
 
 /// Acquisition runs on a WORKER THREAD, never on the consumer: any
@@ -1911,6 +2212,22 @@ impl Band {
             ch.slip_count += 1;
             if ch.sys == Sys::Sbas {
                 ch.sbas_reset_decoder(false);
+            } else if ch.sys == Sys::Galileo {
+                // The nav unit is the 4 ms epoch/symbol: drop the queue (no
+                // page may decode across the seam), advance the absolute
+                // SYMBOL index by the dropped epochs (nearest — a sub-epoch
+                // residue shifts the bookkeeping < 4 ms, inside the
+                // anchor's self-heal and 15 ms fences; big gaps
+                // force_reseed the phases anyway) and re-base the scan
+                // cursor: cleared pre-gap symbols must never be re-scanned
+                // under post-gap indices (fail-closed — with the queue
+                // empty, "nothing scanned in the re-based stream" is
+                // exact). The established anchor and the CRC-validated
+                // word/GGTO caches survive, as on GPS/SBAS channels.
+                ch.nav_ms.clear();
+                ch.nav_abs_ms +=
+                    (band_samples + ch.ns_epoch as u64 / 2) / ch.ns_epoch as u64;
+                ch.nav_scanned = ch.nav_abs_ms as usize;
             } else {
                 ch.nav_ms.clear();
                 ch.nav_abs_ms += gap_ms;
@@ -2227,6 +2544,10 @@ impl Band {
                 let from = ch.nav_scanned.saturating_sub(match ch.sys {
                     Sys::Gps => GPS_RESCAN_BACK,
                     Sys::Beidou => D1_RESCAN_BACK,
+                    // Galileo nav_scanned is an ABSOLUTE 4 ms symbol index
+                    // (gal_tick's space); one full page + slack keeps the
+                    // last validated page re-findable every second
+                    Sys::Galileo => crate::galileo_inav::GAL_RESCAN_BACK,
                     _ => 300,
                 });
                 match ch.sys {
@@ -2406,7 +2727,11 @@ impl Band {
                         }
                         0
                     }
-                    _ => 0,
+                    // E1B I/NAV: page scan + word harvest + TOW anchor
+                    // (availability lever 1) — the whole arm lives in
+                    // gal_tick (the find_subframes + anchor + ephemeris
+                    // sequence of the GPS arm, in the 4 ms symbol space).
+                    Sys::Galileo => ch.gal_tick(t_proc, from, self.name),
                 }
             };
             // publish the anchor only while the channel is locked AND
@@ -2417,6 +2742,23 @@ impl Band {
             // and a LOCKED channel whose subframes stopped validating
             // diverging at its range rate, 147-885 ns/s).
             let anchor_fresh = ch.anchor_fresh(t_proc);
+            // Broadcast GGTO publication (spec 5.4 Option B): the word-10
+            // offset evaluated at this row's t_tx with the newest GST week,
+            // in ns. Published ONLY when every input exists AND the row
+            // actually ranges (locked + fresh) — null otherwise, never
+            // 0.0-as-unknown (fail-closed; the emitter applies it when
+            // present and finite, else applies zero and the raw GGTO folds
+            // into the unmodeled ISB the analyzer tracks via n_gal).
+            let (ggto_ns, ggto_age_s) = match (&ch.gal_ggto, ch.anchor, ch.gal_wn) {
+                (Some((g, t0)), Some((_, t_tx)), Some(wn)) if ch.locked && anchor_fresh => {
+                    let off = crate::galileo_inav::ggto_offset(g, t_tx, wn as u32);
+                    (
+                        Some((off * 1e12).round() / 1e3),
+                        Some(((t_proc - t0) * 10.0).round() / 10.0),
+                    )
+                }
+                _ => (None, None),
+            };
             out.push(SatReport {
                 prn: ch.prn,
                 sys: ch.sys.name(),
@@ -2424,7 +2766,16 @@ impl Band {
                 cn0_proxy: (cn0 * 10.0).round() / 10.0,
                 code_phase: (cp * 100.0).round() / 100.0,
                 lock_s: ch.lock_s,
-                nav_bits: ch.nav_bits.len(),
+                nav_bits: if ch.sys == Sys::Galileo {
+                    // Galileo slices no bit stream out of the queue (page
+                    // sync replaces bit sync): the analogous demod-health
+                    // count is the total 4 ms symbols collected since
+                    // (re)seed — drains advance nav_abs_ms, so the sum is
+                    // monotone like nav_bits.len() is for GPS/BDS.
+                    ch.nav_abs_ms as usize + ch.nav_ms.len()
+                } else {
+                    ch.nav_bits.len()
+                },
                 nav_subs,
                 rho_m: if ch.locked && anchor_fresh {
                     ch.anchor.map(|(t_bit, t_tx)| (t_bit - t_tx) * 299_792_458.0)
@@ -2442,6 +2793,8 @@ impl Band {
                 epoch,
                 sbas_msgs,
                 sbas_geonav: ch.sbas_geonav.clone(),
+                ggto_ns,
+                ggto_age_s,
             });
         }
         // re-acquire channels whose lock has been lost for REACQ_S, drop
@@ -3200,6 +3553,270 @@ mod tests {
     fn anchor_stream_time_snaps_to_code_period_lattice_bds() {
         anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6160);
         anchor_case(Sys::Beidou, 2046.0, B1I_CHIP_RATE, F_B1I, 6161);
+    }
+
+    /// Galileo anchor-arithmetic setup (spec 4.2 / test plan 4). E1B's nav
+    /// unit is the 4 ms symbol == one code period == one tracking epoch, so
+    /// the comb runs at 250 teeth/s and the bookkeeping is
+    /// t_proc - 0.004 * (nav_abs_ms + nav_ms.len() - abs_sym) — there is no
+    /// within-bit ambiguity at all (every symbol edge IS a code wrap).
+    /// `sym_off` shifts the bookkeeping by whole symbols to model creep;
+    /// `nav_abs` sets the channel's nav-stream age (the 90 s self-heal
+    /// gate). Returns (channel, t_proc, abs_sym, t_true, t_c).
+    fn gal_anchor_setup(
+        nav_abs: u64,
+        len: usize,
+        m_true: i64,
+        sym_off: i64,
+    ) -> (Channel, f64, usize, f64, f64) {
+        let dopp = 1000.0;
+        let mut ch = Channel::new(Sys::Galileo, 5, 4.0e6, dopp, 0.0);
+        assert_eq!(ch.ns_epoch, 16_000, "4 ms epoch at 4 Msps");
+        ch.carrier_freq = dopp;
+        ch.code_phase = 300.0; // chips
+        let code_rate = 1.023e6 * (1.0 + dopp / F_L1);
+        let t_c = 4092.0 / code_rate;
+        ch.t_code_meas = t_c;
+        let t_proc = 100_000.0;
+        let t_wrap = t_proc - (ch.code_phase / 4092.0) * t_c;
+        let t_true = t_wrap - m_true as f64 * t_c;
+        ch.nav_abs_ms = nav_abs;
+        ch.nav_ms = vec![0.0; len];
+        let total = nav_abs as f64 + len as f64;
+        let abs_sym =
+            ((total - ((t_proc - t_true) / 0.004).round()) as i64 + sym_off) as usize;
+        let approx = t_proc - 0.004 * (total - abs_sym as f64);
+        // sanity: with sym_off = 0 the bookkeeping is well inside a quarter
+        // tooth of the true boundary (code_phase 300 of 4092 -> 0.07 teeth)
+        if sym_off == 0 {
+            assert!(
+                (approx - t_true).abs() < t_c / 4.0,
+                "setup: approx off by {:.3} ms",
+                (approx - t_true) * 1e3
+            );
+        }
+        (ch, t_proc, abs_sym, t_true, t_c)
+    }
+
+    /// Bare first-pick snap on the 4 ms code-period lattice (no previous
+    /// anchor, no edge_off): the nearest-tooth snap IS the page boundary.
+    #[test]
+    fn anchor_snaps_to_4ms_lattice_galileo() {
+        let (mut ch, t_proc, abs_sym, t_true, _t_c) =
+            gal_anchor_setup(30_000, 900, 1541, 0);
+        let got = anchor_stream_time(&mut ch, t_proc, abs_sym, 345_615.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "gal snap off by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
+
+    /// Tooth-exact propagation at 250 teeth/s: the previous anchor sits
+    /// exactly one page (2 s of t_tx = 500 teeth) back and the bookkeeping
+    /// deliberately creeps +1 symbol (4 ms) — the propagation must land
+    /// tooth-exact anyway. The channel is OLD (>= 90 s of symbols), so the
+    /// young-channel self-heal cannot re-trust the crept bookkeeping.
+    #[test]
+    fn anchor_propagates_tooth_exact_galileo() {
+        let (mut ch, t_proc, abs_sym, t_true, t_c) =
+            gal_anchor_setup(30_000, 900, 1541, 1);
+        ch.anchor = Some((t_true - 500.0 * t_c, 101.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_sym, 103.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "gal propagation off by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
+
+    /// d_tx == 0 (the same page re-validated by the GAL_RESCAN_BACK window):
+    /// the boundary instant is FIXED — returned unconditionally, immune to
+    /// the crept bookkeeping.
+    #[test]
+    fn anchor_reanchor_same_page_is_stable_galileo() {
+        let (mut ch, t_proc, abs_sym, t_true, _t_c) =
+            gal_anchor_setup(30_000, 900, 1541, 1);
+        ch.anchor = Some((t_true, 77.0));
+        let got = anchor_stream_time(&mut ch, t_proc, abs_sym, 77.0);
+        assert!(
+            (got - t_true).abs() < 1e-12,
+            "same-page re-anchor moved by {:.3} ns",
+            (got - t_true) * 1e9
+        );
+    }
+
+    /// +/-1-tooth self-heal at 4 ms teeth: a YOUNG channel whose previous
+    /// anchor parked one tooth off (wrong first pick) while the bookkeeping
+    /// snap is confident (0.07 teeth) must be re-picked onto the
+    /// bookkeeping tooth — the (0.5..=1.5) teeth window works unchanged on
+    /// the 250 teeth/s comb.
+    #[test]
+    fn anchor_selfheal_one_tooth_galileo() {
+        let (mut ch, t_proc, abs_sym, t_true, t_c) =
+            gal_anchor_setup(2_000, 900, 1541, 0);
+        assert!((2_000.0 + 900.0) * 0.004 < 90.0, "setup: young channel");
+        ch.anchor = Some((t_true - 500.0 * t_c + t_c, 101.0)); // one tooth off
+        let got = anchor_stream_time(&mut ch, t_proc, abs_sym, 103.0);
+        assert!(
+            (got - t_true).abs() < 1e-6,
+            "gal self-heal missed: off by {:.3} ms",
+            (got - t_true) * 1e3
+        );
+    }
+
+    /// Synthetic on-air page (sync + interleaved conv-encoded parts, the
+    /// galileo_inav forward chain) as a soft prompt queue for gal_tick.
+    fn gal_page_soft(word: &[u8], polarity: f32) -> Vec<f64> {
+        use crate::galileo_inav as gi;
+        gi::encode_page(word, &gi::PageExtras::default(), 0, true)
+            .iter()
+            .map(|&b| (polarity * (1.0 - 2.0 * b as f32)) as f64)
+            .collect()
+    }
+
+    /// gal_tick end-to-end on a synthetic word-0 page, BOTH polarities
+    /// (Costas ambiguity): CRC-validates, anchors t_tx = TOW directly (no
+    /// (tow_next-1)*6, no +14 s), caches WN, advances the scan cursor in
+    /// absolute symbol space and drains the queue in place. A word 0 with
+    /// Time != '10' stays CRC-valid but must anchor NOTHING (fail-closed).
+    #[test]
+    fn gal_tick_decodes_page_word0_and_anchors() {
+        use crate::galileo_inav as gi;
+        let tow = 345_615u32; // odd (E1-B pages start at odd GST seconds)
+        let word = gi::make_word0(2, 123, tow);
+        for pol in [1.0f32, -1.0] {
+            let mut ch = Channel::new(Sys::Galileo, 7, 4.0e6, 0.0, 0.0);
+            let mut q = vec![0.0f64; 37]; // zero symbols never match sync
+            q.extend(gal_page_soft(&word, pol));
+            q.extend(vec![0.0f64; 10]);
+            ch.nav_ms = q;
+            let t_proc = 1000.0;
+            let n = ch.gal_tick(t_proc, 0, "l1");
+            assert_eq!(n, 1, "polarity {pol}");
+            let (t_bit, t_tx) = ch.anchor.expect("anchor from word-0 TOW");
+            assert_eq!(t_tx, tow as f64);
+            assert_eq!(ch.anchor_t, t_proc);
+            // bookkeeping: page start = symbol 37 of 547 in the queue at
+            // t_proc -> 1000 - 0.004*(547 - 37) = 997.96, on the comb
+            // (code_phase 0, t_code exactly 4 ms at Doppler 0)
+            assert!(
+                (t_bit - 997.96).abs() < 1e-9,
+                "t_bit {:.6} != 997.96",
+                t_bit
+            );
+            assert_eq!(ch.gal_wn, Some(123));
+            assert_eq!(ch.gal_pol, Some(if pol > 0.0 { 1 } else { -1 }));
+            assert_eq!(ch.nav_scanned, 37 + gi::PAGE_SYMS);
+            // in-place drain to the next scan's window floor
+            assert_eq!(ch.nav_abs_ms, 35);
+            assert_eq!(ch.nav_ms.len(), 512);
+        }
+        // Time flag != '10': WN/TOW are NOT valid (ICD Table 52)
+        let bad = gi::make_word0(1, 123, tow);
+        let mut ch = Channel::new(Sys::Galileo, 7, 4.0e6, 0.0, 0.0);
+        let mut q = vec![0.0f64; 37];
+        q.extend(gal_page_soft(&bad, 1.0));
+        q.extend(vec![0.0f64; 10]);
+        ch.nav_ms = q;
+        assert_eq!(ch.gal_tick(1000.0, 0, "l1"), 1, "page itself is CRC-valid");
+        assert!(ch.anchor.is_none(), "Time != 2 must not anchor");
+        assert!(ch.gal_wn.is_none());
+    }
+
+    /// Damage that survives deinterleaving as a 30-symbol CONTIGUOUS burst
+    /// at the Viterbi input breaks the CRC (a burst of RECEIVED symbols
+    /// deinterleaves to isolated errors the FEC corrects — that is what the
+    /// interleaver is for; oracle-verified 2026-09-02): the page is refused,
+    /// nothing anchors, the scan cursor stays put (fail-closed).
+    #[test]
+    fn gal_tick_crc_damage_fails_closed() {
+        use crate::galileo_inav as gi;
+        let word = gi::make_word0(2, 123, 345_615);
+        let mut soft = gal_page_soft(&word, 1.0);
+        for j in 60usize..90 {
+            // deinterleave[8*col+row] = rx[30*row+col] -> flip the received
+            // odd-part symbols landing at decoder positions 60..90
+            let r = 30 * (j % 8) + j / 8;
+            soft[260 + r] = -soft[260 + r];
+        }
+        let mut ch = Channel::new(Sys::Galileo, 7, 4.0e6, 0.0, 0.0);
+        ch.nav_ms = soft;
+        assert_eq!(ch.gal_tick(1000.0, 0, "l1"), 0);
+        assert!(ch.anchor.is_none());
+        assert_eq!(ch.nav_scanned, 0);
+    }
+
+    /// Word-10 GGTO: a valid decode caches (t_proc-stamped), the all-ones
+    /// invalid sentinel EVICTS the cache (fail-closed — publish nothing
+    /// rather than a stale offset).
+    #[test]
+    fn gal_tick_ggto_cache_and_sentinel_eviction() {
+        use crate::galileo_inav as gi;
+        let alm = gi::AlmTail10::default();
+        let mut ch = Channel::new(Sys::Galileo, 3, 4.0e6, 0.0, 0.0);
+        let w10 = gi::make_word10(1, -3, 5, 12, 40, &alm);
+        ch.nav_ms = gal_page_soft(&w10, 1.0);
+        assert_eq!(ch.gal_tick(10.0, 0, "l1"), 1);
+        let (g, t0) = ch.gal_ggto.clone().expect("valid GGTO cached");
+        assert_eq!(t0, 10.0);
+        assert_eq!(g.wn0g, 40);
+        assert!((g.a0g - (-3.0 * 2f64.powi(-35))).abs() < 1e-18);
+        assert!(ch.anchor.is_none(), "word 10 carries no TOW");
+        // second tick: the old page re-validates first, then the sentinel
+        // page evicts — newest broadcast governs
+        let w10_bad = gi::make_word10(1, -1, -1, 255, 63, &alm);
+        let mut q = vec![0.0f64; 4];
+        q.extend(gal_page_soft(&w10_bad, 1.0));
+        ch.nav_ms.extend(q);
+        assert_eq!(ch.gal_tick(11.0, 0, "l1"), 2);
+        assert!(
+            ch.gal_ggto.is_none(),
+            "all-ones sentinel must evict the cache"
+        );
+    }
+
+    /// Words 1-5 through gal_tick: the IODnav batch assembles into ch.eph
+    /// (sys 2, GST WN + 1024, toe/toc x60, BGD(E1,E5b) in tgd, composite
+    /// health 0) and the word-5 TOW anchors. A later same-issue word 5 with
+    /// E1B_HS != 0 EVICTS the incumbent (the two-sided health law).
+    #[test]
+    fn gal_tick_assembles_ephemeris_with_health_law() {
+        use crate::galileo_inav as gi;
+        let iod = 87u32;
+        let words = [
+            gi::make_word1(iod, 5000, 111, 222, 333),
+            gi::make_word2(iod, -44, 55, -66, 77),
+            gi::make_word3(iod, -1, 2, -3, 4, 5, -6, 107),
+            gi::make_word4(iod, 9, 1, -2, 4000, 12_345, -678, 3),
+            gi::make_word5(3, -4, 5, -6, 7, 0, 0, 0, 0, 1410, 345_625, [0; 5]),
+        ];
+        let mut ch = Channel::new(Sys::Galileo, 9, 4.0e6, 0.0, 0.0);
+        let mut q = Vec::new();
+        for w in &words {
+            q.extend(gal_page_soft(w, 1.0));
+        }
+        ch.nav_ms = q;
+        assert_eq!(ch.gal_tick(50.0, 0, "l1"), 5);
+        let e = ch.eph.clone().expect("batch installed");
+        assert_eq!(e.sys, 2);
+        assert_eq!(e.prn, 9);
+        assert_eq!(e.week, (1410 + 1024) as f64);
+        assert_eq!(e.toe, 5000.0 * 60.0);
+        assert_eq!(e.toc, 4000.0 * 60.0);
+        assert!((e.tgd - 7.0 * 2f64.powi(-32)).abs() < 1e-18, "BGD(E1,E5b)");
+        assert_eq!(e.health, Some(0));
+        assert_eq!(ch.anchor.map(|(_, t)| t), Some(345_625.0));
+        // same-issue health flip: E1B_HS = 1 -> composite 2, evicts
+        let w5_bad =
+            gi::make_word5(3, -4, 5, -6, 7, 0, 1, 0, 0, 1410, 345_635, [0; 5]);
+        let mut q2 = gal_page_soft(&gi::make_word1(iod, 5000, 111, 222, 333), 1.0);
+        q2.extend(gal_page_soft(&w5_bad, 1.0));
+        ch.nav_ms.extend(q2);
+        let from = ch.nav_scanned.saturating_sub(gi::GAL_RESCAN_BACK);
+        assert_eq!(ch.gal_tick(60.0, from, "l1"), 3);
+        assert!(ch.eph.is_none(), "same-issue health flip must evict");
+        assert_eq!(ch.anchor.map(|(_, t)| t), Some(345_635.0));
     }
 
     /// SBAS integer-second resolution: the GEO's travel time exceeds the

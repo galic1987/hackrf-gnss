@@ -329,6 +329,70 @@ def test_geo_ranging_rows_count_via_n_sbas_identity():
     assert any("clock_bias-v4" in f for f in rep["gate_fails"])
 
 
+def test_galileo_rows_count_via_n_gal_identity():
+    # additive v4 Galileo-ranging fields (2026-09-02 lever 1): a row
+    # carrying an accepted GAL measurement reports n_gal (plus
+    # n_gal_pre_reject / ggto_applied annotations), and the identity check
+    # generalizes to n_gps + n_bds + n_sbas + n_gal == n_sat. Rows without
+    # the field (older emitters) default to n_gal = 0 — every historical
+    # v4 row keeps passing unchanged.
+    rows = _rows("v4-gal", 1_787_000_000.0, 4000)
+    for r in rows[:2000]:
+        r["n_sat"] = 10
+        r["n_gal"] = 2
+        r["n_gal_pre_reject"] = 2
+        r["ggto_applied"] = True
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_schema"] == 4000
+    assert rep["n_quality"] == 4000
+    assert rep["verdict"] is True
+    # a mixed GAL+SBAS row satisfies the full 4-way identity
+    rows = _rows("v4-gal-mix", 1_787_000_000.0, 4000)
+    for r in rows[:100]:
+        r["n_sat"] = 10
+        r["n_sbas"] = 1
+        r["n_gal"] = 1
+        r["geo_ranging"] = [131]
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_schema"] == 4000
+    # inconsistent 4-way constellation identity stays generation-fatal
+    rows = _rows("v4-gal-bad", 1_787_000_000.0, 4000)
+    rows[-1]["n_gal"] = 1  # 6 + 2 + 0 + 1 != 8
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert any("clock_bias-v4" in f for f in rep["gate_fails"])
+    # and n_gal must be an exact JSON integer when present
+    rows = _rows("v4-gal-type", 1_787_000_000.0, 4000)
+    rows[-1]["n_sat"] = 9
+    rows[-1]["n_gal"] = 1.0
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+    assert any("clock_bias-v4" in f for f in rep["gate_fails"])
+    # a negative n_gal is likewise generation-fatal (min() gate)
+    rows = _rows("v4-gal-neg", 1_787_000_000.0, 4000)
+    rows[-1]["n_sat"] = 7
+    rows[-1]["n_gal"] = -1
+    rep = analyze(rows)
+    assert rep["verdict"] is None
+
+
+def test_historical_rows_without_n_gal_still_pass():
+    # the pre-GAL fleet of v4 rows (no n_gal, no n_sbas beyond the GEO
+    # amendment) must keep passing the generalized identity via the
+    # missing -> 0 defaults — the schema string stays clock_bias-v4 and
+    # the change is additive for every historical consumer.
+    rows = _rows("v4-historical", 1_787_000_000.0, 4000)
+    for r in rows:
+        assert "n_gal" not in r and "n_sbas" not in r
+    rep = analyze(rows)
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    assert rep["n_schema"] == 4000
+    assert rep["n_quality"] == 4000
+    assert rep["verdict"] is True
+
+
 def test_dropped_slip_rows_ride_the_normal_quality_gates():
     # Lever 3b: a slip-dropped epoch publishes slips == 0 plus a
     # dropped_slip list — an ADDITIVE annotation the analyzer must carry
