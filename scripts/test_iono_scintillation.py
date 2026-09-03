@@ -31,15 +31,16 @@ def test_s4_amplitude_scintillation():
 
 
 def test_sigma_phi_phase_scintillation():
-    # Constant frequency (linear phase slope cyc = f0 * t) has 0 second-difference
+    # Constant frequency (linear phase slope cyc = f0 * t) has 0 2nd-order polyfit residual
+    times = [float(i) for i in range(60)]
     cycles_linear = [100.0 + 2.5 * i for i in range(60)]
-    sigma = iono.compute_sigma_phi(cycles_linear)
+    sigma = iono.compute_sigma_phi(times, cycles_linear)
     assert pytest.approx(sigma, abs=1e-6) == 0.0
 
     # Injected phase jitter
     jitter = [math.sin(i * 1.5) * 0.1 for i in range(60)]
     cycles_jitter = [100.0 + 2.5 * i + j for i, j in enumerate(jitter)]
-    sigma_jit = iono.compute_sigma_phi(cycles_jitter)
+    sigma_jit = iono.compute_sigma_phi(times, cycles_jitter)
     assert sigma_jit > 0.05
 
 

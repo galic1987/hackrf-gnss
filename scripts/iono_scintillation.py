@@ -39,38 +39,41 @@ HISTORY_PATH = "/Volumes/Radiator 8TB/gnss/observations/iono_history.jsonl"
 WINDOW_S = 60.0  # standard 60-second scintillation window
 
 
+import numpy as np
+
+
 def compute_s4(cn0_values):
     """Compute amplitude scintillation index S4 from C/N0 history."""
-    if len(cn0_values) < 10:
+    if len(cn0_values) < 15:
         return 0.0
-    # Linear signal intensity I = 10^(CN0/10)
     intensities = [10.0 ** (c / 10.0) for c in cn0_values if c > 0]
-    if len(intensities) < 10:
+    if len(intensities) < 15:
         return 0.0
     mean_i = sum(intensities) / len(intensities)
     if mean_i <= 0.0:
         return 0.0
     mean_i2 = sum(x * x for x in intensities) / len(intensities)
     var_i = max(0.0, mean_i2 - mean_i * mean_i)
-    return math.sqrt(var_i) / mean_i
+    raw_s4 = math.sqrt(var_i) / mean_i
+    # Detrend thermal floor (S4_thermal ~ 0.04)
+    s4_scint = math.sqrt(max(0.0, raw_s4**2 - 0.04**2))
+    return float(s4_scint)
 
 
-def compute_sigma_phi(phase_cycles_history):
-    """Compute phase scintillation index sigma_phi (radians) from 2nd-order detrended phase."""
+def compute_sigma_phi(times, phase_cycles_history):
+    """Compute phase scintillation index sigma_phi (radians) using 3rd-order polynomial detrending."""
     if len(phase_cycles_history) < 15:
         return 0.0
-    n = len(phase_cycles_history)
-    # Convert cycles to radians
-    phi_rad = [cyc * 2.0 * math.pi for cyc in phase_cycles_history]
-    # Simple 2nd-difference robust standard deviation
-    diff2 = [phi_rad[i+2] - 2.0 * phi_rad[i+1] + phi_rad[i] for i in range(n - 2)]
-    if not diff2:
-        return 0.0
-    mean_d = sum(diff2) / len(diff2)
-    var = sum((x - mean_d) ** 2 for x in diff2) / len(diff2)
-    # Scale 2nd difference variance back to white phase noise std: Var(D2) = 6 * Var(phi)
-    sigma = math.sqrt(var / 6.0) if var > 0 else 0.0
-    return sigma
+    t = np.array(times, dtype=np.float64)
+    t = t - t[0]
+    phi_rad = np.array(phase_cycles_history, dtype=np.float64) * (2.0 * np.pi)
+    
+    # 3rd-order polynomial fit absorbs line-of-sight orbital jerk, acceleration and velocity
+    deg = 3 if len(t) >= 20 else 2
+    coeffs = np.polyfit(t, phi_rad, deg)
+    fit = np.polyval(coeffs, t)
+    residuals = phi_rad - fit
+    return float(np.std(residuals))
 
 
 def compute_roti(dtec_history, dt_s=1.0):
@@ -83,7 +86,7 @@ def compute_roti(dtec_history, dt_s=1.0):
         return 0.0
     mean_rot = sum(rot) / len(rot)
     var_rot = sum((x - mean_rot) ** 2 for x in rot) / len(rot)
-    return math.sqrt(var_rot)
+    return float(math.sqrt(var_rot))
 
 
 class IonoMonitor:
@@ -93,7 +96,7 @@ class IonoMonitor:
         self.state_file = state_file
         # Satellite key: (sys, prn) -> deque of (t, carrier_cycles, cn0)
         self.sat_history = collections.defaultdict(lambda: collections.deque(maxlen=int(WINDOW_S * 2)))
-        self.gf_history = collections.deque(maxlen=int(WINDOW_S * 2))  # (t, dTEC)
+        self.geo_history = collections.deque(maxlen=int(WINDOW_S * 2))  # (t, dTEC)
 
     def update(self):
         """Read tracker file, update buffers, compute scintillation metrics, publish state."""
@@ -124,8 +127,7 @@ class IonoMonitor:
                 pass
 
         active_sats = {}
-        gps_phases = []
-        bds_phases = []
+        geo_phases = {}
 
         for s in sats:
             prn = s.get("prn")
@@ -146,16 +148,18 @@ class IonoMonitor:
             if slip:
                 buf.clear()
 
-            buf.append((now, cycles, cn0))
+            sat_epoch = float(s.get("epoch") or now)
+            buf.append((sat_epoch, cycles, cn0))
             
             # Prune old samples
-            while buf and now - buf[0][0] > WINDOW_S:
+            while buf and sat_epoch - buf[0][0] > WINDOW_S:
                 buf.popleft()
 
             # Compute per-sat scintillation
+            t_hist = [x[0] for x in buf]
             cyc_hist = [x[1] for x in buf]
             cn0_hist = [x[2] for x in buf]
-            sigma_phi = compute_sigma_phi(cyc_hist)
+            sigma_phi = compute_sigma_phi(t_hist, cyc_hist)
             s4 = compute_s4(cn0_hist)
             
             pos = sky_map.get(key, {})
@@ -170,36 +174,28 @@ class IonoMonitor:
                 "el_deg": pos.get("el")
             }
 
-            if sys_name == "gps":
-                gps_phases.append((cycles, cn0, pos.get("az"), pos.get("el")))
-            elif sys_name == "beidou":
-                bds_phases.append((cycles, cn0, pos.get("az"), pos.get("el")))
+            if sys_name == "sbas" and prn in (131, 135):
+                geo_phases[prn] = cycles
 
-        # Dual-frequency regional geometry-free differential
-        # If we have both GPS L1 and BDS B1I in lock
+        # Geostationary zero-dynamics differential sTEC (WAAS 131 vs 135)
         delta_tec = 0.0
         roti = 0.0
-        dual_freq_active = False
+        geo_active = False
 
-        if gps_phases and bds_phases:
-            # Pair best GPS and best BDS
-            g_cyc = max(gps_phases, key=lambda x: x[1])[0]
-            b_cyc = max(bds_phases, key=lambda x: x[1])[0]
+        if 131 in geo_phases and 135 in geo_phases:
+            # Both GEOs are on L1 (LAM_L1) and have near-zero orbital velocity
+            diff_m = (geo_phases[131] - geo_phases[135]) * LAM_L1
+            raw_dtec = (diff_m / LAM_L1) * 0.1  # normalized relative TECU variation
             
-            l1_m = g_cyc * LAM_L1
-            b1i_m = b_cyc * LAM_B1I
-            l_gf = l1_m - b1i_m
-            raw_dtec = TEC_FACTOR_TECU_PER_M * l_gf
-            
-            self.gf_history.append((now, raw_dtec))
-            while self.gf_history and now - self.gf_history[0][0] > WINDOW_S:
-                self.gf_history.popleft()
+            self.geo_history.append((now, raw_dtec))
+            while self.geo_history and now - self.geo_history[0][0] > WINDOW_S:
+                self.geo_history.popleft()
 
-            if len(self.gf_history) >= 10:
-                base_dtec = self.gf_history[0][1]
+            if len(self.geo_history) >= 10:
+                base_dtec = self.geo_history[0][1]
                 delta_tec = raw_dtec - base_dtec
-                roti = compute_roti([x[1] for x in self.gf_history], dt_s=1.0)
-                dual_freq_active = True
+                roti = compute_roti([x[1] for x in self.geo_history], dt_s=1.0)
+                geo_active = True
 
         # Overall space weather categorization
         all_sigma = [v["sigma_phi_rad"] for v in active_sats.values()]
@@ -207,9 +203,9 @@ class IonoMonitor:
         max_sigma = max(all_sigma) if all_sigma else 0.0
         max_s4 = max(all_s4) if all_s4 else 0.0
 
-        if max_sigma > 0.25 or max_s4 > 0.35 or roti > 2.0:
+        if max_sigma > 0.25 or max_s4 > 0.35:
             weather = "DISTURBED (STORM)"
-        elif max_sigma > 0.10 or max_s4 > 0.15 or roti > 0.5:
+        elif max_sigma > 0.10 or max_s4 > 0.15:
             weather = "MODERATE"
         else:
             weather = "QUIET"
@@ -219,9 +215,9 @@ class IonoMonitor:
             "weather": weather,
             "max_sigma_phi_rad": round(max_sigma, 4),
             "max_s4": round(max_s4, 4),
-            "roti_tecu_per_min": round(roti, 4) if dual_freq_active else None,
-            "delta_stec_tecu": round(delta_tec, 4) if dual_freq_active else None,
-            "dual_freq_active": dual_freq_active,
+            "roti_tecu_per_min": round(roti, 4) if geo_active else None,
+            "delta_stec_tecu": round(delta_tec, 4) if geo_active else None,
+            "geo_diff_active": geo_active,
             "n_tracked": len(active_sats),
             "satellites": active_sats
         }
