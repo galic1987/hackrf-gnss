@@ -250,6 +250,15 @@
     5 min. Residual RMS tells you how much to trust it: metres = honest fix, kilometres = the phase convention is still
     being nailed down.</span>
   </div>
+  <!-- Space Weather & Ionospheric Scintillation -->
+  <div class="card s12 acc-violet">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h2 class="tip" tabindex="0" data-tip-title="Ionospheric Space Weather" data-tip="Real-time dispersive ionospheric plasma advance and scintillation monitoring across GPS L1 (1575.42 MHz), BeiDou B1I (1561.10 MHz), and WAAS Geostationary carriers.">Space weather &amp; ionospheric scintillation &mdash; live plasma observables</h2>
+      <a href="/iono.html" class="pill info" style="text-decoration:none; font-size:0.85em; color:var(--cyan); border-color:var(--cyan);">&#9728; Open Full Observatory &rarr;</a>
+    </div>
+    <div id="iono" style="margin-top:6px; line-height:1.7;"><span class="dim">waiting for iono producer&hellip;</span></div>
+    <span class="cap">Dispersive geometry-free carrier combination (factor = 334.12 TECU/m) + 3rd-order jerk detrended phase scintillation (&sigma;<sub>&phi;</sub>, rad) and amplitude variance (S<sub>4</sub>) across 9+ tracked satellites.</span>
+  </div>
 
   <!-- per-band drift table -->
   <div class="card s12">
@@ -1709,6 +1718,23 @@ function render(st) {
       '<br><span class="dim">' + (ph.rate_hz || 60) + " epochs/s · &lambda; " +
       (ph.lambda_mm || 497.7) + " mm · updated " + age(ph.epoch) + "</span>";
     drawPhase(ph.series);
+  }
+
+  // live space weather & ionospheric scintillation section
+  var ionoEl = document.getElementById("iono");
+  if (ionoEl) {
+    if (st.weather) {
+      var wCol = st.weather.indexOf("STORM") !== -1 ? "var(--red)" : (st.weather.indexOf("MODERATE") !== -1 ? "var(--amber)" : "var(--green)");
+      var wPill = '<span class="pill" style="color:' + wCol + '; border-color:' + wCol + ';">' + esc(st.weather) + '</span>';
+      var sigText = st.max_sigma_phi_rad !== undefined ? ' &nbsp;&bull;&nbsp; max &sigma;<sub>&phi;</sub> <b>' + st.max_sigma_phi_rad.toFixed(3) + ' rad</b>' : '';
+      var s4Text = st.max_s4 !== undefined ? ' &nbsp;&bull;&nbsp; max S<sub>4</sub> <b>' + st.max_s4.toFixed(3) + '</b>' : '';
+      var tecText = (st.delta_stec_tecu !== null && st.delta_stec_tecu !== undefined) ? ' &nbsp;&bull;&nbsp; GEO &Delta;sTEC <b>' + st.delta_stec_tecu.toFixed(2) + ' TECU</b>' : '';
+      var nTrk = st.n_tracked ? ' &nbsp;&bull;&nbsp; <b>' + st.n_tracked + '</b> sats tracked' : '';
+      ionoEl.innerHTML = wPill + sigText + s4Text + tecText + nTrk +
+        '<br><span class="dim">Ionospheric thin-shell pierce points &bull; <a href="/iono.html" style="color:var(--cyan); text-decoration:none;">View live polar sky map &amp; 60s scintillation strip chart &rarr;</a></span>';
+    } else {
+      ionoEl.innerHTML = '<span class="dim">waiting for iono producer&hellip;</span>';
+    }
   }
 
   var rows = (st.sources || []).map(function (s) {
