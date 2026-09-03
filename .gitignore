@@ -1,4 +1,5 @@
-/target
+target/
+**/target/
 *.iq
 .DS_Store
 *.f32
