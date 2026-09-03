@@ -356,7 +356,8 @@
         <th>IPP (350 km)</th>
         <th>F(E)</th>
         <th>Klobuchar Delay</th>
-        <th>Klobuchar sTEC</th>
+        <th>Tropo Delay</th>
+        <th>Total Atm</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
@@ -366,13 +367,13 @@
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="14" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="15" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
 
 <!-- Space Weather & Geodesy Experiments -->
-<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px;">
+<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px;">
   <!-- Card 1: TID Wavelet Analyzer -->
   <div class="card">
     <div class="card-label">
@@ -422,6 +423,19 @@
     <div class="card-sub">Reflective: <b id="mpiReflective" style="color:var(--magenta);">East (3.83 dB)</b> &bull; Clean: <b id="mpiClean" style="color:var(--green);">SW (3.22 dB)</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       10-day sidereal repeat grid (468 cells) &bull; Active elevated risk: <b id="mpiActiveRisk">0 sats</b>.
+    </div>
+  </div>
+
+  <!-- Card 5: Tropospheric Path Delay -->
+  <div class="card">
+    <div class="card-label">
+      <span>Tropospheric Path Delay (Saastamoinen)</span>
+      <span class="badge" id="tropoBadge" style="background:rgba(56,189,248,0.15); color:var(--blue); border:1px solid rgba(56,189,248,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">NEUTRAL</span>
+    </div>
+    <div class="card-val" id="ztdVal">2.42 <span class="unit">m ZTD</span></div>
+    <div class="card-sub">Hydro: <b id="zhdVal">2.30 m</b> &bull; Wet: <b id="zwdVal">0.12 m</b> (<b id="ztdNs">8.07 ns</b>)</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Niell mapping &bull; P<sub>0</sub>: <span id="p0Val">1010.8 hPa</span> &bull; 20m station elevation.
     </div>
   </div>
 </div>
@@ -591,6 +605,20 @@
       }
     }
 
+    // Tropospheric Path Delay
+    if (st.ztd_m !== undefined && st.ztd_m !== null) {
+      var zv = document.getElementById("ztdVal");
+      if (zv) zv.innerHTML = st.ztd_m.toFixed(2) + ' <span class="unit">m ZTD</span>';
+      var zh = document.getElementById("zhdVal");
+      if (zh && st.zhd_m !== undefined) zh.textContent = st.zhd_m.toFixed(2) + " m";
+      var zw = document.getElementById("zwdVal");
+      if (zw && st.zwd_m !== undefined) zw.textContent = st.zwd_m.toFixed(2) + " m";
+      var zn = document.getElementById("ztdNs");
+      if (zn && st.ztd_ns !== undefined) zn.textContent = st.ztd_ns.toFixed(2) + " ns";
+      var zp = document.getElementById("p0Val");
+      if (zp && st.surface_p0_hpa !== undefined) zp.textContent = st.surface_p0_hpa.toFixed(1) + " hPa";
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -601,7 +629,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='14' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='15' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -624,8 +652,14 @@
 
       var klobDelay = (s.klobuchar_delay_ns !== undefined && s.klobuchar_delay_ns !== null)
         ? s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_delay_m.toFixed(1) + " m)" : "—";
-      var klobTec = (s.klobuchar_stec_tecu !== undefined && s.klobuchar_stec_tecu !== null)
-        ? s.klobuchar_stec_tecu.toFixed(1) + " TECU" : "—";
+
+      var tropoInfo = (lastPayload && lastPayload.tropo_satellites && lastPayload.tropo_satellites[keys[i]]) ? lastPayload.tropo_satellites[keys[i]] : null;
+      var tropoCol = tropoInfo
+        ? tropoInfo.tropo_delay_m.toFixed(2) + " m (" + tropoInfo.tropo_delay_ns.toFixed(1) + " ns)"
+        : "—";
+      var totalAtmCol = tropoInfo
+        ? "<strong>" + tropoInfo.total_atm_delay_m.toFixed(2) + " m</strong> (" + tropoInfo.total_atm_delay_ns.toFixed(1) + " ns)"
+        : "—";
 
       var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
       var mpCol = mpInfo
@@ -642,7 +676,8 @@
         "<td>" + ippStr + "</td>" +
         "<td>" + fStr + "</td>" +
         "<td>" + klobDelay + "</td>" +
-        "<td>" + klobTec + "</td>" +
+        "<td>" + tropoCol + "</td>" +
+        "<td>" + totalAtmCol + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -905,6 +940,10 @@
       var mpTip = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[match.key])
         ? "<br>HMS Multipath: " + lastPayload.active_satellites[match.key].grid_mpi_db.toFixed(2) + " dB (" + lastPayload.active_satellites[match.key].reflection_risk + ")"
         : "";
+      var tropoTip = (lastPayload && lastPayload.tropo_satellites && lastPayload.tropo_satellites[match.key])
+        ? "<br>Troposphere: " + lastPayload.tropo_satellites[match.key].tropo_delay_m.toFixed(2) + " m (" + lastPayload.tropo_satellites[match.key].tropo_delay_ns.toFixed(1) + " ns)" +
+          "<br><strong>Total Atmosphere: " + lastPayload.tropo_satellites[match.key].total_atm_delay_m.toFixed(2) + " m</strong> (" + lastPayload.tropo_satellites[match.key].total_atm_delay_ns.toFixed(1) + " ns)"
+        : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -915,6 +954,7 @@
         "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
         "S4: " + (s.s4 ? s.s4.toFixed(3) : "—") +
         klobTip +
+        tropoTip +
         mpTip;
     } else {
       tooltip.style.display = "none";
