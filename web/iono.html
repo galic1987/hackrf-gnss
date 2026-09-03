@@ -672,6 +672,36 @@
     skyCtx.arc(cx, cy, rMax, 0, Math.PI * 2);
     skyCtx.fill();
 
+    // Render Sidereal Multipath Stacking (HMS) Heatmap Overlay
+    if (lastPayload && lastPayload.grid) {
+      var grid = lastPayload.grid;
+      for (var gKey in grid) {
+        var cell = grid[gKey];
+        if (!cell || (cell.hits || 0) < 5) continue;
+        var cMpi = cell.mpi_db || 3.5;
+        // Azimuth wedge: [a0, a1]
+        var a0 = (cell.az_deg - 5.0 - 90.0) * Math.PI / 180.0;
+        var a1 = (cell.az_deg + 5.0 - 90.0) * Math.PI / 180.0;
+        // Elevation radii: [rInner, rOuter]
+        var rInner = rMax * (1.0 - Math.min(90.0, cell.el_deg + 2.5) / 90.0);
+        var rOuter = rMax * (1.0 - Math.max(0.0, cell.el_deg - 2.5) / 90.0);
+
+        if (cMpi >= 3.8) {
+          skyCtx.fillStyle = "rgba(244, 63, 94, 0.22)"; // Vivid Magenta: Specular Reflector (East/NE)
+        } else if (cMpi >= 3.3) {
+          skyCtx.fillStyle = "rgba(245, 158, 11, 0.12)"; // Amber: Moderate Scatter
+        } else {
+          skyCtx.fillStyle = "rgba(0, 240, 255, 0.08)"; // Cyan: Clean Open Sky (SW)
+        }
+
+        skyCtx.beginPath();
+        skyCtx.arc(cx, cy, rOuter, a0, a1);
+        skyCtx.arc(cx, cy, rInner, a1, a0, true);
+        skyCtx.closePath();
+        skyCtx.fill();
+      }
+    }
+
     // Concentric elevation circles (0°, 30°, 60°)
     skyCtx.lineWidth = 1;
     skyCtx.strokeStyle = "rgba(255, 255, 255, 0.1)";
@@ -760,11 +790,39 @@
       skyCtx.lineWidth = 2;
       skyCtx.stroke();
 
+      // Multipath Risk Ring
+      var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[key])
+        ? lastPayload.active_satellites[key] : null;
+
+      if (mpInfo && mpInfo.reflection_risk === "HIGH") {
+        skyCtx.strokeStyle = "rgba(244, 63, 94, 0.9)";
+        skyCtx.lineWidth = 3;
+        skyCtx.beginPath();
+        skyCtx.arc(sx, sy, 16, 0, Math.PI * 2);
+        skyCtx.stroke();
+      } else if (mpInfo && mpInfo.reflection_risk === "ELEVATED") {
+        skyCtx.strokeStyle = "rgba(245, 158, 11, 0.8)";
+        skyCtx.lineWidth = 2;
+        skyCtx.beginPath();
+        skyCtx.arc(sx, sy, 14, 0, Math.PI * 2);
+        skyCtx.stroke();
+      }
+
       // Satellite Label
       skyCtx.fillStyle = "#ffffff";
       skyCtx.font = "bold 18px var(--font-mono)";
       skyCtx.fillText(key, sx + 14, sy - 6);
     }
+
+    // HMS Heatmap Legend
+    skyCtx.font = "14px var(--font-mono)";
+    skyCtx.textAlign = "center";
+    skyCtx.fillStyle = "rgba(244, 63, 94, 0.9)";
+    skyCtx.fillText("■ Reflector (>3.8 dB)", cx - 140, cy + rMax + 24);
+    skyCtx.fillStyle = "rgba(245, 158, 11, 0.9)";
+    skyCtx.fillText("■ Moderate (3.3-3.8 dB)", cx, cy + rMax + 24);
+    skyCtx.fillStyle = "rgba(0, 240, 255, 0.9)";
+    skyCtx.fillText("■ Clean (<3.3 dB)", cx + 140, cy + rMax + 24);
   }
 
   function drawStripChart() {
