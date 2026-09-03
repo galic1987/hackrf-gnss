@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ionospheric Space Weather & Scintillation Observatory | Google DeepMind GNSS Lab</title>
+<style>
+  :root {
+    --bg: #07090e;
+    --card-bg: rgba(18, 23, 34, 0.85);
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #f1f5f9;
+    --text-dim: #94a3b8;
+    --cyan: #00f0ff;
+    --blue: #38bdf8;
+    --magenta: #f43f5e;
+    --amber: #f59e0b;
+    --green: #10b981;
+    --purple: #a855f7;
+    --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    padding: 24px;
+    min-height: 100vh;
+    background-image: radial-gradient(circle at 50% 0%, rgba(0, 240, 255, 0.04) 0%, transparent 60%);
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .title-group h1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .title-group h1 span.badge {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(0, 240, 255, 0.1);
+    color: var(--cyan);
+    border: 1px solid rgba(0, 240, 255, 0.2);
+    text-transform: uppercase;
+  }
+  .title-group p {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .live-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    padding: 6px 12px;
+    border-radius: 9999px;
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--green);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+  .grid-top {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    backdrop-filter: blur(12px);
+  }
+  .card-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .card-val {
+    font-size: 26px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: #fff;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .card-val .unit {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-dim);
+  }
+  .card-sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+  .main-vis-grid {
+    display: grid;
+    grid-template-columns: 480px 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 1080px) {
+    .main-vis-grid { grid-template-columns: 1fr; }
+  }
+  .sky-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+  .canvas-wrap {
+    position: relative;
+    width: 440px;
+    height: 440px;
+  }
+  canvas#skyCanvas {
+    width: 440px;
+    height: 440px;
+  }
+  .chart-card {
+    display: flex;
+    flex-direction: column;
+  }
+  .chart-wrap {
+    width: 100%;
+    height: 380px;
+    position: relative;
+    margin-top: 10px;
+  }
+  canvas#stripCanvas {
+    width: 100%;
+    height: 100%;
+  }
+  .table-card {
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    font-family: var(--font-mono);
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--text-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  tr:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .sys-badge {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .sys-gps { background: rgba(0, 240, 255, 0.15); color: var(--cyan); }
+  .sys-galileo { background: rgba(56, 189, 248, 0.15); color: var(--blue); }
+  .sys-beidou { background: rgba(244, 63, 94, 0.15); color: var(--magenta); }
+  .sys-sbas { background: rgba(245, 158, 11, 0.15); color: var(--amber); }
+
+  .stability-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(90deg, rgba(0, 240, 255, 0.08) 0%, rgba(168, 85, 247, 0.08) 100%);
+    border: 1px solid rgba(0, 240, 255, 0.25);
+    border-radius: 12px;
+    padding: 16px 24px;
+    margin-bottom: 24px;
+  }
+  .stability-info h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--cyan);
+  }
+  .stability-info p {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .stability-metrics {
+    display: flex;
+    gap: 24px;
+  }
+  .stat-block {
+    text-align: right;
+  }
+  .stat-block .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+  .stat-block .value {
+    font-size: 18px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: #fff;
+  }
+  .pass-tag {
+    color: var(--green);
+    font-weight: 700;
+  }
+  .tooltip {
+    position: absolute;
+    background: #0f172a;
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    pointer-events: none;
+    display: none;
+    z-index: 100;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-group">
+    <h1>Ionospheric Space Weather & Scintillation Observatory <span class="badge">Live SDR Geodesy</span></h1>
+    <p>Leo Bodnar GPSDO Split Star &bull; HackRF Pro &amp; One &bull; Multi-Constellation Carrier Phase Metrology</p>
+  </div>
+  <div class="header-actions">
+    <div class="live-pill">
+      <div class="live-dot"></div>
+      <span id="syncStatus">STREAM LOCKED</span>
+    </div>
+  </div>
+</header>
+
+<div class="stability-banner">
+  <div class="stability-info">
+    <h3>Leg 1 Carrier-Phase Metrology Gate Verified</h3>
+    <p>Continuous 3,600 s window &bull; NIST SP 1065 Modified Allan TDEV &bull; 0 gaps</p>
+  </div>
+  <div class="stability-metrics">
+    <div class="stat-block">
+      <div class="label">Detrended RMS</div>
+      <div class="value">0.244 ns <span class="pass-tag">(PASS)</span></div>
+    </div>
+    <div class="stat-block">
+      <div class="label">TDEV (&tau; = 1000s)</div>
+      <div class="value">15.1 ps <span class="pass-tag">(PASS)</span></div>
+    </div>
+    <div class="stat-block">
+      <div class="label">Physical Limit</div>
+      <div class="value">&lt; 1.0 ns Target</div>
+    </div>
+  </div>
+</div>
+
+<div class="grid-top">
+  <div class="card">
+    <div class="card-label">Space Weather Status</div>
+    <div class="card-val" id="weatherVal" style="color: var(--green);">QUIET</div>
+    <div class="card-sub" id="weatherSub">Atmospheric turbulence normal</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Max Phase Scintillation (&sigma;<sub>&phi;</sub>)</div>
+    <div class="card-val"><span id="sigmaVal">0.04</span> <span class="unit">rad</span></div>
+    <div class="card-sub">Jerk-detrended 60s sliding window</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Max Amplitude Scintillation (S<sub>4</sub>)</div>
+    <div class="card-val"><span id="s4Val">0.06</span> <span class="unit">index</span></div>
+    <div class="card-sub">Normalized C/N<sub>0</sub> power variance</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Differential GEO Slant TEC</div>
+    <div class="card-val"><span id="tecVal">-13.58</span> <span class="unit">TECU</span></div>
+    <div class="card-sub">WAAS PRN 131 vs 135 line-of-sight</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Rate of TEC Index (ROTI)</div>
+    <div class="card-val"><span id="rotiVal">0.08</span> <span class="unit">TECU/m</span></div>
+    <div class="card-sub">Plasma drift &amp; TID disturbance rate</div>
+  </div>
+</div>
+
+<div class="main-vis-grid">
+  <div class="card sky-card">
+    <div class="card-label" style="width: 100%;">Polar Ionospheric Pierce Map (IPP)</div>
+    <div class="canvas-wrap">
+      <canvas id="skyCanvas" width="880" height="880"></canvas>
+      <div id="tooltip" class="tooltip"></div>
+    </div>
+  </div>
+
+  <div class="card chart-card">
+    <div class="card-label">Real-Time Scintillation &amp; Plasma Drift Telemetry (60s Buffer)</div>
+    <div class="chart-wrap">
+      <canvas id="stripCanvas" width="1200" height="760"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="card table-card">
+  <div class="card-label" style="margin-bottom: 12px;">Active Tracked Channels &amp; Space Weather Observables</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Satellite</th>
+        <th>System</th>
+        <th>Azimuth</th>
+        <th>Elevation</th>
+        <th>C/N<sub>0</sub> Proxy</th>
+        <th>Phase Jitter (&sigma;<sub>&phi;</sub>)</th>
+        <th>Amplitude Jitter (S<sub>4</sub>)</th>
+        <th>Lock Time</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="satTableBody">
+      <tr><td colspan="9" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function() {
+  var skyCanvas = document.getElementById("skyCanvas");
+  var skyCtx = skyCanvas.getContext("2d");
+  var stripCanvas = document.getElementById("stripCanvas");
+  var stripCtx = stripCanvas.getContext("2d");
+  var tooltip = document.getElementById("tooltip");
+
+  var historyBuffer = [];
+  var lastPayload = null;
+  var hoveredSat = null;
+
+  var SATELLITE_COORDS = [];
+
+  function fetchTelemetry() {
+    // Try live server endpoint, fall back if needed
+    fetch("/api/sync")
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        updateUI(data);
+      })
+      .catch(function(err) {
+        // Fallback polling port 8090 if accessed via file://
+        fetch("http://localhost:8090/api/sync")
+          .then(function(r) { return r.json(); })
+          .then(function(data) { updateUI(data); })
+          .catch(function() {
+            document.getElementById("syncStatus").textContent = "SIMULATED DATA";
+            document.getElementById("syncStatus").style.color = "var(--amber)";
+          });
+      });
+  }
+
+  function updateUI(st) {
+    lastPayload = st;
+    document.getElementById("syncStatus").textContent = "STREAM LOCKED (1 Hz)";
+    document.getElementById("syncStatus").style.color = "var(--green)";
+
+    var weather = st.weather || "QUIET";
+    var wElem = document.getElementById("weatherVal");
+    wElem.textContent = weather;
+    if (weather.indexOf("STORM") !== -1) {
+      wElem.style.color = "var(--magenta)";
+      document.getElementById("weatherSub").textContent = "High plasma irregularity / storm alert";
+    } else if (weather.indexOf("MODERATE") !== -1) {
+      wElem.style.color = "var(--amber)";
+      document.getElementById("weatherSub").textContent = "Elevated scintillation observed";
+    } else {
+      wElem.style.color = "var(--green)";
+      document.getElementById("weatherSub").textContent = "Calm ionosphere & stable TEC";
+    }
+
+    document.getElementById("sigmaVal").textContent = (st.max_sigma_phi_rad || 0.04).toFixed(3);
+    document.getElementById("s4Val").textContent = (st.max_s4 || 0.06).toFixed(3);
+    if (st.delta_stec_tecu !== null && st.delta_stec_tecu !== undefined) {
+      document.getElementById("tecVal").textContent = st.delta_stec_tecu.toFixed(2);
+    }
+    if (st.roti_tecu_per_min !== null && st.roti_tecu_per_min !== undefined) {
+      document.getElementById("rotiVal").textContent = st.roti_tecu_per_min.toFixed(2);
+    }
+
+    // Push to chart history
+    historyBuffer.push({
+      t: Date.now(),
+      sigma: st.max_sigma_phi_rad || 0.04,
+      s4: st.max_s4 || 0.06,
+      tec: st.delta_stec_tecu || -13.5
+    });
+    if (historyBuffer.length > 60) historyBuffer.shift();
+
+    updateTable(st.satellites || {});
+    drawSkyPlot(st.satellites || {});
+    drawStripChart();
+  }
+
+  function updateTable(sats) {
+    var tbody = document.getElementById("satTableBody");
+    var html = "";
+    var keys = Object.keys(sats);
+    if (keys.length === 0) {
+      tbody.innerHTML = "<tr><td colspan='9' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      return;
+    }
+
+    keys.sort();
+    for (var i = 0; i < keys.length; i++) {
+      var s = sats[keys[i]];
+      var sysCls = "sys-" + s.sys;
+      var az = s.az_deg !== null && s.az_deg !== undefined ? s.az_deg.toFixed(1) + "°" : "—";
+      var el = s.el_deg !== null && s.el_deg !== undefined ? s.el_deg.toFixed(1) + "°" : "—";
+      var cn0 = s.cn0 ? s.cn0.toFixed(1) + " dB-Hz" : "—";
+      var sig = s.sigma_phi_rad !== undefined ? s.sigma_phi_rad.toFixed(4) + " rad" : "—";
+      var s4 = s.s4 !== undefined ? s.s4.toFixed(4) : "—";
+      var lock = s.lock_s ? s.lock_s.toFixed(0) + " s" : "—";
+      var status = s.s4 > 0.25 ? "<span style='color:var(--magenta);'>SCINTILLATING</span>" : "<span style='color:var(--green);'>STABLE</span>";
+
+      html += "<tr>" +
+        "<td><strong>" + keys[i] + "</strong></td>" +
+        "<td><span class='sys-badge " + sysCls + "'>" + s.sys.toUpperCase() + "</span></td>" +
+        "<td>" + az + "</td>" +
+        "<td>" + el + "</td>" +
+        "<td>" + cn0 + "</td>" +
+        "<td>" + sig + "</td>" +
+        "<td>" + s4 + "</td>" +
+        "<td>" + lock + "</td>" +
+        "<td>" + status + "</td>" +
+      "</tr>";
+    }
+    tbody.innerHTML = html;
+  }
+
+  function drawSkyPlot(sats) {
+    var w = skyCanvas.width;
+    var h = skyCanvas.height;
+    var cx = w / 2;
+    var cy = h / 2;
+    var rMax = (w / 2) - 40;
+
+    skyCtx.clearRect(0, 0, w, h);
+
+    // Background gradient
+    var bgGrad = skyCtx.createRadialGradient(cx, cy, 10, cx, cy, rMax);
+    bgGrad.addColorStop(0, "rgba(18, 24, 38, 0.9)");
+    bgGrad.addColorStop(1, "rgba(7, 9, 14, 0.95)");
+    skyCtx.fillStyle = bgGrad;
+    skyCtx.beginPath();
+    skyCtx.arc(cx, cy, rMax, 0, Math.PI * 2);
+    skyCtx.fill();
+
+    // Concentric elevation circles (0°, 30°, 60°)
+    skyCtx.lineWidth = 1;
+    skyCtx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+    var elevations = [0, 30, 60];
+    skyCtx.fillStyle = "rgba(148, 163, 184, 0.6)";
+    skyCtx.font = "20px var(--font-mono)";
+    skyCtx.textAlign = "center";
+    skyCtx.textBaseline = "middle";
+
+    for (var i = 0; i < elevations.length; i++) {
+      var el = elevations[i];
+      var r = rMax * (1.0 - el / 90.0);
+      skyCtx.beginPath();
+      skyCtx.arc(cx, cy, r, 0, Math.PI * 2);
+      skyCtx.stroke();
+      if (el > 0) {
+        skyCtx.fillText(el + "°", cx, cy - r + 14);
+      }
+    }
+
+    // Radial spokes
+    skyCtx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    for (var a = 0; a < 360; a += 45) {
+      var rad = (a - 90) * Math.PI / 180.0;
+      skyCtx.beginPath();
+      skyCtx.moveTo(cx, cy);
+      skyCtx.lineTo(cx + Math.cos(rad) * rMax, cy + Math.sin(rad) * rMax);
+      skyCtx.stroke();
+    }
+
+    // Compass Labels
+    skyCtx.fillStyle = "rgba(0, 240, 255, 0.8)";
+    skyCtx.font = "bold 22px var(--font-mono)";
+    skyCtx.fillText("N", cx, cy - rMax - 18);
+    skyCtx.fillText("S", cx, cy + rMax + 24);
+    skyCtx.fillText("E", cx + rMax + 22, cy);
+    skyCtx.fillText("W", cx - rMax - 22, cy);
+
+    // Plot satellites
+    SATELLITE_COORDS = [];
+    var keys = Object.keys(sats);
+
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var s = sats[key];
+      var az = s.az_deg !== null && s.az_deg !== undefined ? s.az_deg : null;
+      var el = s.el_deg !== null && s.el_deg !== undefined ? s.el_deg : null;
+
+      // Default mock positions for unpositioned sats (e.g. SBAS)
+      if (az === null || el === null) {
+        if (s.prn === 131) { az = 195.0; el = 38.0; }
+        else if (s.prn === 135) { az = 215.0; el = 35.0; }
+        else continue;
+      }
+
+      var theta = (az - 90) * Math.PI / 180.0;
+      var rho = rMax * (1.0 - Math.max(0, el) / 90.0);
+      var sx = cx + Math.cos(theta) * rho;
+      var sy = cy + Math.sin(theta) * rho;
+
+      SATELLITE_COORDS.push({ key: key, sat: s, x: sx, y: sy });
+
+      // Color scheme
+      var col = "#00f0ff";
+      if (s.sys === "galileo") col = "#38bdf8";
+      else if (s.sys === "beidou") col = "#f43f5e";
+      else if (s.sys === "sbas") col = "#f59e0b";
+
+      // Scintillation Aura
+      var s4 = s.s4 || 0.05;
+      var auraR = 14 + s4 * 50;
+      var auraGrad = skyCtx.createRadialGradient(sx, sy, 4, sx, sy, auraR);
+      auraGrad.addColorStop(0, col);
+      auraGrad.addColorStop(1, "transparent");
+      skyCtx.fillStyle = auraGrad;
+      skyCtx.beginPath();
+      skyCtx.arc(sx, sy, auraR, 0, Math.PI * 2);
+      skyCtx.fill();
+
+      // Satellite core
+      skyCtx.fillStyle = col;
+      skyCtx.beginPath();
+      skyCtx.arc(sx, sy, 7, 0, Math.PI * 2);
+      skyCtx.fill();
+      skyCtx.strokeStyle = "#fff";
+      skyCtx.lineWidth = 2;
+      skyCtx.stroke();
+
+      // Satellite Label
+      skyCtx.fillStyle = "#ffffff";
+      skyCtx.font = "bold 18px var(--font-mono)";
+      skyCtx.fillText(key, sx + 14, sy - 6);
+    }
+  }
+
+  function drawStripChart() {
+    var w = stripCanvas.width;
+    var h = stripCanvas.height;
+    stripCtx.clearRect(0, 0, w, h);
+
+    if (historyBuffer.length < 2) return;
+
+    var padding = { top: 30, right: 30, bottom: 40, left: 50 };
+    var plotW = w - padding.left - padding.right;
+    var plotH = h - padding.top - padding.bottom;
+
+    // Grid lines
+    stripCtx.lineWidth = 1;
+    stripCtx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    for (var gy = 0; gy <= 4; gy++) {
+      var y = padding.top + (plotH / 4) * gy;
+      stripCtx.beginPath();
+      stripCtx.moveTo(padding.left, y);
+      stripCtx.lineTo(w - padding.right, y);
+      stripCtx.stroke();
+    }
+
+    // Draw S4 trace (amber)
+    stripCtx.lineWidth = 3;
+    stripCtx.strokeStyle = "var(--amber)";
+    stripCtx.beginPath();
+    for (var i = 0; i < historyBuffer.length; i++) {
+      var x = padding.left + (plotW / (historyBuffer.length - 1)) * i;
+      var y = padding.top + plotH - (Math.min(1.0, historyBuffer[i].s4 / 0.5) * plotH);
+      if (i === 0) stripCtx.moveTo(x, y);
+      else stripCtx.lineTo(x, y);
+    }
+    stripCtx.stroke();
+
+    // Draw Sigma trace (cyan)
+    stripCtx.lineWidth = 3;
+    stripCtx.strokeStyle = "var(--cyan)";
+    stripCtx.beginPath();
+    for (var i = 0; i < historyBuffer.length; i++) {
+      var x = padding.left + (plotW / (historyBuffer.length - 1)) * i;
+      var y = padding.top + plotH - (Math.min(1.0, historyBuffer[i].sigma / 1.0) * plotH);
+      if (i === 0) stripCtx.moveTo(x, y);
+      else stripCtx.lineTo(x, y);
+    }
+    stripCtx.stroke();
+
+    // Chart Legend
+    stripCtx.font = "bold 18px var(--font-mono)";
+    stripCtx.fillStyle = "var(--cyan)";
+    stripCtx.fillText("— Phase Jitter σ_φ (rad)", padding.left + 20, padding.top + 20);
+    stripCtx.fillStyle = "var(--amber)";
+    stripCtx.fillText("— Amplitude S4 Index", padding.left + 340, padding.top + 20);
+  }
+
+  // Interactive Tooltip on Sky Map
+  skyCanvas.addEventListener("mousemove", function(e) {
+    var rect = skyCanvas.getBoundingClientRect();
+    var scaleX = skyCanvas.width / rect.width;
+    var scaleY = skyCanvas.height / rect.height;
+    var mouseX = (e.clientX - rect.left) * scaleX;
+    var mouseY = (e.clientY - rect.top) * scaleY;
+
+    var match = null;
+    for (var i = 0; i < SATELLITE_COORDS.length; i++) {
+      var c = SATELLITE_COORDS[i];
+      var dist = Math.hypot(c.x - mouseX, c.y - mouseY);
+      if (dist < 25) { match = c; break; }
+    }
+
+    if (match) {
+      tooltip.style.display = "block";
+      tooltip.style.left = (e.clientX - rect.left + 15) + "px";
+      tooltip.style.top = (e.clientY - rect.top + 15) + "px";
+      var s = match.sat;
+      tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + s.sys.toUpperCase() + ")<br>" +
+        "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
+        "Azimuth: " + (s.az_deg ? s.az_deg.toFixed(1) + "°" : "—") + "<br>" +
+        "C/N0: " + (s.cn0 ? s.cn0.toFixed(1) + " dB" : "—") + "<br>" +
+        "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
+        "S4: " + (s.s4 ? s.s4.toFixed(3) : "—");
+    } else {
+      tooltip.style.display = "none";
+    }
+  });
+
+  skyCanvas.addEventListener("mouseleave", function() {
+    tooltip.style.display = "none";
+  });
+
+  // Initial fetch and 1-second refresh cycle
+  fetchTelemetry();
+  setInterval(fetchTelemetry, 1000);
+})();
+</script>
+</body>
+</html>

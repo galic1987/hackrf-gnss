@@ -1342,6 +1342,16 @@ fn run_web_server(port: u16) -> Result<()> {
                 );
                 let _ = request.respond(response);
             }
+            "/iono" | "/iono.html" => {
+                // Live Space Weather & Ionospheric Scintillation Observatory
+                let body = observations_path()
+                    .and_then(|p| std::fs::read_to_string(p.parent().unwrap().join("iono.html")).ok())
+                    .unwrap_or_else(|| "<h1>iono panel not built yet</h1>".to_string());
+                let response = tiny_http::Response::from_string(body).with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+                );
+                let _ = request.respond(response);
+            }
             "/api/sync" => {
                 // Merged view of the per-producer state files + the legacy
                 // sync_state.json (band_producer still writes it). All files
