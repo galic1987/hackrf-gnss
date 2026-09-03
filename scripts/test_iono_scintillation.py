@@ -55,6 +55,24 @@ def test_roti_calculation():
     assert pytest.approx(iono.compute_roti(dtec_ramp, dt_s=1.0), abs=1e-6) == 0.0
 
 
+def test_compute_ipp_geodesy():
+    # Zenith test: IPP matches receiver coordinates exactly, F(90) = 1.0
+    lat, lon, f = iono.compute_ipp(39.0029, -77.6058, az_deg=0.0, el_deg=90.0)
+    assert pytest.approx(lat, abs=0.01) == 39.0029
+    assert pytest.approx(lon, abs=0.01) == -77.6058
+    assert pytest.approx(f, abs=0.01) == 1.0
+
+    # North at 45 deg elevation: IPP moves North
+    lat_n, lon_n, f_n = iono.compute_ipp(39.0029, -77.6058, az_deg=0.0, el_deg=45.0)
+    assert lat_n > 39.0029
+    assert pytest.approx(lon_n, abs=0.05) == -77.6058
+    assert 1.3 < f_n < 1.6
+
+    # 30 deg elevation: Obliquity factor between 1.7 and 1.8
+    _, _, f_30 = iono.compute_ipp(39.0029, -77.6058, az_deg=180.0, el_deg=30.0)
+    assert 1.7 < f_30 < 1.8
+
+
 def test_iono_monitor_pipeline():
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
         tracker_mock = {

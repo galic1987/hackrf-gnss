@@ -38,8 +38,46 @@ HISTORY_PATH = "/Volumes/Radiator 8TB/gnss/observations/iono_history.jsonl"
 
 WINDOW_S = 60.0  # standard 60-second scintillation window
 
+R_EARTH_KM = 6378.137
+H_IONO_KM = 350.0
+DEFAULT_LAT_DEG = 39.0029
+DEFAULT_LON_DEG = -77.6058
 
 import numpy as np
+
+
+def compute_ipp(lat_deg, lon_deg, az_deg, el_deg, h_km=H_IONO_KM):
+    """Compute 350 km thin-shell Ionospheric Pierce Point (IPP) and obliquity factor."""
+    if az_deg is None or el_deg is None or el_deg <= 0.0:
+        return None, None, 1.0
+    
+    phi_rx = math.radians(lat_deg)
+    lam_rx = math.radians(lon_deg)
+    az = math.radians(az_deg)
+    el = math.radians(el_deg)
+    
+    # Earth central angle psi
+    cos_el = math.cos(el)
+    sin_psi = (R_EARTH_KM / (R_EARTH_KM + h_km)) * cos_el
+    psi = (math.pi / 2.0) - el - math.asin(sin_psi)
+    
+    # IPP Latitude
+    sin_phi_ipp = math.sin(phi_rx) * math.cos(psi) + math.cos(phi_rx) * math.sin(psi) * math.cos(az)
+    phi_ipp = math.asin(max(-1.0, min(1.0, sin_phi_ipp)))
+    
+    # IPP Longitude
+    cos_phi_ipp = math.cos(phi_ipp)
+    if abs(cos_phi_ipp) > 1e-6:
+        sin_dlam = math.sin(psi) * math.sin(az) / cos_phi_ipp
+        dlam = math.asin(max(-1.0, min(1.0, sin_dlam)))
+        lam_ipp = lam_rx + dlam
+    else:
+        lam_ipp = lam_rx
+        
+    # Obliquity factor F(E)
+    f_obliq = 1.0 / math.sqrt(max(1e-6, 1.0 - sin_psi * sin_psi))
+    
+    return round(math.degrees(phi_ipp), 4), round(math.degrees(lam_ipp), 4), round(f_obliq, 3)
 
 
 def compute_s4(cn0_values):
@@ -163,6 +201,10 @@ class IonoMonitor:
             s4 = compute_s4(cn0_hist)
             
             pos = sky_map.get(key, {})
+            az = pos.get("az")
+            el = pos.get("el")
+            ipp_lat, ipp_lon, f_obliq = compute_ipp(DEFAULT_LAT_DEG, DEFAULT_LON_DEG, az, el)
+            
             active_sats[f"{sys_name.upper()}_{prn}"] = {
                 "sys": sys_name,
                 "prn": prn,
@@ -170,8 +212,11 @@ class IonoMonitor:
                 "cn0": cn0,
                 "sigma_phi_rad": round(sigma_phi, 4),
                 "s4": round(s4, 4),
-                "az_deg": pos.get("az"),
-                "el_deg": pos.get("el")
+                "az_deg": az,
+                "el_deg": el,
+                "ipp_lat_deg": ipp_lat,
+                "ipp_lon_deg": ipp_lon,
+                "obliquity_factor": f_obliq
             }
 
             if sys_name == "sbas" and prn in (131, 135):

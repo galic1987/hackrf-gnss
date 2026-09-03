@@ -353,10 +353,12 @@
         <th>System</th>
         <th>Azimuth</th>
         <th>Elevation</th>
-        <th>C/N<sub>0</sub> Proxy</th>
-        <th>Phase Jitter (&sigma;<sub>&phi;</sub>)</th>
-        <th>Amplitude Jitter (S<sub>4</sub>)</th>
-        <th>Lock Time</th>
+        <th>IPP (350 km)</th>
+        <th>F(E)</th>
+        <th>C/N<sub>0</sub></th>
+        <th>&sigma;<sub>&phi;</sub> (rad)</th>
+        <th>S<sub>4</sub></th>
+        <th>Lock</th>
         <th>Status</th>
       </tr>
     </thead>
@@ -462,11 +464,18 @@
       var lock = s.lock_s ? s.lock_s.toFixed(0) + " s" : "—";
       var status = s.s4 > 0.25 ? "<span style='color:var(--magenta);'>SCINTILLATING</span>" : "<span style='color:var(--green);'>STABLE</span>";
 
+      var ippStr = (s.ipp_lat_deg !== undefined && s.ipp_lat_deg !== null)
+        ? s.ipp_lat_deg.toFixed(1) + "°, " + s.ipp_lon_deg.toFixed(1) + "°" : "—";
+      var fStr = (s.obliquity_factor !== undefined && s.obliquity_factor !== null)
+        ? s.obliquity_factor.toFixed(2) : "1.00";
+
       html += "<tr>" +
         "<td><strong>" + keys[i] + "</strong></td>" +
         "<td><span class='sys-badge " + sysCls + "'>" + s.sys.toUpperCase() + "</span></td>" +
         "<td>" + az + "</td>" +
         "<td>" + el + "</td>" +
+        "<td>" + ippStr + "</td>" +
+        "<td>" + fStr + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -664,9 +673,15 @@
       tooltip.style.left = (e.clientX - rect.left + 15) + "px";
       tooltip.style.top = (e.clientY - rect.top + 15) + "px";
       var s = match.sat;
+      var ippTip = (s.ipp_lat_deg !== undefined && s.ipp_lat_deg !== null)
+        ? s.ipp_lat_deg.toFixed(1) + "°N, " + Math.abs(s.ipp_lon_deg).toFixed(1) + "°W" : "—";
+      var fTip = s.obliquity_factor ? s.obliquity_factor.toFixed(2) : "1.00";
+
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + s.sys.toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
         "Azimuth: " + (s.az_deg ? s.az_deg.toFixed(1) + "°" : "—") + "<br>" +
+        "IPP (350 km): " + ippTip + "<br>" +
+        "Obliquity F(E): " + fTip + "<br>" +
         "C/N0: " + (s.cn0 ? s.cn0.toFixed(1) + " dB" : "—") + "<br>" +
         "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
         "S4: " + (s.s4 ? s.s4.toFixed(3) : "—");
