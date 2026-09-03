@@ -361,17 +361,18 @@
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
         <th>Lock</th>
+        <th>Multipath</th>
         <th>Status</th>
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="13" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="14" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
 
 <!-- Space Weather & Geodesy Experiments -->
-<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 24px;">
+<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px;">
   <!-- Card 1: TID Wavelet Analyzer -->
   <div class="card">
     <div class="card-label">
@@ -408,6 +409,19 @@
     <div class="card-sub">Secular offset: <b id="thermalMhz">+0.083 mHz</b> &bull; Drift: <b id="thermalMmDay">+0.30 mm/d</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       24-hr Diurnal Wander: <b><span id="thermalDiurnal">26.5 mm</span></b> (<span id="thermalPs">88.3 ps</span>) &bull; RMS Noise: <b><span id="thermalRms">13.6 mm</span></b> (<span id="thermalHours">117.0 h</span> span).
+    </div>
+  </div>
+
+  <!-- Card 4: Sidereal Multipath Stacking (HMS) -->
+  <div class="card">
+    <div class="card-label">
+      <span>Sidereal Multipath Stacking (HMS)</span>
+      <span class="badge" id="mpiBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">STACKED</span>
+    </div>
+    <div class="card-val" id="mpiVal">3.56 <span class="unit">dB MPI</span></div>
+    <div class="card-sub">Reflective: <b id="mpiReflective" style="color:var(--magenta);">East (3.83 dB)</b> &bull; Clean: <b id="mpiClean" style="color:var(--green);">SW (3.22 dB)</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      10-day sidereal repeat grid (468 cells) &bull; Active elevated risk: <b id="mpiActiveRisk">0 sats</b>.
     </div>
   </div>
 </div>
@@ -552,6 +566,31 @@
       if (thours && st.total_span_hours !== undefined) thours.textContent = st.total_span_hours.toFixed(1) + " h";
     }
 
+    // Sidereal Multipath Stacking (HMS)
+    if (st.overall_mpi_db !== undefined && st.overall_mpi_db !== null) {
+      var mv = document.getElementById("mpiVal");
+      if (mv) mv.innerHTML = st.overall_mpi_db.toFixed(2) + ' <span class="unit">dB MPI</span>';
+      var mr = document.getElementById("mpiReflective");
+      if (mr && st.most_reflective_sector) {
+        mr.textContent = st.most_reflective_sector + " (" + (st.most_reflective_mpi_db ? st.most_reflective_mpi_db.toFixed(2) + " dB" : "") + ")";
+      }
+      var mc = document.getElementById("mpiClean");
+      if (mc && st.cleanest_sector) {
+        mc.textContent = st.cleanest_sector + " (" + (st.cleanest_mpi_db ? st.cleanest_mpi_db.toFixed(2) + " dB" : "") + ")";
+      }
+      var mb = document.getElementById("mpiBadge");
+      if (mb) {
+        mb.textContent = st.overall_mpi_db < 3.3 ? "LOW MP" : (st.overall_mpi_db < 3.8 ? "MODERATE" : "HIGH MP");
+        mb.style.color = st.overall_mpi_db < 3.3 ? "var(--green)" : (st.overall_mpi_db < 3.8 ? "var(--amber)" : "var(--magenta)");
+      }
+      var mar = document.getElementById("mpiActiveRisk");
+      if (mar && st.active_satellites) {
+        var highCount = Object.values(st.active_satellites).filter(function(s) { return s.reflection_risk === "HIGH" || s.reflection_risk === "ELEVATED"; }).length;
+        mar.textContent = highCount + " sats (" + Object.keys(st.active_satellites).length + " tracked)";
+        mar.style.color = highCount > 2 ? "var(--amber)" : "var(--green)";
+      }
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -562,7 +601,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='13' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='14' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -588,6 +627,13 @@
       var klobTec = (s.klobuchar_stec_tecu !== undefined && s.klobuchar_stec_tecu !== null)
         ? s.klobuchar_stec_tecu.toFixed(1) + " TECU" : "—";
 
+      var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
+      var mpCol = mpInfo
+        ? (mpInfo.reflection_risk === "HIGH" ? "<span style='color:var(--magenta); font-weight:600;'>HIGH (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
+           : (mpInfo.reflection_risk === "ELEVATED" ? "<span style='color:var(--amber); font-weight:600;'>ELEV (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
+           : "<span style='color:var(--green);'>LOW</span>"))
+        : "<span class='dim'>—</span>";
+
       html += "<tr>" +
         "<td><strong>" + keys[i] + "</strong></td>" +
         "<td><span class='sys-badge " + sysCls + "'>" + (s.sys || "").toUpperCase() + "</span></td>" +
@@ -601,6 +647,7 @@
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
         "<td>" + lock + "</td>" +
+        "<td>" + mpCol + "</td>" +
         "<td>" + status + "</td>" +
       "</tr>";
     }
@@ -797,6 +844,9 @@
       var ippTip = (s.ipp_lat_deg !== undefined && s.ipp_lat_deg !== null)
         ? s.ipp_lat_deg.toFixed(1) + "°N, " + Math.abs(s.ipp_lon_deg).toFixed(1) + "°W" : "—";
       var klobTip = s.klobuchar_delay_ns ? "<br>Klobuchar: " + s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_stec_tecu.toFixed(1) + " TECU)" : "";
+      var mpTip = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[match.key])
+        ? "<br>HMS Multipath: " + lastPayload.active_satellites[match.key].grid_mpi_db.toFixed(2) + " dB (" + lastPayload.active_satellites[match.key].reflection_risk + ")"
+        : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -806,7 +856,8 @@
         "C/N0: " + (s.cn0 ? s.cn0.toFixed(1) + " dB" : "—") + "<br>" +
         "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
         "S4: " + (s.s4 ? s.s4.toFixed(3) : "—") +
-        klobTip;
+        klobTip +
+        mpTip;
     } else {
       tooltip.style.display = "none";
     }

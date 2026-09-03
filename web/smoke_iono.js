@@ -72,7 +72,8 @@ async function main() {
     "satTableBody", "tidBadge", "tidVal", "tidAmp", "tidSnr", "tidSpan",
     "isbVal", "isbMad", "isbPath", "isbAdev", "isbSpan", "isbN",
     "thermalY", "thermalMhz", "thermalMmDay", "thermalDiurnal", "thermalPs",
-    "thermalRms", "thermalHours", "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
+    "thermalRms", "thermalHours", "mpiBadge", "mpiVal", "mpiReflective", "mpiClean",
+    "mpiActiveRisk", "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
   const windowObj = {};
@@ -115,6 +116,9 @@ async function main() {
   console.log("TID Val:", elements["tidVal"].innerHTML);
   console.log("ISB Val:", elements["isbVal"].innerHTML);
   console.log("Thermal Val:", elements["thermalY"].innerHTML);
+  console.log("MPI Val:", elements["mpiVal"].innerHTML);
+  console.log("Cleanest Sector:", elements["mpiClean"].textContent);
+  console.log("Reflective Sector:", elements["mpiReflective"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }
