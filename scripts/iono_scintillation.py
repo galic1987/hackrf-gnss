@@ -273,6 +273,21 @@ class IonoMonitor:
             json.dump(output, f, indent=2)
         os.replace(tmp_path, self.state_file)
 
+        # Append compact line to history
+        try:
+            with open(HISTORY_PATH, "a") as f_hist:
+                f_hist.write(json.dumps({
+                    "epoch": round(now, 2),
+                    "weather": weather,
+                    "max_sigma": round(max_sigma, 4),
+                    "max_s4": round(max_s4, 4),
+                    "dtec": round(delta_tec, 4) if geo_active else None,
+                    "roti": round(roti, 4) if geo_active else None,
+                    "n_sats": len(active_sats)
+                }) + "\n")
+        except Exception:
+            pass
+
         return output
 
 
