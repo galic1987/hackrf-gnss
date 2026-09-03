@@ -64,10 +64,30 @@ GAP_FACTOR = 1.5         # segmentation split: gap > GAP_FACTOR * median dt.
                          # index-based TDEV spacing is physically right
                          # (round-14 review: the 2x rule still let one
                          # missed epoch through with the wrong spacing).
-CADENCE_TOL_FRAC = 0.02  # index-based TDEV requires a near-uniform grid. The
-                         # live v3 cadence is ~1.01-1.03 s; 2% covers that
-                         # measured scheduler spread but rejects materially
-                         # different physical tau spacing.
+CADENCE_TOL_FRAC = 0.05  # index-based TDEV requires a near-uniform grid, but
+                         # one off-cadence interval only mislabels tau for
+                         # the blocks that straddle it, by |dt-median| /
+                         # (m*median) each, averaged over n-3m+1 blocks: at
+                         # 5% that is <= 0.5% of tau(10) (0.25% of TDEV for
+                         # white PM, slope -1/2), 0.05% at tau 100, 0.005%
+                         # at tau 1000 — far inside the estimator's own
+                         # 4% / 14% / ~40% statistical scatter at those
+                         # taus. The systematic tau error is (mean dt -
+                         # median dt) / median, which the report STATES for
+                         # the chosen segment (tau_scale_err_frac) together
+                         # with its max |dt-median| (cadence_max_dev_frac),
+                         # so the bookkeeping is visible, not assumed.
+                         # Measured v4 cadence (2026-09-03, 38.5k quality
+                         # rows, 10 ms epoch quantization): median 1.040 s,
+                         # p1-p99 1.02-1.06 s, and a 1.01 s tick (-2.9%)
+                         # every ~3 min. The former 2% band split on every
+                         # 1.01 s tick (179 cadence splits vs 213 real
+                         # gaps; longest segment 834 s of a 2785 s gap-free
+                         # run) and sat 0.08% from also rejecting the 7.6%
+                         # of intervals at 1.02 s had the median been
+                         # 1.041 s. 5% still splits on any interval
+                         # >= 1.09 s; a missed epoch (~2.1 s) is caught by
+                         # the 1.5x gap rule first.
 REQUIRED_SCHEMA = "clock_bias-v4"
 POISON_GATE_CLAIM_GRADE = False
 DEFAULT_PATH = "/Volumes/Radiator 8TB/gnss/observations/clock_bias.jsonl"
@@ -191,9 +211,18 @@ def split_segments(epochs, gap_factor=GAP_FACTOR,
 def _seg_stats(epochs, i0, i1):
     n = i1 - i0 + 1
     span = epochs[i1] - epochs[i0] if n > 1 else 0.0
-    mg = max((epochs[i + 1] - epochs[i] for i in range(i0, i1)), default=0.0)
+    dts = [epochs[i + 1] - epochs[i] for i in range(i0, i1)]
+    mg = max(dts, default=0.0)
+    # tau bookkeeping for index-based TDEV (tau = m * median dt): the
+    # largest single-interval deviation, and the systematic scale error of
+    # every tau label, (mean dt - median dt) / median dt.
+    med = _median([d for d in dts if d > 0])
+    max_dev = max((abs(d - med) / med for d in dts), default=0.0) if med > 0 else 0.0
+    mean_dt = span / (n - 1) if n > 1 else 0.0
+    tau_err = (mean_dt - med) / med if med > 0 else 0.0
     return {"rows": n, "span_s": span, "max_gap_s": mg,
-            "t0": epochs[i0], "t1": epochs[i1]}
+            "t0": epochs[i0], "t1": epochs[i1],
+            "cadence_max_dev_frac": max_dev, "tau_scale_err_frac": tau_err}
 
 
 def continuity_gates(span_s, n_rows, max_gap_s, min_rows=MIN_ROWS):
@@ -491,6 +520,10 @@ def main():
         print(f"analyzing longest segment: seg {rep['chosen_seg']} — "
               f"span {st['span_s']:.0f} s, {st['rows']} rows, "
               f"max gap {st['max_gap_s']:.1f} s")
+        print(f"  cadence within segment: max |dt-median| "
+              f"{st['cadence_max_dev_frac']*100:.1f}% of median; tau labels "
+              f"(m*median dt) carry a {st['tau_scale_err_frac']*100:+.2f}% "
+              f"scale error vs mean dt")
     print(f"continuity gates: span>={MIN_SPAN_S:.0f} s AND rows>={min_rows} "
           f"AND max-gap<={MAX_GAP_S:.0f} s "
           f"(--min-rows overrides the rows floor only)")

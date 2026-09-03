@@ -253,15 +253,58 @@ def test_subthreshold_cadence_variation_splits_uniform_grid():
     assert rep["gate_fails"], rep["gate_fails"]
 
 
-def test_alternating_three_percent_cadence_is_not_uniform_tdev_grid():
-    rows = _rows("v4-cadence", 1_787_000_000.0, 4000)
+def _alternating(gen, lo, hi, n=4001):
+    # n odd -> an EVEN number of intervals, so the median sits midway
+    # between lo and hi (with 3999 intervals it would be hi itself and the
+    # lo ticks would read as a 2x larger deviation)
+    rows = _rows(gen, 1_787_000_000.0, n)
     t = rows[0]["epoch"]
     for i, row in enumerate(rows):
         row["epoch"] = t
-        t += 0.97 if i % 2 else 1.03
-    rep = analyze(rows)
-    assert len(rep["segments"]) > 100
+        t += lo if i % 2 else hi
+    return rows
+
+
+def test_alternating_three_percent_cadence_is_kept_and_reported():
+    # 0.97/1.03 s alternation (median 1.00, every interval 3% off) is
+    # inside the 5% band: it stays ONE segment, and the report states the
+    # bookkeeping — max |dt-median| 3%, tau-label scale error ~0 (the
+    # alternation cancels over any even number of intervals). The physics:
+    # a +/-3% single-interval jitter mislabels tau by 3%/m for the blocks
+    # that straddle it — <0.3% of TDEV at tau 10 for white PM, less above.
+    rep = analyze(_alternating("v4-cadence", 0.97, 1.03))
+    assert len(rep["segments"]) == 1, len(rep["segments"])
+    assert rep["verdict"] is not None
+    st = rep["segments"][rep["chosen_seg"]]
+    assert abs(st["cadence_max_dev_frac"] - 0.03) < 1e-6, st
+    assert abs(st["tau_scale_err_frac"]) < 1e-4, st
+
+
+def test_alternating_six_percent_cadence_is_not_uniform_tdev_grid():
+    # beyond the band the old behaviour stands: split everywhere, refuse.
+    rep = analyze(_alternating("v4-cadence6", 0.94, 1.06))
+    assert len(rep["segments"]) > 100, len(rep["segments"])
     assert rep["verdict"] is None
+
+
+def test_live_scheduler_jitter_does_not_split():
+    # measured v4 pattern (2026-09-03): median 1.04 s, 10 ms-quantized
+    # epochs, one 1.01 s tick (-2.9%) roughly every 170 intervals plus a
+    # 1.02-1.06 s spread. This must remain one segment; the 2% band cut it
+    # into ~3 min fragments and hid a 2785 s gap-free run behind 834 s.
+    rows = _rows("v4-live", 1_787_000_000.0, 4000)
+    t = rows[0]["epoch"]
+    pattern = [1.04] * 4 + [1.03] * 3 + [1.05] * 2 + [1.02]
+    for i, row in enumerate(rows):
+        row["epoch"] = round(t, 2)
+        t += 1.01 if i % 170 == 169 else pattern[i % len(pattern)]
+    rep = analyze(rows)
+    assert len(rep["segments"]) == 1, rep["holes"][:5]
+    assert rep["gate_fails"] == [], rep["gate_fails"]
+    st = rep["segments"][0]
+    assert 0.02 < st["cadence_max_dev_frac"] < 0.05, st
+    assert abs(st["tau_scale_err_frac"]) < 0.01, st
+    assert rep["verdict"] is not None
 
 
 def test_ab_mismatch_rows_are_quality_filtered_not_schema_fatal():

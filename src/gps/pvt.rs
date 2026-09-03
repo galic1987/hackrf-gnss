@@ -181,6 +181,26 @@ pub struct ClockFix {
     pub max_leverage: f64,
 }
 
+/// One input row's residual from a clock-only solve (2026-09-03 fix 4,
+/// per-satellite residual logging — the only path to attributing the
+/// BeiDou rejection runs and the per-constellation ISBs from the series).
+/// Every non-`clock_free` input row appears exactly once, in input order,
+/// whether or not it survived rejection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockResidual {
+    /// index into the caller's input slice (the `accepted_indices` space)
+    pub index: usize,
+    /// signed residual y_i − clock, metres, against the FINAL clock (the
+    /// one the accepted set produced) — so a rejected row's value is its
+    /// bias relative to the solution that survived it, not the smeared
+    /// residual it had while it was still dragging the mean.
+    pub r_m: f64,
+    /// weight the row carried (el_w at the anchor; 1.0 unweighted)
+    pub w: f64,
+    /// false = removed by the studentized rejection loop
+    pub accepted: bool,
+}
+
 /// Clock-only solve with the position FIXED at `anchor_ecef_km` — the sub-ns
 /// Leg 1 claim enabler (v2 amendment 2026-08-28): the free-position solve
 /// leaks m-class × TDOP (7–20 observed live) noise into the clock unknown,
@@ -192,15 +212,33 @@ pub struct ClockFix {
 ///
 /// Outlier rejection mirrors aeae8ec's studentized pattern specialized to the
 /// 1-unknown design: leverage h_i = w_i/Σw (unweighted: 1/n), suspicion
-/// |r_i|/√(1−h_i) against the flat [`REJECT_THRESH_M`], drop the argmax and
-/// recompute, at most n−4 drops — an epoch that cannot be cleaned without
-/// going below 4 sats returns None (never solved sub-floor). `clock_free`
-/// rows carry no receiver-clock information (their design coefficient is 0)
-/// and are excluded before counting. n < 4 → None.
+/// |r_i|/√(1−h_i) against the SCALED gate [`clock_reject_threshold_m`]
+/// (2026-09-03 fix 2 — floor [`REJECT_FLOOR_M`], K·MAD scale, capped at the
+/// flat [`REJECT_THRESH_M`]), drop the argmax and recompute, at most n−4
+/// drops — an epoch that cannot be cleaned without going below 4 sats
+/// returns None (never solved sub-floor). `clock_free` rows carry no
+/// receiver-clock information (their design coefficient is 0) and are
+/// excluded before counting. n < 4 → None.
+///
+/// Thin wrapper over [`solve_clock_only_detailed`] — identical result, the
+/// per-row residual log discarded (existing callers unchanged).
 pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool) -> Option<ClockFix> {
-    // (y, w) per row. y is anchor-fixed, so it is constant across the
-    // rejection loop — only the surviving set changes on a drop.
-    let mut rows: Vec<(f64, f64, usize)> = meas
+    solve_clock_only_detailed(meas, anchor_ecef_km, weighted).map(|(fix, _)| fix)
+}
+
+/// [`solve_clock_only`] plus the per-row residual log (fix 4): one
+/// [`ClockResidual`] per non-`clock_free` input row, in input order,
+/// accepted and rejected alike, all measured against the final clock.
+/// None exactly when `solve_clock_only` is None (no residuals exist for a
+/// refused epoch).
+pub fn solve_clock_only_detailed(
+    meas: &[Meas],
+    anchor_ecef_km: [f64; 3],
+    weighted: bool,
+) -> Option<(ClockFix, Vec<ClockResidual>)> {
+    // (y, w, input index) per row. y is anchor-fixed, so it is constant
+    // across the rejection loop — only the surviving set changes on a drop.
+    let all: Vec<(f64, f64, usize)> = meas
         .iter()
         .enumerate()
         .filter(|(_, m)| !m.clock_free)
@@ -214,6 +252,7 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
             (m.pseudorange - g, w, input_index)
         })
         .collect();
+    let mut rows = all.clone();
     if rows.len() < 4 {
         return None;
     }
@@ -222,10 +261,15 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
     loop {
         let sw: f64 = rows.iter().map(|r| r.1).sum();
         let clock = rows.iter().map(|r| r.0 * r.1).sum::<f64>() / sw;
+        // fix 2: the gate scales with the CURRENT surviving set's robust
+        // residual spread (raw signed residuals, metres) — recomputed on
+        // every pass so a dropped outlier no longer inflates the scale.
+        let resid_m: Vec<f64> = rows.iter().map(|r| (r.0 - clock) * 1000.0).collect();
+        let thresh = clock_reject_threshold_m(&resid_m);
         let mut worst = 0.0f64;
         let mut worst_pos = 0usize;
-        for (pos, &(y, w, _)) in rows.iter().enumerate() {
-            let r_m = (y - clock).abs() * 1000.0;
+        for (pos, &(_, w, _)) in rows.iter().enumerate() {
+            let r_m = resid_m[pos].abs();
             // h → 1: the row carries no redundancy (the mean interpolates
             // it) — untestable, never blamed (aeae8ec's h→1 exemption).
             let den = 1.0 - w / sw;
@@ -235,17 +279,30 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
                 worst_pos = pos;
             }
         }
-        if worst <= REJECT_THRESH_M {
+        if worst <= thresh {
             let n = rows.len();
             let ss: f64 = rows.iter().map(|r| (r.0 - clock).powi(2)).sum();
             let max_leverage = rows.iter().map(|r| r.1 / sw).fold(0.0f64, f64::max);
-            return Some(ClockFix {
-                clock_km: clock,
-                residual_rms_m: (ss / n as f64).sqrt() * 1000.0,
-                n_sat: n,
-                accepted_indices: rows.iter().map(|r| r.2).collect(),
-                max_leverage,
-            });
+            let accepted_indices: Vec<usize> = rows.iter().map(|r| r.2).collect();
+            let residuals: Vec<ClockResidual> = all
+                .iter()
+                .map(|&(y, w, index)| ClockResidual {
+                    index,
+                    r_m: (y - clock) * 1000.0,
+                    w,
+                    accepted: accepted_indices.contains(&index),
+                })
+                .collect();
+            return Some((
+                ClockFix {
+                    clock_km: clock,
+                    residual_rms_m: (ss / n as f64).sqrt() * 1000.0,
+                    n_sat: n,
+                    accepted_indices,
+                    max_leverage,
+                },
+                residuals,
+            ));
         }
         if drops == max_drops {
             return None; // floor: an epoch uncleanable with >=4 sats is refused
@@ -253,6 +310,71 @@ pub fn solve_clock_only(meas: &[Meas], anchor_ecef_km: [f64; 3], weighted: bool)
         rows.remove(worst_pos);
         drops += 1;
     }
+}
+
+/// Clock-only rejection gate FLOOR (metres, 2026-09-03 fix 2). The scaled
+/// gate never drops below this: ~3× the 40–60 m residual RMS the live
+/// series runs at, so honest code noise (and the ~10 m-class GEO ranging
+/// bias) can never be rejected even when the robust scale collapses to 0
+/// (exact fixtures; n = 4–5 sets whose MAD is degenerate).
+pub const REJECT_FLOOR_M: f64 = 150.0;
+
+/// Clock-only rejection gate multiplier on the robust scale (fix 2). K = 5:
+/// for Gaussian residuals a 5σ false rejection is ~6e-7 per row, and the
+/// MAD of an n = 6–8 set is a coarse σ estimate (relative error ~30–40 %),
+/// so K carries the margin against an UNDER-estimated scale. K = 3 would
+/// start eating honest rows whenever the MAD happens to read low; K ≥ 8
+/// would re-admit the 700–1000 m outliers the flat gate let through
+/// (122 A/B mismatches, 15 % of accepted rows with RMS > 150 m).
+pub const REJECT_SCALE_K: f64 = 5.0;
+
+/// MAD → σ for Gaussian data (1/Φ⁻¹(3/4)).
+pub const MAD_TO_SIGMA: f64 = 1.4826;
+
+/// Median of a slice (average of the middle pair for even n); 0 for empty.
+fn median(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.total_cmp(b));
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        0.5 * (s[n / 2 - 1] + s[n / 2])
+    }
+}
+
+/// Robust scale of a residual set: MAD about the median, Gaussian-scaled
+/// (metres in → metres out). An outlier that is a MINORITY of the set does
+/// not move it (the estimator's 50 % breakdown), which is exactly why the
+/// scaled gate can see a 700 m row against a 50 m set when the RMS cannot.
+pub fn robust_scale_m(residuals_m: &[f64]) -> f64 {
+    if residuals_m.is_empty() {
+        return 0.0;
+    }
+    let med = median(residuals_m);
+    let dev: Vec<f64> = residuals_m.iter().map(|r| (r - med).abs()).collect();
+    MAD_TO_SIGMA * median(&dev)
+}
+
+/// The clock-only studentized rejection threshold for a residual set
+/// (fix 2): max(REJECT_FLOOR_M, K · robust scale), capped at the flat
+/// REJECT_THRESH_M sanity bound — i.e. clamp(K·σ̂, 150 m, 1000 m). The
+/// flat 1000 m gate alone let 700–1000 m outliers through against a 40–60 m
+/// set (all 122 A/B membership mismatches were the weighted/unweighted
+/// pair flipping exactly one such row; 15 % of accepted rows carried RMS
+/// > 150 m). The compared quantity stays the leverage-corrected
+/// |r|/√(1−h), as before.
+/// Small-n honesty (review): with 2 biased rows in 6 (e.g. two ~300 m
+/// ISB-class ranges) the MAD inflates enough that both survive; at live
+/// 40–60 m noise the gate reliably catches ONE row beyond ~5·σ̂
+/// (≈300–450 m), floor 150 m — its target class, not every ISB.
+pub fn clock_reject_threshold_m(residuals_m: &[f64]) -> f64 {
+    (REJECT_SCALE_K * robust_scale_m(residuals_m))
+        .max(REJECT_FLOOR_M)
+        .min(REJECT_THRESH_M)
 }
 
 /// Unweighted normal-matrix inverse (H^T H)^-1 of the measurement set at
@@ -481,6 +603,13 @@ fn normal_inv5(meas: &[MeasSys], p: [f64; 3]) -> Option<[[f64; 5]; 5]> {
 /// false-drops; the argmax proof drops only the most-biased row), but the
 /// "few hundred metres stay" sentence above is leverage-qualified
 /// accordingly (2026-08-28 review).
+///
+/// Callers (2026-09-03): [`solve_with_rejection`] and
+/// [`solve_mixed_with_rejection`] gate on this flat value unchanged; the
+/// clock-only solve ([`solve_clock_only_detailed`]) uses it only as the
+/// absolute CAP of its scaled gate ([`clock_reject_threshold_m`]) — the
+/// anchored 1-unknown design runs at 40–60 m RMS, where a flat 1000 m is
+/// no gate at all.
 pub const REJECT_THRESH_M: f64 = 1000.0;
 
 /// RAIM-style outlier rejection around `solve`: drop the worst measurement
@@ -1097,5 +1226,119 @@ mod tests {
         let mu = err_u / trials as f64 * 1000.0;
         assert!(mw.abs() < 1.0, "weighted mean clock err {mw:.3} m over {trials} trials");
         assert!(mu.abs() < 1.0, "unweighted mean clock err {mu:.3} m over {trials} trials");
+    }
+
+    // ---- scaled rejection gate (2026-09-03 fix 2) + residual log (fix 4) ----
+
+    /// The gate's algebra: floor when the robust scale collapses, K·σ̂ in
+    /// between, the flat 1000 m as the cap; and the MAD ignores a minority
+    /// outlier (the property the RMS lacks).
+    #[test]
+    fn clock_reject_threshold_scales_between_floor_and_cap() {
+        assert_eq!(clock_reject_threshold_m(&[]), REJECT_FLOOR_M);
+        assert_eq!(clock_reject_threshold_m(&[0.0; 6]), REJECT_FLOOR_M);
+        // ±40..60 m set: median 0, |dev| = [40,40,50,50,60,60] -> MAD 50
+        let t = clock_reject_threshold_m(&[60.0, -60.0, 50.0, -50.0, 40.0, -40.0]);
+        let expect = REJECT_SCALE_K * MAD_TO_SIGMA * 50.0;
+        assert!((t - expect).abs() < 1e-9, "threshold {t} vs {expect}");
+        assert!(t > REJECT_FLOOR_M && t < REJECT_THRESH_M);
+        // a wide-open set caps at the flat gate
+        let t = clock_reject_threshold_m(&[300.0, -300.0, 250.0, -250.0, 200.0, -200.0]);
+        assert_eq!(t, REJECT_THRESH_M);
+        // one 800 m row among five ~10 m rows barely moves the scale
+        let s = robust_scale_m(&[10.0, -10.0, 5.0, -5.0, 0.0, 800.0]);
+        assert!(s < 20.0, "robust scale {s} m must ignore a minority outlier");
+    }
+
+    /// The reviewed failure class: 6 consistent sats + one row biased by
+    /// 800 m. Under the flat 1000 m gate the row's studentized residual
+    /// (~741 m unweighted) passed and the row stayed — with the weighted
+    /// solve sometimes flipping the other way, the source of every A/B
+    /// membership mismatch. The scaled gate (MAD collapses -> 150 m floor)
+    /// rejects it under BOTH weightings, and the residual log names it.
+    #[test]
+    fn clock_only_scaled_gate_rejects_an_800m_row_the_flat_gate_kept() {
+        let mut m = ranges_with_low(50.0); // 7 rows
+        m[2].pseudorange += 0.8; // 800 m on PRN26
+        // the flat gate alone would NOT have dropped it: unweighted mean
+        // pulled by 800/7, studentized |r|/sqrt(1-1/7) ~ 741 m < 1000 m
+        let n = m.len() as f64;
+        let susp_flat = (800.0 - 800.0 / n) / (1.0 - 1.0 / n).sqrt();
+        assert!(susp_flat < REJECT_THRESH_M, "fixture: flat gate must have passed it ({susp_flat:.0} m)");
+        for &weighted in &[true, false] {
+            let (f, res) = solve_clock_only_detailed(&m, STATION, weighted).expect("cleanable");
+            assert_eq!(f.n_sat, 6, "weighted={weighted}");
+            assert_eq!(f.accepted_indices, vec![0, 1, 3, 4, 5, 6], "weighted={weighted}");
+            assert!((f.clock_km - 50.0).abs() < 1e-6, "clock err {} km", f.clock_km - 50.0);
+            assert!(f.residual_rms_m < 1e-3, "rms {}", f.residual_rms_m);
+            // fix 4: every input row logged once, in input order, against
+            // the final clock — the rejected row reads its full 800 m bias
+            assert_eq!(res.len(), 7);
+            for (k, r) in res.iter().enumerate() {
+                assert_eq!(r.index, k);
+                assert_eq!(r.accepted, k != 2);
+                if k == 2 {
+                    assert!((r.r_m - 800.0).abs() < 1e-3, "rejected residual {} m", r.r_m);
+                } else {
+                    assert!(r.r_m.abs() < 1e-3, "accepted residual {} m", r.r_m);
+                }
+                if weighted {
+                    assert!(r.w > 0.0 && r.w <= 1.0);
+                } else {
+                    assert_eq!(r.w, 1.0);
+                }
+            }
+            // the wrapper is the same solve
+            let g = solve_clock_only(&m, STATION, weighted).unwrap();
+            assert_eq!(g.accepted_indices, f.accepted_indices);
+            assert_eq!(g.clock_km, f.clock_km);
+        }
+    }
+
+    /// Honest noise at the live 40–60 m class is never rejected (the floor
+    /// is 3× that), under either weighting.
+    #[test]
+    fn clock_only_typical_noise_is_never_rejected() {
+        let mut m = ranges(50.0);
+        for (k, off_m) in [60.0, -60.0, 50.0, -50.0, 40.0, -40.0].iter().enumerate() {
+            m[k].pseudorange += off_m / 1000.0;
+        }
+        for &weighted in &[true, false] {
+            let (f, res) = solve_clock_only_detailed(&m, STATION, weighted).expect("clean");
+            assert_eq!(f.n_sat, 6, "weighted={weighted}");
+            assert!(res.iter().all(|r| r.accepted));
+            assert!(f.residual_rms_m > 30.0 && f.residual_rms_m < 80.0, "rms {}", f.residual_rms_m);
+        }
+    }
+
+    /// The 4-sat floor: with 4 rows nothing can be rejected. A consistent
+    /// 4-set is accepted whole; a 4-set carrying an 800 m row is REFUSED
+    /// (None) rather than solved on 3 or published dirty — fail-closed,
+    /// where the flat gate used to publish it at ~350 m RMS.
+    #[test]
+    fn clock_only_four_sat_floor_rejects_nothing() {
+        let m = ranges(50.0);
+        let (f, res) = solve_clock_only_detailed(&m[..4], STATION, true).expect("4 clean rows solve");
+        assert_eq!(f.n_sat, 4);
+        assert_eq!(f.accepted_indices, vec![0, 1, 2, 3]);
+        assert_eq!(res.len(), 4);
+        assert!(res.iter().all(|r| r.accepted));
+        let mut dirty: Vec<Meas> = m[..4].to_vec();
+        dirty[1].pseudorange += 0.8;
+        assert!(solve_clock_only(&dirty, STATION, true).is_none());
+        assert!(solve_clock_only(&dirty, STATION, false).is_none());
+    }
+
+    /// clock_free rows never appear in the residual log (they carry no
+    /// clock information), and the log's index space is the input's.
+    #[test]
+    fn clock_only_residual_log_skips_clock_free_rows() {
+        let mut m = ranges(50.0);
+        m.insert(2, Meas { sat: [0.0, 0.0, 0.0], pseudorange: norm3(STATION), clock_free: true });
+        let (f, res) = solve_clock_only_detailed(&m, STATION, false).expect("solves");
+        assert_eq!(f.n_sat, 6);
+        let idx: Vec<usize> = res.iter().map(|r| r.index).collect();
+        assert_eq!(idx, vec![0, 1, 3, 4, 5, 6]);
+        assert_eq!(f.accepted_indices, idx);
     }
 }

@@ -61,6 +61,38 @@
 //!    (same tracker NCO machinery; live GAL sign verification pending,
 //!    like BDS).
 //!
+//! v4 additive amendment (2026-09-03, four reviewed fixes; schema string
+//! unchanged, fields ADDITIVE ONLY):
+//!  - Fix 1, slip leak: `slips` used to count smoother resets on sats that
+//!    never entered the epoch's measurement set (frozen-path resets, and
+//!    fresh-path resets whose build returned None), which the lever-3b
+//!    drop plan could not see — 19 of 194 slip epochs at n_sat >= 6
+//!    published slips=1 with nothing to drop (one ended the best-ever
+//!    2,895 s quality run). Now a reset counts toward `slips` only when
+//!    it belongs to a sat that is (or was, until this reset) a
+//!    contributor: a frozen-path reset on a LIVE contributor is settled
+//!    after the loop like a lever-3b drop (dropped_slip label when the
+//!    pre-removal count is >= 6 and >= 4 remain, else counted), and every
+//!    other reset lands in the additive `slips_unused` counter (visible,
+//!    never hidden, never a quality verdict on an epoch it did not touch).
+//!  - Fix 2 (pvt): the clock-only rejection gate scales with the set —
+//!    max(150 m, 5·MAD-σ̂), capped at the old flat 1000 m — see
+//!    pvt::clock_reject_threshold_m. Consequence for this series: a
+//!    structurally-biased row (ISB-class BDS/GAL/GEO) more than ~150 m
+//!    off a tight set is now legitimately DROPPED where it used to stay.
+//!  - Fix 3, dead innovation gate: the contiguity guard compared the
+//!    sat's STREAM epoch against the producer's wall-clock FILE epoch
+//!    (never equal — the 83bb452 category error), so the 500 m innovation
+//!    reset never fired. Continuity is now the sat's own stream-epoch
+//!    delta (INNOV_CONTIG_S); a gap beyond it yields no innovation
+//!    verdict (never a reset — see the constant for the measured producer
+//!    catch-up skip that a tighter window would misread).
+//!  - Fix 4, per-satellite residuals: additive `residuals` row field,
+//!    [[label, r_m, w, "fresh"|"pred", "ok"|"rej"], ...] from the WEIGHTED
+//!    solve (pvt::solve_clock_only_detailed), every built row including
+//!    the rejected ones, residual against the final clock. Labels use the
+//!    dropped_slip convention (G/C/S/E).
+//!
 //! v4 (2026-08-30): post-rejection constellation identity and a strict
 //! paired-A/B membership gate. v3 (2026-08-29) added the GPS+BDS vector.
 //! The motivation is
@@ -83,8 +115,9 @@
 //!    joined) — the inter-system channel biases are UNMODELED in this 1-state solve (the
 //!    solver is a weighted mean with studentized rejection; ISB surgery is
 //!    out of scope). Rows carry accepted n_gps/n_bds so the analyzer can
-//!    quantify mix-dependence; a structurally-biased BDS row that trips the 1000 m
-//!    studentized gate is legitimately DROPPED — fail-closed, not silent.
+//!    quantify mix-dependence; a structurally-biased BDS row that trips the
+//!    studentized gate (scaled since 2026-09-03: 150 m floor, 5·MAD-σ̂,
+//!    1000 m cap) is legitimately DROPPED — fail-closed, not silent.
 //!  - BDS carrier prediction uses the B1I wavelength (1561.098 MHz) under
 //!    the same staircase rules; the negated-carrier sign is inherited from
 //!    the 2026-08-28 GPS verification (same tracker NCO machinery — live
@@ -106,13 +139,13 @@
 //!  - the free-position solve leaks m-class × TDOP (7–20 observed live)
 //!    noise into clock_ns — the 1 ns gate is unreachable that way. The
 //!    position is FIXED at the site anchor (pvt::solve_clock_only, one
-//!    unknown, aeae8ec-pattern studentized rejection at the flat 1000 m
-//!    gate). No median normalization, as v1.
+//!    unknown, aeae8ec-pattern studentized rejection — flat 1000 m gate
+//!    until 2026-09-03, scaled since). No median normalization, as v1.
 
 use hackrf_gnss::beidou_d1::{parse_rinex_bds, sat_at_txtime_bds};
 use hackrf_gnss::gps::broadcast::{parse_rinex_gal, parse_rinex_gps, sat_at_txtime_gal, wrap_tk, BrdcEph};
 use hackrf_gnss::gps::hatch::Hatch;
-use hackrf_gnss::gps::pvt::ClockFix;
+use hackrf_gnss::gps::pvt::{ClockFix, ClockResidual};
 use hackrf_gnss::sbas::{geo_at_txtime, GeoEph};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -154,6 +187,25 @@ const GEO_MAX_DT_S: f64 = 360.0;
 /// refreshes every ~10-180 min; RINEX E records carry no fit interval, so
 /// the gate is explicit here rather than in selection). Wrap-aware.
 const GAL_EPH_MAX_AGE_S: f64 = 4.0 * 3600.0;
+/// Innovation-gate contiguity window (fix 3, 2026-09-03), in the sat's OWN
+/// stream time: a fresh code update is tested against the carrier
+/// prediction only when the sat's previous sighting is within this many
+/// stream seconds. Nominal row cadence is 1 s, but the producer publishes
+/// every ~1.04 s wall (measured 1.02–1.05 s, 2026-09-03 45 s sample), so
+/// the per-sat stream epoch SKIPS one second in ~3–4 % of file steps on
+/// every constellation (dt 2.0; 2 of 82 SBAS fresh epochs) — a producer
+/// catch-up artifact with a continuous carrier, not a tracker gap. 2.6 s
+/// admits exactly one skipped second plus jitter; the reviewed ~1.6 s
+/// would have misread every skip. Beyond the window (the sat was absent —
+/// cn0/lock filter or a real drop) there is NO innovation verdict and
+/// never a reset from the gap itself: a returning sat's chain is
+/// re-tested at its next contiguous update, and a real re-acquisition is
+/// caught by the lock_s regression / slip flags as before.
+const INNOV_CONTIG_S: f64 = 2.6;
+/// Innovation gate (metres): |fresh code − carrier prediction| beyond this
+/// resets the smoother. Code noise is ~10–30 m, so it fires only on a real
+/// discontinuity (v2 amendment value, unchanged).
+const INNOV_GATE_M: f64 = 500.0;
 
 /// Constellation of one built measurement (the per-row identity the
 /// accepted-set counters and the dropped_slip labels are derived from).
@@ -207,18 +259,100 @@ fn plan_slip_drop(slipped: &[bool]) -> Vec<usize> {
     }
 }
 
+/// Fix 1 (2026-09-03): was this sat, at the moment a FROZEN-path reset
+/// voided its chain, a live contributor — i.e. would it have been carried
+/// into this epoch's solve on its carrier prediction? Exactly the
+/// contribution test the frozen path applies (valid chain inside the
+/// PRED_WINDOW_S window). True → the reset removed a member (settled by
+/// [`settle_removed_contrib`]); false → the reset touched nothing the
+/// solve would have used (an expired or never-initialised chain) and is
+/// counted as `slips_unused`, never as a `slips` verdict on the epoch.
+fn frozen_reset_was_contrib(p: &PrevSat, s_epoch: f64) -> bool {
+    p.contrib_valid && s_epoch - p.last_code_epoch < PRED_WINDOW_S
+}
+
+/// Fix 1: settle the frozen-path removals of live contributors after the
+/// build loop, by the lever-3b rule applied to the PRE-removal set:
+/// with `n_meas` built + `removed` gone, if the pre-removal count reaches
+/// SLIP_DROP_MIN_PRE and the built set still holds the solver's 4 floor,
+/// the removals are recorded as dropped_slip labels (the epoch is solved
+/// on the remainder, as a lever-3b drop would have done — nothing further
+/// is removed here, so this can never push n_sat below what was built);
+/// otherwise they are counted into `slips` exactly as before the fix.
+/// Asymmetry (review): plan_slip_drop still tests the POST-removal
+/// meas.len() >= 6 for member resets, so 5 built + 1 frozen-removed can
+/// publish n_sat 5, slips 1, dropped_slip [frozen] — conservative, never
+/// hides a member slip.
+/// Returns (labels to record, slips to add).
+fn settle_removed_contrib(n_meas: usize, removed: Vec<String>) -> (Vec<String>, u32) {
+    if removed.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let n_pre = n_meas + removed.len();
+    if n_pre >= SLIP_DROP_MIN_PRE && n_meas >= 4 {
+        (removed, 0)
+    } else {
+        let n = removed.len() as u32;
+        (Vec::new(), n)
+    }
+}
+
+/// Fix 3 (2026-09-03): innovation verdict for a FRESH code update on a sat
+/// with prior state. Continuity is the sat's OWN stream-epoch delta (the
+/// old test compared the stream epoch against the producer's wall-clock
+/// file epoch — never equal, so this gate was dead since 3107967 made the
+/// row epoch sample-accurate; same category error as 83bb452). Inside
+/// INNOV_CONTIG_S the fresh code is compared with the carrier-predicted
+/// range from the base (the same prediction the frozen path carries);
+/// beyond it, or on a chain with no fresh update since its reset, there
+/// is no verdict (false) — see the constant for why a gap is not a reset.
+fn innov_breach(p: &PrevSat, s_epoch: f64, rho: f64, carr: f64, lam: f64) -> bool {
+    if !p.contrib_valid {
+        return false;
+    }
+    let dt = s_epoch - p.stream_epoch;
+    if !(0.0..=INNOV_CONTIG_S).contains(&dt) {
+        return false;
+    }
+    (rho - (p.base_smoothed + lam * (p.base_carr - carr))).abs() > INNOV_GATE_M
+}
+
+/// Fix 4 (2026-09-03): the additive `residuals` row field — one compact
+/// entry per built measurement the WEIGHTED solve saw, accepted and
+/// rejected alike: [label, r_m (0.1 m), w (0.001), "fresh"|"pred",
+/// "ok"|"rej"]. Labels follow the dropped_slip convention (G/C/S/E +
+/// PRN). `cls`/`prn`/`fresh` are indexed by the residual's input index
+/// (the post-slip-drop measurement slice both solves consumed).
+fn residual_rows(residuals: &[ClockResidual], cls: &[Cls], prn: &[u8], fresh: &[bool]) -> Vec<Value> {
+    residuals
+        .iter()
+        .map(|r| {
+            let label = cls[r.index].label(prn[r.index]);
+            let r_m = (r.r_m * 10.0).round() / 10.0;
+            let w = (r.w * 1000.0).round() / 1000.0;
+            let kind = if fresh[r.index] { "fresh" } else { "pred" };
+            let verdict = if r.accepted { "ok" } else { "rej" };
+            json!([label, r_m, w, kind, verdict])
+        })
+        .collect()
+}
+
 /// Assemble the jsonl epoch row (pure for the window tests). `cls`/`prn`/
-/// `ggto` describe the measurement slice BOTH solves consumed (post
-/// slip-drop; `ggto[i]` = measurement i's anchor used a broadcast GGTO);
+/// `ggto`/`fresh` describe the measurement slice BOTH solves consumed (post
+/// slip-drop; `ggto[i]` = measurement i's anchor used a broadcast GGTO;
+/// `fresh[i]` = fresh code update rather than carrier-predicted);
 /// identity counters (n_sat/n_gps/n_bds/n_sbas/n_gal), geo_ranging and
 /// ggto_applied come from the WEIGHTED solve's accepted set — on an A/B
 /// membership mismatch the row still publishes (lever 6) with
 /// ab_membership_match:false and both n_sat_weighted/n_sat_unweighted, and
 /// the analyzer keeps it out of claims. `slips` must already exclude the
-/// dropped resets. n_gps is COUNTED (never derived by subtraction — the
-/// pre-GAL derivation would have misattributed GAL rows to GPS), so
-/// n_gps + n_bds + n_sbas + n_gal == n_sat holds by construction — the
-/// analyzer's generalized identity gate.
+/// dropped resets; `slips_unused` (fix 1) counts the resets that touched
+/// no member of the set; `residuals` (fix 4) is the weighted solve's
+/// per-row log, emitted additively as `residuals` when non-empty. n_gps
+/// is COUNTED (never derived by subtraction — the pre-GAL derivation
+/// would have misattributed GAL rows to GPS), so n_gps + n_bds + n_sbas +
+/// n_gal == n_sat holds by construction — the analyzer's generalized
+/// identity gate.
 #[allow(clippy::too_many_arguments)]
 fn epoch_row(
     a: &ClockFix,
@@ -226,12 +360,15 @@ fn epoch_row(
     cls: &[Cls],
     prn: &[u8],
     ggto: &[bool],
+    fresh: &[bool],
+    residuals: &[ClockResidual],
     epoch: f64,
     n_bds_pre_reject: u32,
     n_gal_pre_reject: u32,
     n_fresh: u32,
     n_pred: u32,
     slips: u32,
+    slips_unused: u32,
     dropped_slip: &[String],
     gen_id: &str,
 ) -> Value {
@@ -272,6 +409,7 @@ fn epoch_row(
         "n_fresh": n_fresh,
         "n_pred": n_pred,
         "slips": slips,
+        "slips_unused": slips_unused,
         "gen": gen_id,
         "source": "clock_bias",
     });
@@ -280,6 +418,9 @@ fn epoch_row(
     }
     if !dropped_slip.is_empty() {
         row["dropped_slip"] = json!(dropped_slip);
+    }
+    if !residuals.is_empty() {
+        row["residuals"] = json!(residual_rows(residuals, cls, prn, fresh));
     }
     row
 }
@@ -298,12 +439,14 @@ struct PrevSat {
     /// fresh code update
     base_smoothed: f64,
     base_carr: f64,
-    /// file epoch of the last fresh code update (12 s contribution window)
+    /// STREAM epoch of the last fresh code update (12 s contribution window)
     last_code_epoch: f64,
-    /// file epoch at which this PRN was last seen (innovation contiguity
-    /// guard — a returning sat's stale chain must not inject a false
-    /// innovation)
-    file_epoch: f64,
+    /// STREAM epoch (the sat row's own sample-accurate `epoch`, NOT the
+    /// producer's wall-clock file epoch — it lags that by the engine
+    /// backlog, ~2088 s live on 2026-09-03) at which this PRN was last seen:
+    /// the innovation contiguity guard (fix 3) — a returning sat's stale
+    /// chain must not inject a false innovation
+    stream_epoch: f64,
     /// has had ≥1 fresh update since the last reset/clear
     contrib_valid: bool,
 }
@@ -720,7 +863,6 @@ fn main() {
         let st: Value = match serde_json::from_str(&txt) { Ok(v) => v, Err(_) => continue };
         let epoch = st["epoch"].as_f64().unwrap_or(0.0);
         if epoch <= last_epoch { continue; }
-        let prev_file_epoch = last_epoch; // last processed file epoch (0.0 before the first)
         last_epoch = epoch;
         let sats = match st["tracker"]["sats"].as_array() { Some(s) => s, None => continue };
 
@@ -804,11 +946,16 @@ fn main() {
         }
 
         let site_lla = site_lla();
-        // built measurements with their identity + slip + GGTO flags:
+        // built measurements with their identity + slip + GGTO + path flags:
         // (Meas, Cls, prn, contributed-with-a-reset-this-epoch,
-        //  anchor-used-broadcast-GGTO)
-        let mut meas: Vec<(hackrf_gnss::gps::pvt::Meas, Cls, u8, bool, bool)> = Vec::new();
+        //  anchor-used-broadcast-GGTO, fresh-code-update (else carrier-predicted))
+        let mut meas: Vec<(hackrf_gnss::gps::pvt::Meas, Cls, u8, bool, bool, bool)> = Vec::new();
         let mut slips = 0u32;
+        // fix 1: resets on sats that touched no member of this epoch's set
+        let mut slips_unused = 0u32;
+        // fix 1: labels of LIVE contributors a frozen-path reset removed
+        // this epoch — settled after the loop (settle_removed_contrib)
+        let mut removed_contrib: Vec<String> = Vec::new();
         let mut n_fresh = 0u32;
         let mut n_pred = 0u32;
         let mut n_bds_pre_reject = 0u32;
@@ -860,15 +1007,25 @@ fn main() {
                     // the carrier's integration origin broke while no new
                     // code was available — the prediction chain is void.
                     // Clear the contribution until the next FRESH update
-                    // (which re-inits the smoother from code); a reset epoch
-                    // counts as a slip so the analyzer keeps it out.
+                    // (which re-inits the smoother from code). Fix 1: the
+                    // reset is a verdict on THIS epoch only if the sat was
+                    // a live contributor (it is then settled after the
+                    // loop like a lever-3b drop); a reset on an expired or
+                    // uninitialised chain touched nothing the solve would
+                    // have used and is counted as slips_unused.
+                    let was_contrib =
+                        prev.get(&prn).is_some_and(|p| frozen_reset_was_contrib(p, s_epoch));
                     smoothers.remove(&prn);
                     if let Some(p) = prev.get_mut(&prn) {
                         p.lock_s = lock_s;
-                        p.file_epoch = s_epoch;
+                        p.stream_epoch = s_epoch;
                         p.contrib_valid = false;
                     }
-                    slips += 1;
+                    if was_contrib {
+                        removed_contrib.push(cls.label(prn));
+                    } else {
+                        slips_unused += 1;
+                    }
                     continue;
                 }
                 let p = prev.get_mut(&prn).unwrap();
@@ -917,26 +1074,22 @@ fn main() {
                         }
                         // predicted rows carry no reset by construction
                         // (a reset on the frozen path voids the chain above)
-                        meas.push((m, cls, prn, false, cls == Cls::Gal && ggto_used));
+                        meas.push((m, cls, prn, false, cls == Cls::Gal && ggto_used, false));
                     }
                     n_pred += 1;
                 }
                 p.lock_s = lock_s;
-                p.file_epoch = s_epoch;
+                p.stream_epoch = s_epoch;
                 continue;
             }
 
             // Fresh code update.
-            // Innovation gate (only when the previous epoch was contiguous):
-            // the prediction is the same base the solve carries — code noise
-            // is ~10–30 m, so 500 m fires only on a real discontinuity.
-            let innov_breach = prev.get(&prn).is_some_and(|p| {
-                p.contrib_valid
-                    && p.file_epoch == prev_file_epoch
-                    && (rho - (p.base_smoothed + lam * (p.base_carr - carr))).abs() > 500.0
-            });
-            let reset = slip || lock_regressed || innov_breach;
-            if reset { slips += 1; }
+            // Innovation gate (fix 3: only when the sat's own stream epoch
+            // is contiguous with its previous sighting): the prediction is
+            // the same base the solve carries — code noise is ~10–30 m, so
+            // INNOV_GATE_M fires only on a real discontinuity.
+            let breach = prev.get(&prn).is_some_and(|p| innov_breach(p, s_epoch, rho, carr, lam));
+            let reset = slip || lock_regressed || breach;
             let h = smoothers.entry(prn).or_insert_with(|| Hatch::new(WINDOW_S));
             // negated carrier — 2026-08-28 live verification (GPS channels;
             // inherited for BDS, same NCO machinery)
@@ -950,7 +1103,7 @@ fn main() {
                 base_smoothed: rho_s,
                 base_carr: carr,
                 last_code_epoch: s_epoch,
-                file_epoch: s_epoch,
+                stream_epoch: s_epoch,
                 contrib_valid: true,
             });
             let (t_tx_gal, ggto_used) = ggto_convert(t_tx, ggto_ns);
@@ -981,23 +1134,38 @@ fn main() {
                     Cls::Gal => n_gal_pre_reject += 1,
                     _ => {}
                 }
-                // `reset` is exactly the event the `slips` counter counted
-                // for this sat — the lever-3b drop plan keys off it
-                meas.push((m, cls, prn, reset, cls == Cls::Gal && ggto_used));
+                // `reset` is exactly the event the `slips` counter counts
+                // for this sat — the lever-3b drop plan keys off it. Fix 1:
+                // counted HERE, only when the sat actually enters the set.
+                if reset {
+                    slips += 1;
+                }
+                meas.push((m, cls, prn, reset, cls == Cls::Gal && ggto_used, true));
+            } else if reset {
+                // fix 1: the reset happened but nothing was built (no
+                // ephemeris / stale batch / DNU) — the sat is not a member
+                // of this epoch's set, so the plan could never drop it and
+                // the epoch must not be marked slipped for it.
+                slips_unused += 1;
             }
         }
         if meas.len() < 4 { continue; }   // emit gate 5->4 (window pkg, UNBUILT): the n>=5 floor was the hour-gate killer (2026-08-29 bake-off: duty 24.7% -> 38.3%). ISB tension: a 2-state (clock+ISB) solve needs n>=5 with BDS OR GAL present (GAL adds the GGTO-residual + E1B-vs-C/A receiver ISB on top of the BDS one) — when ISB surgery lands, re-raise the gate for mixed solves or constrain ISB from the recent estimate at n==4.
+        // Fix 1: live contributors removed by a frozen-path reset are
+        // settled by the lever-3b rule on the pre-removal count — recorded
+        // as dropped_slip when >= SLIP_DROP_MIN_PRE were in play (and >= 4
+        // remain built), counted into `slips` otherwise.
+        let (mut dropped_slip, removed_counted) = settle_removed_contrib(meas.len(), removed_contrib);
+        slips += removed_counted;
         // Lever 3b: with >= SLIP_DROP_MIN_PRE built measurements, drop the
         // contributors whose smoother reset this epoch and solve the
         // remainder — one slipping bird must not poison an otherwise-deep
         // epoch (the analyzer's slips==0 quality gate would exclude it).
         // The dropped resets leave the published `slips` count; the row
         // records them as dropped_slip labels instead.
-        let slipped: Vec<bool> = meas.iter().map(|&(_, _, _, s, _)| s).collect();
+        let slipped: Vec<bool> = meas.iter().map(|&(_, _, _, s, _, _)| s).collect();
         let drop = plan_slip_drop(&slipped);
-        let mut dropped_slip: Vec<String> = Vec::new();
         if !drop.is_empty() {
-            dropped_slip = drop.iter().map(|&i| meas[i].1.label(meas[i].2)).collect();
+            dropped_slip.extend(drop.iter().map(|&i| meas[i].1.label(meas[i].2)));
             slips = slips.saturating_sub(drop.len() as u32);
             let mut keep = Vec::with_capacity(meas.len() - drop.len());
             for (i, r) in meas.into_iter().enumerate() {
@@ -1007,11 +1175,12 @@ fn main() {
             }
             meas = keep;
         }
-        let cls_of: Vec<Cls> = meas.iter().map(|&(_, c, _, _, _)| c).collect();
-        let prn_of: Vec<u8> = meas.iter().map(|&(_, _, p, _, _)| p).collect();
-        let ggto_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, g)| g).collect();
+        let cls_of: Vec<Cls> = meas.iter().map(|&(_, c, _, _, _, _)| c).collect();
+        let prn_of: Vec<u8> = meas.iter().map(|&(_, _, p, _, _, _)| p).collect();
+        let ggto_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, g, _)| g).collect();
+        let fresh_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, _, f)| f).collect();
         let meas: Vec<hackrf_gnss::gps::pvt::Meas> =
-            meas.into_iter().map(|(m, _, _, _, _)| m).collect();
+            meas.into_iter().map(|(m, _, _, _, _, _)| m).collect();
         // CAVEAT: ONE clock state for FOUR constellations — the GPS/BDS/GAL
         // inter-system channel biases are unmodeled in this 1-state solve (a
         // weighted mean with studentized rejection; no ISB state — surgery
@@ -1022,13 +1191,15 @@ fn main() {
         // 10 is absent/invalid — raw GGTO is tens of ns, still far under the
         // gate). Rows carry n_bds/n_sbas/n_gal/geo_ranging/ggto_applied so
         // the analyzer and leg-1 weighting can quantify mix-dependence; a
-        // structurally-biased row that trips the 1000 m studentized gate is
-        // legitimately DROPPED by the rejection — fail-closed, not silent.
-        // The solver returns accepted input indices so the row reports
-        // post-rejection constellation counts.
-        let fw = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, true);
+        // structurally-biased row that trips the scaled studentized gate
+        // (fix 2: max(150 m, 5·MAD-σ̂), capped 1000 m) is legitimately
+        // DROPPED by the rejection — fail-closed, not silent. The solver
+        // returns accepted input indices so the row reports post-rejection
+        // constellation counts, and (fix 4) the weighted solve's per-row
+        // residual log so the row can attribute the rejections.
+        let fw = hackrf_gnss::gps::pvt::solve_clock_only_detailed(&meas, anchor_km, true);
         let fu = hackrf_gnss::gps::pvt::solve_clock_only(&meas, anchor_km, false);
-        if let (Some(a), Some(b)) = (fw, fu) {
+        if let (Some((a, res_a)), Some(b)) = (fw, fu) {
             // Lever 6 — A/B means weighting only, and independent rejection
             // sets would mix weighting with satellite composition. Such an
             // epoch used to be silently skipped; it now PUBLISHES with
@@ -1041,12 +1212,15 @@ fn main() {
                 &cls_of,
                 &prn_of,
                 &ggto_of,
+                &fresh_of,
+                &res_a,
                 epoch,
                 n_bds_pre_reject,
                 n_gal_pre_reject,
                 n_fresh,
                 n_pred,
                 slips,
+                slips_unused,
                 &dropped_slip,
                 &gen_id,
             );
@@ -1078,6 +1252,7 @@ fn main() {
                     "n_fresh": row["n_fresh"],
                     "n_pred": row["n_pred"],
                     "slips": row["slips"],
+                    "slips_unused": row["slips_unused"],
                     "gen": gen_id,
                 },
             });
@@ -1095,7 +1270,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hackrf_gnss::gps::pvt::{solve_clock_only, Meas};
+    use hackrf_gnss::gps::pvt::{solve_clock_only, solve_clock_only_detailed, Meas};
 
     /// Real six-sat GPS geometry from the pvt solver tests (km): the site
     /// anchor and satellite ECEFs; pseudorange = geometric + clock.
@@ -1177,7 +1352,8 @@ mod tests {
         assert!((a.clock_km - clock).abs() < 1e-6, "clock {}", a.clock_km);
         assert_eq!(a.n_sat, 5);
         let row = epoch_row(
-            &a, &b, &kept_cls, &kept_prn, &[false; 5], 1.0, 0, 0, 5, 0, 0, &dropped_slip, "t",
+            &a, &b, &kept_cls, &kept_prn, &[false; 5], &[true; 5], &[], 1.0, 0, 0, 5, 0, 0, 0,
+            &dropped_slip, "t",
         );
         assert_eq!(row["slips"], 0);
         assert_eq!(row["dropped_slip"], json!(["G26"]));
@@ -1199,7 +1375,9 @@ mod tests {
         // weighted kept all 5; unweighted rejected the GEO
         let a = fix(5, vec![0, 1, 2, 3, 4]);
         let b = fix(4, vec![0, 1, 2, 3]);
-        let row = epoch_row(&a, &b, &cls, &prn, &[false; 5], 2.0, 0, 0, 5, 0, 0, &[], "t");
+        let row = epoch_row(
+            &a, &b, &cls, &prn, &[false; 5], &[true; 5], &[], 2.0, 0, 0, 5, 0, 0, 0, &[], "t",
+        );
         assert_eq!(row["ab_membership_match"], json!(false));
         assert_eq!(row["n_sat_weighted"], 5);
         assert_eq!(row["n_sat_unweighted"], 4);
@@ -1212,7 +1390,9 @@ mod tests {
         assert_eq!(row["geo_ranging"], json!([135]));
         // and a matching pair still reads true with both counts equal
         let b2 = fix(5, vec![0, 1, 2, 3, 4]);
-        let row2 = epoch_row(&a, &b2, &cls, &prn, &[false; 5], 3.0, 0, 0, 5, 0, 0, &[], "t");
+        let row2 = epoch_row(
+            &a, &b2, &cls, &prn, &[false; 5], &[true; 5], &[], 3.0, 0, 0, 5, 0, 0, 0, &[], "t",
+        );
         assert_eq!(row2["ab_membership_match"], json!(true));
         assert_eq!(row2["n_sat_weighted"], row2["n_sat_unweighted"]);
         // optional fields stay absent when empty (additive-only schema)
@@ -1232,7 +1412,7 @@ mod tests {
         let ggto = [false, false, false, true, false, false];
         let a = fix(6, vec![0, 1, 2, 3, 4, 5]);
         let b = fix(6, vec![0, 1, 2, 3, 4, 5]);
-        let row = epoch_row(&a, &b, &cls, &prn, &ggto, 4.0, 1, 2, 6, 0, 0, &[], "t");
+        let row = epoch_row(&a, &b, &cls, &prn, &ggto, &[true; 6], &[], 4.0, 1, 2, 6, 0, 0, 0, &[], "t");
         assert_eq!(row["n_sat"], 6);
         assert_eq!(row["n_gps"], 2);
         assert_eq!(row["n_bds"], 1);
@@ -1251,7 +1431,7 @@ mod tests {
         // reads false — the flag describes the accepted set, not the input
         let a2 = fix(4, vec![0, 1, 2, 5]);
         let b2 = fix(4, vec![0, 1, 2, 5]);
-        let row2 = epoch_row(&a2, &b2, &cls, &prn, &ggto, 5.0, 1, 2, 6, 0, 0, &[], "t");
+        let row2 = epoch_row(&a2, &b2, &cls, &prn, &ggto, &[true; 6], &[], 5.0, 1, 2, 6, 0, 0, 0, &[], "t");
         assert_eq!(row2["n_gal"], 0);
         assert_eq!(row2["n_gps"], 2);
         assert_eq!(row2["ggto_applied"], json!(false));
@@ -1372,5 +1552,202 @@ E02 2026 09 01 20 00 00 6.600067717955e-05 2.685851541173e-12 0.000000000000e+00
         stale.t0_s = 43_200.0 - 1_000.0;
         geos.insert(131, stale);
         assert!(build_meas_sbas(131, rho, t_tx, &geos, site_m, site_lla, &igp).is_none());
+    }
+
+    // ---- 2026-09-03 reviewed fixes ----
+
+    /// Fix 1 — the slip leak, reproduced. Six built measurements, none
+    /// slipped, plus a seventh tracked sat whose chain EXPIRED (last code
+    /// update 13 s ago, beyond PRED_WINDOW_S) that takes a tracker slip on
+    /// the frozen path. Before the fix that reset went straight into
+    /// `slips` while the sat never entered `meas`, so plan_slip_drop (which
+    /// sees only `meas`) had nothing to drop and the epoch published
+    /// slips=1 at n_sat 6 — 19 of 194 such epochs, one of which ended the
+    /// 2,895 s quality run. Now it publishes slips 0, slips_unused 1.
+    #[test]
+    fn non_member_reset_publishes_slips_zero_and_unused_one() {
+        let m = ranges(50.0);
+        let cls = [Cls::Gps; 6];
+        let prn = [16u8, 4, 26, 27, 31, 9];
+        // the non-member: contrib_valid but expired
+        let stale = PrevSat {
+            lock_s: 100.0,
+            rho_m: 1.0,
+            base_smoothed: 0.0,
+            base_carr: 0.0,
+            last_code_epoch: 100.0,
+            stream_epoch: 112.0,
+            contrib_valid: true,
+        };
+        let s_epoch = 113.0;
+        assert!(!frozen_reset_was_contrib(&stale, s_epoch), "chain expired -> not a contributor");
+        let (mut slips, mut slips_unused) = (0u32, 0u32);
+        let mut removed: Vec<String> = Vec::new();
+        if frozen_reset_was_contrib(&stale, s_epoch) {
+            removed.push(Cls::Gps.label(7));
+        } else {
+            slips_unused += 1;
+        }
+        // the old accounting: nothing in the plan to drop, yet slips=1
+        assert!(plan_slip_drop(&[false; 6]).is_empty());
+        let (dropped, counted) = settle_removed_contrib(m.len(), removed);
+        slips += counted;
+        assert!(dropped.is_empty());
+        let a = solve_clock_only(&m, STATION, true).expect("weighted");
+        let b = solve_clock_only(&m, STATION, false).expect("unweighted");
+        let row = epoch_row(
+            &a, &b, &cls, &prn, &[false; 6], &[true; 6], &[], 1.0, 0, 0, 6, 0, slips, slips_unused,
+            &dropped, "t",
+        );
+        assert_eq!(row["n_sat"], 6);
+        assert_eq!(row["slips"], 0);
+        assert_eq!(row["slips_unused"], 1);
+        assert!(row.get("dropped_slip").is_none());
+        // a LIVE contributor (fresh 3 s ago) taking the same frozen-path
+        // reset IS a member removal
+        let live = PrevSat { last_code_epoch: 110.0, ..stale };
+        assert!(frozen_reset_was_contrib(&live, s_epoch));
+    }
+
+    /// Fix 1 — settling a frozen-path removal of a LIVE contributor by the
+    /// lever-3b rule on the pre-removal count: recorded as dropped_slip
+    /// (slips 0) at pre >= 6 with >= 4 built, counted into slips below
+    /// that; never hidden either way. A fresh-path reset whose build
+    /// returned None is unused, not a verdict.
+    #[test]
+    fn removed_contributor_settles_by_the_lever_3b_rule() {
+        // 5 built + 1 removed = 6 pre-removal: drop-recorded, slips 0
+        let (d, s) = settle_removed_contrib(5, vec!["G07".to_string()]);
+        assert_eq!(d, vec!["G07".to_string()]);
+        assert_eq!(s, 0);
+        // 4 built + 1 removed = 5 < 6: counted (unchanged pre-fix behavior)
+        let (d, s) = settle_removed_contrib(4, vec!["G07".to_string()]);
+        assert!(d.is_empty());
+        assert_eq!(s, 1);
+        // 6 built + 2 removed: both recorded
+        let (d, s) = settle_removed_contrib(6, vec!["C11".to_string(), "E05".to_string()]);
+        assert_eq!(d.len(), 2);
+        assert_eq!(s, 0);
+        // 3 built (the emit gate refuses the epoch anyway) + 3 removed:
+        // n_pre 6 but < 4 built -> counted, never a sub-floor drop record
+        let (d, s) = settle_removed_contrib(3, vec!["G01".into(), "G02".into(), "G03".into()]);
+        assert!(d.is_empty());
+        assert_eq!(s, 3);
+        // nothing removed -> nothing
+        assert_eq!(settle_removed_contrib(8, Vec::new()), (Vec::new(), 0));
+        // the fresh-path twin of the leak: a reset whose measurement never
+        // built (no ephemeris -> None) is not a member either
+        let none = build_meas_gal(3, 25e6, 244_800.0, &HashMap::new(), [0.0; 3], [0.0; 3], &HashMap::new());
+        assert!(none.is_none());
+        let row_would_publish = epoch_row(
+            &fix(6, vec![0, 1, 2, 3, 4, 5]),
+            &fix(6, vec![0, 1, 2, 3, 4, 5]),
+            &[Cls::Gps; 6], &[1u8, 2, 3, 4, 5, 6], &[false; 6], &[true; 6], &[],
+            9.0, 0, 0, 6, 0, 0, 1, &[], "t",
+        );
+        assert_eq!(row_would_publish["slips"], 0);
+        assert_eq!(row_would_publish["slips_unused"], 1);
+    }
+
+    /// Fix 3 — the innovation gate keys on the sat's OWN stream-epoch
+    /// contiguity, not on equality with the producer's wall-clock file
+    /// epoch (which the stream epoch lags by ~2088 s live: the old test
+    /// could never be true, so the 500 m reset never fired). A 600 m jump
+    /// between consecutive stream epochs trips it; a value that is merely
+    /// stale/lagging does not.
+    #[test]
+    fn innovation_gate_keys_on_stream_contiguity_not_file_epoch() {
+        let lam = LAM_L1;
+        // a live contributor last seen at a stream epoch far behind any
+        // file epoch (the live lag)
+        let e = 1_788_434_183.890_122;
+        let p = PrevSat {
+            lock_s: 300.0,
+            rho_m: 20_000_000.0,
+            base_smoothed: 20_000_000.0,
+            base_carr: 1_000.0,
+            last_code_epoch: e,
+            stream_epoch: e,
+            contrib_valid: true,
+        };
+        // carrier moved by exactly the code delta (+500 m range = -500/λ
+        // cycles, negated-carrier convention): prediction = base + 500
+        let carr = p.base_carr - 500.0 / lam;
+        let consistent = 20_000_500.0;
+        // consecutive stream epoch: consistent value passes, 600 m jump trips
+        assert!(!innov_breach(&p, e + 1.0, consistent, carr, lam));
+        assert!(!innov_breach(&p, e + 1.0, consistent + 20.0, carr, lam), "code noise passes");
+        assert!(innov_breach(&p, e + 1.0, consistent + 600.0, carr, lam));
+        assert!(innov_breach(&p, e + 1.0, consistent - 600.0, carr, lam));
+        // exactly at the gate is not a breach (strict >)
+        assert!(!innov_breach(&p, e + 1.0, consistent + INNOV_GATE_M, carr, lam));
+        // stale-by-one-epoch: the same row republished (stream dt 0) with
+        // only code noise on it never trips
+        assert!(!innov_breach(&p, e, p.rho_m + 20.0, p.base_carr, lam));
+        // the producer's catch-up skip (stream dt 2.0, 3–4 % of file steps
+        // measured 2026-09-03) is still contiguous: no false trip on a
+        // consistent value, a real 600 m jump still caught
+        assert!(!innov_breach(&p, e + 2.0, consistent, carr, lam));
+        assert!(innov_breach(&p, e + 2.0, consistent + 600.0, carr, lam));
+        // beyond the window (the sat was absent): no verdict, never a reset
+        assert!(!innov_breach(&p, e + 3.0, consistent + 600.0, carr, lam));
+        // a backwards stream epoch is not contiguous either
+        assert!(!innov_breach(&p, e - 1.0, consistent + 600.0, carr, lam));
+        // a chain with no fresh update since its reset is untestable
+        let q = PrevSat { contrib_valid: false, ..p };
+        assert!(!innov_breach(&q, e + 1.0, consistent + 600.0, carr, lam));
+    }
+
+    /// Fix 4 — the additive `residuals` field: every built row of the
+    /// weighted solve, accepted and rejected alike, labelled by the
+    /// dropped_slip convention (G/C/S/E), residual against the final
+    /// clock to 0.1 m, weight to 0.001, fresh/pred and ok/rej flags. The
+    /// 800 m row is rejected by the fix-2 scaled gate and reads its full
+    /// bias, while the identity counters still describe the accepted set.
+    #[test]
+    fn residuals_field_labels_every_built_row_against_the_final_clock() {
+        let mut m = ranges(50.0);
+        m[2].pseudorange += 0.8; // 800 m on the BDS row
+        let cls = [Cls::Gps, Cls::Gps, Cls::Bds, Cls::Gal, Cls::Sbas, Cls::Gps];
+        let prn = [16u8, 4, 32, 5, 131, 9];
+        let fresh = [true, false, true, false, true, true];
+        let (a, res) = solve_clock_only_detailed(&m, STATION, true).expect("weighted");
+        let b = solve_clock_only(&m, STATION, false).expect("unweighted");
+        assert_eq!(a.n_sat, 5);
+        assert!(!a.accepted_indices.contains(&2));
+        let row = epoch_row(&a, &b, &cls, &prn, &[false; 6], &fresh, &res, 1.0, 1, 1, 4, 2, 0, 0, &[], "t");
+        let r = row["residuals"].as_array().expect("residuals field");
+        assert_eq!(r.len(), 6, "every built row is logged");
+        for (k, e) in r.iter().enumerate() {
+            let e = e.as_array().unwrap();
+            assert_eq!(e.len(), 5);
+            assert_eq!(e[0], json!(cls[k].label(prn[k])));
+            let w = e[2].as_f64().unwrap();
+            assert!(w > 0.0 && w <= 1.0, "weight {w}");
+            assert!((w * 1000.0 - (w * 1000.0).round()).abs() < 1e-9, "3-decimal weight");
+            let kind = if fresh[k] { "fresh" } else { "pred" };
+            assert_eq!(e[3], json!(kind));
+            let r_m = e[1].as_f64().unwrap();
+            if k == 2 {
+                assert_eq!(e[4], json!("rej"));
+                assert!((r_m - 800.0).abs() < 0.05, "rejected residual {r_m}");
+            } else {
+                assert_eq!(e[4], json!("ok"));
+                assert!(r_m.abs() < 0.05, "accepted residual {r_m}");
+            }
+        }
+        assert_eq!(r[2][0], json!("C32"));
+        assert_eq!(r[3][0], json!("E05"));
+        assert_eq!(r[4][0], json!("S131"));
+        // identity counters describe the accepted set; the rejected BDS row
+        // shows only in the pre-reject count
+        assert_eq!(row["n_sat"], 5);
+        assert_eq!(row["n_bds"], 0);
+        assert_eq!(row["n_bds_pre_reject"], 1);
+        assert_eq!(row["ab_membership_match"], json!(true));
+        // additive-only: absent when no log is supplied
+        let bare = epoch_row(&a, &b, &cls, &prn, &[false; 6], &fresh, &[], 1.0, 1, 1, 4, 2, 0, 0, &[], "t");
+        assert!(bare.get("residuals").is_none());
+        assert_eq!(bare["slips_unused"], 0);
     }
 }
