@@ -13,6 +13,7 @@ import json
 import math
 import os
 import sys
+import time
 import numpy as np
 
 C_MPS = 299792458.0
@@ -135,9 +136,15 @@ def analyze_phase_thermals(history_path=PHASE_HISTORY_PATH, min_samples=10):
 def main():
     parser = argparse.ArgumentParser(description="Carrier Phase Thermal & Diurnal Metrology Analyzer")
     parser.add_argument("--once", action="store_true", help="Run analysis and exit")
+    parser.add_argument("--loop", action="store_true", help="Run continuously in a loop")
+    parser.add_argument("--interval", type=float, default=60.0, help="Loop interval in seconds")
     args = parser.parse_args()
 
-    res = analyze_phase_thermals()
+    while True:
+        res = analyze_phase_thermals()
+        if not args.loop:
+            break
+        time.sleep(args.interval)
 
     print("=================================================================")
     print("   CARRIER PHASE DIURNAL THERMAL & SECULAR DRIFT METROLOGY       ")

@@ -13,6 +13,7 @@ import json
 import math
 import os
 import sys
+import time
 import numpy as np
 
 C_MPS = 299792458.0
@@ -126,9 +127,16 @@ def analyze_isb(history_path=POS_HISTORY_PATH):
 def main():
     parser = argparse.ArgumentParser(description="Inter-System Bias (ISB / ISX) Metrology Analyzer")
     parser.add_argument("--once", action="store_true", help="Run analysis and exit")
+    parser.add_argument("--loop", action="store_true", help="Run continuously in a loop")
+    parser.add_argument("--interval", type=float, default=60.0, help="Loop interval in seconds")
     args = parser.parse_args()
 
-    res = analyze_isb()
+    while True:
+        res = analyze_isb()
+        if not args.loop:
+            break
+        time.sleep(args.interval)
+
     print("=================================================================")
     print("    INTER-SYSTEM BIAS (ISB / ISX) GPS vs BEIDOU METROLOGY        ")
     print("=================================================================")
