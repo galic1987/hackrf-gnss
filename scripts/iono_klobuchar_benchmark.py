@@ -137,7 +137,8 @@ class KlobucharBenchmark:
             delay_m = t_slant * C_MPS
             delay_ns = t_slant * 1e9
 
-            results[sat_key] = {
+            entry = dict(s)
+            entry.update({
                 "sys": s.get("sys"),
                 "prn": s.get("prn"),
                 "az_deg": az,
@@ -149,7 +150,8 @@ class KlobucharBenchmark:
                 "obliquity_factor": round(f_obliq, 3),
                 "observed_sigma_phi_rad": s.get("sigma_phi_rad"),
                 "observed_s4": s.get("s4")
-            }
+            })
+            results[sat_key] = entry
 
         output = {
             "epoch": round(now, 2),
@@ -157,7 +159,14 @@ class KlobucharBenchmark:
             "station_lat": self.station_lat,
             "station_lon": self.station_lon,
             "n_benchmarked": len(results),
-            "satellites": results
+            "satellites": results,
+            "klobuchar": {
+                "tow_s": round(tow_s, 1),
+                "n_benchmarked": len(results),
+                "station_lat": self.station_lat,
+                "station_lon": self.station_lon,
+                "satellites": results
+            }
         }
 
         # Atomically write state file

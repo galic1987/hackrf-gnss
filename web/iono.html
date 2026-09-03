@@ -355,6 +355,8 @@
         <th>Elevation</th>
         <th>IPP (350 km)</th>
         <th>F(E)</th>
+        <th>Klobuchar Delay</th>
+        <th>Klobuchar sTEC</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
@@ -363,9 +365,51 @@
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="9" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="13" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
+</div>
+
+<!-- Space Weather & Geodesy Experiments -->
+<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 24px;">
+  <!-- Card 1: TID Wavelet Analyzer -->
+  <div class="card">
+    <div class="card-label">
+      <span>TID Spectral Wavelet Analysis</span>
+      <span class="badge" id="tidBadge" style="background:rgba(0,240,255,0.15); color:var(--cyan); border:1px solid rgba(0,240,255,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">QUIET</span>
+    </div>
+    <div class="card-val" id="tidVal">28.5 <span class="unit">min</span></div>
+    <div class="card-sub" id="tidSub">Dominant period &bull; Amp: <b id="tidAmp">0.42 TECU</b> &bull; SNR: <b id="tidSnr">6.8 dB</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Discrete Fourier periodogram over 15–90 min acoustic-gravity wave window. Evaluated span: <span id="tidSpan">45.0 min</span>.
+    </div>
+  </div>
+
+  <!-- Card 2: Inter-System Bias (ISB / ISX) -->
+  <div class="card">
+    <div class="card-label">
+      <span>BDS &minus; GPS Inter-System Bias (ISB)</span>
+      <span class="badge" style="background:rgba(244,63,94,0.15); color:var(--magenta); border:1px solid rgba(244,63,94,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">METROLOGY</span>
+    </div>
+    <div class="card-val" id="isbVal">+10.19 <span class="unit">ns</span></div>
+    <div class="card-sub">Scatter: <b id="isbMad">&plusmn;120.66 ns</b> (MAD) &bull; RF &Delta;L: <b id="isbPath">+3.05 m</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Clock Allan Deviation: <b>&sigma;<sub>y</sub>(300s) = <span id="isbAdev">5.08&times;10<sup>&minus;10</sup></span></b> across <span id="isbSpan">170.6 h</span> (<span id="isbN">406</span> mixed fixes).
+    </div>
+  </div>
+
+  <!-- Card 3: ATSC Diurnal Thermal Expansion -->
+  <div class="card">
+    <div class="card-label">
+      <span>Carrier Diurnal Expansion &amp; Secular Drift</span>
+      <span class="badge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">LOCKED</span>
+    </div>
+    <div class="card-val" id="thermalY">+1.37&times;10<sup>&minus;13</sup></div>
+    <div class="card-sub">Secular offset: <b id="thermalMhz">+0.083 mHz</b> &bull; Drift: <b id="thermalMmDay">+0.30 mm/d</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      24-hr Diurnal Wander: <b><span id="thermalDiurnal">26.5 mm</span></b> (<span id="thermalPs">88.3 ps</span>) &bull; RMS Noise: <b><span id="thermalRms">13.6 mm</span></b> (<span id="thermalHours">117.0 h</span> span).
+    </div>
+  </div>
 </div>
 
 <script>
@@ -402,6 +446,7 @@
   }
 
   function updateUI(st) {
+    if (typeof window !== "undefined") window.updateUI = updateUI;
     lastPayload = st;
     document.getElementById("syncStatus").textContent = "STREAM LOCKED (1 Hz)";
     document.getElementById("syncStatus").style.color = "var(--green)";
@@ -438,6 +483,75 @@
     });
     if (historyBuffer.length > 60) historyBuffer.shift();
 
+    // TID Wavelet Periodogram
+    if (st.classification) {
+      var tb = document.getElementById("tidBadge");
+      if (tb) {
+        tb.textContent = st.classification;
+        tb.style.color = st.classification.indexOf("SEVERE") !== -1 ? "var(--magenta)" : (st.classification.indexOf("MODERATE") !== -1 ? "var(--amber)" : "var(--cyan)");
+      }
+      var tv = document.getElementById("tidVal");
+      if (tv && st.dominant_period_min !== undefined) tv.innerHTML = st.dominant_period_min.toFixed(1) + ' <span class="unit">min</span>';
+      var ta = document.getElementById("tidAmp");
+      if (ta && st.dominant_amplitude_tecu !== undefined) ta.textContent = st.dominant_amplitude_tecu.toFixed(2) + " TECU";
+      var ts = document.getElementById("tidSnr");
+      if (ts && st.spectral_snr_db !== undefined) ts.textContent = st.spectral_snr_db.toFixed(1) + " dB";
+      var tspan = document.getElementById("tidSpan");
+      if (tspan && st.evaluated_span_s !== undefined) tspan.textContent = (st.evaluated_span_s / 60.0).toFixed(1) + " min";
+    }
+
+    // Inter-System Bias (ISB)
+    if (st.isb_median_ns !== undefined && st.isb_median_ns !== null) {
+      var iv = document.getElementById("isbVal");
+      if (iv) iv.innerHTML = (st.isb_median_ns >= 0 ? "+" : "") + st.isb_median_ns.toFixed(2) + ' <span class="unit">ns</span>';
+      var imad = document.getElementById("isbMad");
+      if (imad && st.isb_mad_ns !== undefined) imad.innerHTML = "&plusmn;" + st.isb_mad_ns.toFixed(2) + " ns";
+      var ipath = document.getElementById("isbPath");
+      if (ipath && st.isb_equivalent_path_m !== undefined) ipath.innerHTML = (st.isb_equivalent_path_m >= 0 ? "+" : "") + st.isb_equivalent_path_m.toFixed(2) + " m";
+      var iadev = document.getElementById("isbAdev");
+      if (iadev && st.adev_tau_300s !== undefined) iadev.innerHTML = st.adev_tau_300s.toExponential(2);
+      var ispan = document.getElementById("isbSpan");
+      if (ispan && st.total_span_hours !== undefined) ispan.textContent = st.total_span_hours.toFixed(1) + " h";
+      var inum = document.getElementById("isbN");
+      if (inum && st.n_samples !== undefined) inum.textContent = st.n_samples;
+    }
+
+    // Thermal & Secular Phase Drift
+    if (st.fractional_frequency_offset !== undefined && st.fractional_frequency_offset !== null) {
+      var numY = Number(st.fractional_frequency_offset);
+      var ty = document.getElementById("thermalY");
+      if (ty && !isNaN(numY)) ty.innerHTML = (numY >= 0 ? "+" : "") + numY.toExponential(2);
+      var tmhz = document.getElementById("thermalMhz");
+      if (tmhz && st.carrier_offset_mhz !== undefined) tmhz.innerHTML = (st.carrier_offset_mhz >= 0 ? "+" : "") + st.carrier_offset_mhz.toFixed(3) + " mHz";
+      var tmmd = document.getElementById("thermalMmDay");
+      if (tmmd && st.secular_drift_mm_per_day !== undefined) {
+        var dStr = Math.abs(st.secular_drift_mm_per_day) >= 1000
+          ? (st.secular_drift_mm_per_day / 1000.0).toFixed(2) + " m/d"
+          : st.secular_drift_mm_per_day.toFixed(2) + " mm/d";
+        tmmd.innerHTML = (st.secular_drift_mm_per_day >= 0 ? "+" : "") + dStr;
+      }
+      var tdiurn = document.getElementById("thermalDiurnal");
+      if (tdiurn && st.diurnal_wander_ptp_mm !== undefined) {
+        tdiurn.textContent = st.diurnal_wander_ptp_mm >= 1000
+          ? (st.diurnal_wander_ptp_mm / 1000.0).toFixed(2) + " m"
+          : st.diurnal_wander_ptp_mm.toFixed(1) + " mm";
+      }
+      var tps = document.getElementById("thermalPs");
+      if (tps && st.diurnal_wander_ptp_ps !== undefined) {
+        tps.textContent = st.diurnal_wander_ptp_ps >= 1000
+          ? (st.diurnal_wander_ptp_ps / 1000.0).toFixed(1) + " ns"
+          : st.diurnal_wander_ptp_ps.toFixed(1) + " ps";
+      }
+      var trms = document.getElementById("thermalRms");
+      if (trms && st.unmodeled_rms_mm !== undefined) {
+        trms.textContent = st.unmodeled_rms_mm >= 1000
+          ? (st.unmodeled_rms_mm / 1000.0).toFixed(2) + " m"
+          : st.unmodeled_rms_mm.toFixed(1) + " mm";
+      }
+      var thours = document.getElementById("thermalHours");
+      if (thours && st.total_span_hours !== undefined) thours.textContent = st.total_span_hours.toFixed(1) + " h";
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -448,14 +562,14 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='9' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='13' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
     keys.sort();
     for (var i = 0; i < keys.length; i++) {
       var s = sats[keys[i]];
-      var sysCls = "sys-" + s.sys;
+      var sysCls = "sys-" + (s.sys || "gps");
       var az = s.az_deg !== null && s.az_deg !== undefined ? s.az_deg.toFixed(1) + "°" : "—";
       var el = s.el_deg !== null && s.el_deg !== undefined ? s.el_deg.toFixed(1) + "°" : "—";
       var cn0 = s.cn0 ? s.cn0.toFixed(1) + " dB-Hz" : "—";
@@ -469,13 +583,20 @@
       var fStr = (s.obliquity_factor !== undefined && s.obliquity_factor !== null)
         ? s.obliquity_factor.toFixed(2) : "1.00";
 
+      var klobDelay = (s.klobuchar_delay_ns !== undefined && s.klobuchar_delay_ns !== null)
+        ? s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_delay_m.toFixed(1) + " m)" : "—";
+      var klobTec = (s.klobuchar_stec_tecu !== undefined && s.klobuchar_stec_tecu !== null)
+        ? s.klobuchar_stec_tecu.toFixed(1) + " TECU" : "—";
+
       html += "<tr>" +
         "<td><strong>" + keys[i] + "</strong></td>" +
-        "<td><span class='sys-badge " + sysCls + "'>" + s.sys.toUpperCase() + "</span></td>" +
+        "<td><span class='sys-badge " + sysCls + "'>" + (s.sys || "").toUpperCase() + "</span></td>" +
         "<td>" + az + "</td>" +
         "<td>" + el + "</td>" +
         "<td>" + ippStr + "</td>" +
         "<td>" + fStr + "</td>" +
+        "<td>" + klobDelay + "</td>" +
+        "<td>" + klobTec + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -675,16 +796,17 @@
       var s = match.sat;
       var ippTip = (s.ipp_lat_deg !== undefined && s.ipp_lat_deg !== null)
         ? s.ipp_lat_deg.toFixed(1) + "°N, " + Math.abs(s.ipp_lon_deg).toFixed(1) + "°W" : "—";
-      var fTip = s.obliquity_factor ? s.obliquity_factor.toFixed(2) : "1.00";
+      var klobTip = s.klobuchar_delay_ns ? "<br>Klobuchar: " + s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_stec_tecu.toFixed(1) + " TECU)" : "";
 
-      tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + s.sys.toUpperCase() + ")<br>" +
+      tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
         "Azimuth: " + (s.az_deg ? s.az_deg.toFixed(1) + "°" : "—") + "<br>" +
         "IPP (350 km): " + ippTip + "<br>" +
         "Obliquity F(E): " + fTip + "<br>" +
         "C/N0: " + (s.cn0 ? s.cn0.toFixed(1) + " dB" : "—") + "<br>" +
         "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
-        "S4: " + (s.s4 ? s.s4.toFixed(3) : "—");
+        "S4: " + (s.s4 ? s.s4.toFixed(3) : "—") +
+        klobTip;
     } else {
       tooltip.style.display = "none";
     }
@@ -693,6 +815,11 @@
   skyCanvas.addEventListener("mouseleave", function() {
     tooltip.style.display = "none";
   });
+
+  if (typeof window !== "undefined") {
+    window.updateUI = updateUI;
+    window.fetchTelemetry = fetchTelemetry;
+  }
 
   // Initial fetch and 1-second refresh cycle
   fetchTelemetry();

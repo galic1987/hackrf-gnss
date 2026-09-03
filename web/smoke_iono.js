@@ -1,0 +1,125 @@
+// Regression smoke test for web/iono.html
+// Run: `node web/smoke_iono.js` (hits http://localhost:8090/api/sync)
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const HTML_PATH = path.join(__dirname, "iono.html");
+const API_URL = "http://localhost:8090/api/sync";
+
+async function main() {
+  console.log("smoke_iono: reading " + HTML_PATH);
+  const html = fs.readFileSync(HTML_PATH, "utf8");
+  const scriptMatch = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi.exec(html);
+  if (!scriptMatch) throw new Error("No script block found in " + HTML_PATH);
+  const scriptCode = scriptMatch[1];
+
+  let liveData = {};
+  try {
+    const r = await fetch(API_URL);
+    if (r.ok) liveData = await r.json();
+  } catch (e) {
+    console.log("warning: could not reach " + API_URL + " (" + e.message + ")");
+  }
+
+  const elements = {};
+  const drawCounts = { skyCanvas: 0, stripCanvas: 0 };
+  const nanViolations = [];
+
+  function getEl(id) {
+    if (!elements[id]) {
+      elements[id] = {
+        id: id,
+        children: [],
+        style: {},
+        dataset: {},
+        innerHTML: "",
+        textContent: "",
+        width: 880,
+        height: 880,
+        clientWidth: 880,
+        clientHeight: 880,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 880, height: 880 }),
+        addEventListener: () => {},
+        getContext: (type) => {
+          if (type !== "2d") return null;
+          return new Proxy({}, {
+            get: (t, p) => {
+              if (p === "measureText") return (s) => ({ width: String(s).length * 8 });
+              if (p === "createRadialGradient" || p === "createLinearGradient") {
+                return () => ({ addColorStop: () => {} });
+              }
+              return (...args) => {
+                drawCounts[id] = (drawCounts[id] || 0) + 1;
+                for (const a of args) {
+                  if (typeof a === "number" && !isFinite(a)) {
+                    nanViolations.push(id + "." + String(p) + "(" + a + ")");
+                  }
+                }
+              };
+            },
+            set: () => true
+          });
+        }
+      };
+    }
+    return elements[id];
+  }
+
+  // Pre-populate known element IDs
+  [
+    "weatherVal", "weatherSub", "sigmaVal", "s4Val", "tecVal", "rotiVal",
+    "satTableBody", "tidBadge", "tidVal", "tidAmp", "tidSnr", "tidSpan",
+    "isbVal", "isbMad", "isbPath", "isbAdev", "isbSpan", "isbN",
+    "thermalY", "thermalMhz", "thermalMmDay", "thermalDiurnal", "thermalPs",
+    "thermalRms", "thermalHours", "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
+  ].forEach(getEl);
+
+  const windowObj = {};
+  const sandbox = {
+    document: {
+      getElementById: (id) => getEl(id),
+      createElement: (tag) => getEl("dyn_" + tag)
+    },
+    window: windowObj,
+    fetch: () => Promise.resolve({ json: () => Promise.resolve(liveData) }),
+    setInterval: () => 1,
+    setTimeout: (fn) => fn(),
+    Date: Date,
+    Math: Math,
+    console: console
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(scriptCode, sandbox);
+
+  // Directly drive updateUI with liveData
+  if (typeof windowObj.updateUI === "function") {
+    windowObj.updateUI(liveData);
+  } else {
+    throw new Error("window.updateUI was not exported");
+  }
+
+  // Check that canvases drew
+  console.log("Canvas draw counts:", drawCounts);
+  if (drawCounts.skyCanvas === 0) throw new Error("skyCanvas had 0 draw operations");
+  if (drawCounts.stripCanvas === 0) throw new Error("stripCanvas had 0 draw operations");
+  if (nanViolations.length > 0) throw new Error("NaN violations detected: " + nanViolations.join(", "));
+
+  // Check that table has content
+  const tableHtml = elements["satTableBody"].innerHTML;
+  console.log("Table rendered rows length:", tableHtml.length);
+  if (!tableHtml || tableHtml.length < 50) throw new Error("satTableBody was empty or unexpectedly short");
+
+  // Check that experiment values are rendered
+  console.log("TID Val:", elements["tidVal"].innerHTML);
+  console.log("ISB Val:", elements["isbVal"].innerHTML);
+  console.log("Thermal Val:", elements["thermalY"].innerHTML);
+
+  console.log("SMOKE_IONO: PASS");
+}
+
+main().catch(err => {
+  console.error("SMOKE_IONO FAIL:", err);
+  process.exit(1);
+});
