@@ -75,6 +75,7 @@ async function main() {
     "thermalRms", "thermalHours", "mpiBadge", "mpiVal", "mpiReflective", "mpiClean",
     "mpiActiveRisk", "tropoBadge", "ztdVal", "zhdVal", "zwdVal", "ztdNs", "p0Val",
     "relBadge", "relVal", "relGr", "relSr", "relFactory", "relDrift", "relSagnac", "relEcc",
+    "pwvBadge", "pwvVal", "pwvMass", "tmVal", "tdVal", "bevisPi", "regimeVal", "maxSwv",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -126,6 +127,9 @@ async function main() {
   console.log("Relativity GR / SR:", elements["relGr"].textContent, "/", elements["relSr"].textContent);
   console.log("Relativity Uncompensated:", elements["relDrift"].textContent);
   console.log("Relativity Sagnac Max:", elements["relSagnac"].textContent);
+  console.log("PWV Val:", elements["pwvVal"].innerHTML);
+  console.log("PWV Mass / Tm / Td:", elements["pwvMass"].textContent, "/", elements["tmVal"].textContent, "/", elements["tdVal"].textContent);
+  console.log("PWV Regime:", elements["regimeVal"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }

@@ -359,6 +359,7 @@
         <th>Tropo Delay</th>
         <th>Total Atm</th>
         <th>Relativity (Ecc / Sagnac)</th>
+        <th>Slant WV</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
@@ -368,7 +369,7 @@
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="16" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="17" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
@@ -450,6 +451,19 @@
     <div class="card-sub">GR: <b id="relGr">+45.7 &mu;s/d</b> &bull; SR: <b id="relSr">&minus;7.2 &mu;s/d</b> (&Delta;f: <b id="relFactory">&minus;4.55 mHz</b>)</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       Uncompensated: <b id="relDrift">11.5 km/d</b> &bull; Max Sagnac: <b id="relSagnac">24.8 m</b> &bull; Max Ecc: <b id="relEcc">5.7 m</b>.
+    </div>
+  </div>
+
+  <!-- Card 7: GNSS Meteorology & Precipitable Water Vapor (PWV) -->
+  <div class="card">
+    <div class="card-label">
+      <span>GNSS Meteorology &amp; Precipitable Water (PWV)</span>
+      <span class="badge" id="pwvBadge" style="background:rgba(20,184,166,0.15); color:var(--cyan); border:1px solid rgba(20,184,166,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">BEVIS INVERSION</span>
+    </div>
+    <div class="card-val" id="pwvVal">18.3 <span class="unit">mm PWV</span></div>
+    <div class="card-sub">Mass: <b id="pwvMass">18.26 kg/m&sup2;</b> &bull; T<sub>m</sub>: <b id="tmVal">8.1&deg;C</b> &bull; T<sub>d</sub>: <b id="tdVal">9.3&deg;C</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Bevis &Pi;: <span id="bevisPi">0.159</span> &bull; Regime: <b id="regimeVal" style="color:var(--green);">NORMAL</b> &bull; Max Slant WV: <b id="maxSwv">31.4 mm</b>.
     </div>
   </div>
 </div>
@@ -666,6 +680,28 @@
       }
     }
 
+    // GNSS Meteorology & Precipitable Water Vapor (PWV)
+    if (st.meteorology_summary) {
+      var msum = st.meteorology_summary;
+      var pv = document.getElementById("pwvVal");
+      if (pv && msum.pwv_mm !== undefined) pv.innerHTML = msum.pwv_mm.toFixed(1) + ' <span class="unit">mm PWV</span>';
+      var pm = document.getElementById("pwvMass");
+      if (pm && msum.pwv_kg_m2 !== undefined) pm.textContent = msum.pwv_kg_m2.toFixed(2) + " kg/m²";
+      var ptm = document.getElementById("tmVal");
+      if (ptm && msum.bevis_tm_c !== undefined) ptm.textContent = msum.bevis_tm_c.toFixed(1) + "°C";
+      var ptd = document.getElementById("tdVal");
+      if (ptd && msum.dew_point_c !== undefined) ptd.textContent = msum.dew_point_c.toFixed(1) + "°C";
+      var ppi = document.getElementById("bevisPi");
+      if (ppi && msum.bevis_pi_factor !== undefined) ppi.textContent = msum.bevis_pi_factor.toFixed(3);
+      var preg = document.getElementById("regimeVal");
+      if (preg && msum.convective_regime) {
+        preg.textContent = msum.convective_regime;
+        preg.style.color = msum.convective_regime === "NORMAL" ? "var(--green)" : (msum.convective_regime === "DRY_STABLE" ? "var(--cyan)" : "var(--amber)");
+      }
+      var pmax = document.getElementById("maxSwv");
+      if (pmax && msum.max_slant_wv_mm !== undefined) pmax.textContent = msum.max_slant_wv_mm.toFixed(1) + " mm";
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -676,7 +712,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='16' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='17' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -714,6 +750,11 @@
           "<span style='color:var(--cyan); font-weight:600;'>" + (relInfo.sagnac_correction_m >= 0 ? "+" : "") + relInfo.sagnac_correction_m.toFixed(1) + "m</span>"
         : "—";
 
+      var metSat = (lastPayload && lastPayload.meteorology_satellites && lastPayload.meteorology_satellites[keys[i]]) ? lastPayload.meteorology_satellites[keys[i]] : null;
+      var swvCol = metSat
+        ? "<span style='color:var(--cyan); font-weight:600;'>" + metSat.swv_mm.toFixed(1) + " mm</span>"
+        : "—";
+
       var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
       var mpCol = mpInfo
         ? (mpInfo.reflection_risk === "HIGH" ? "<span style='color:var(--magenta); font-weight:600;'>HIGH (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
@@ -732,6 +773,7 @@
         "<td>" + tropoCol + "</td>" +
         "<td>" + totalAtmCol + "</td>" +
         "<td>" + relCol + "</td>" +
+        "<td>" + swvCol + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -1002,6 +1044,10 @@
       var relTip = relInfo
         ? "<br><strong>Relativity:</strong> Net " + relInfo.net_secular_us_day.toFixed(2) + " μs/d (" + relInfo.uncompensated_drift_km_day.toFixed(1) + " km/d)<br>Ecc: " + relInfo.eccentricity_correction_m.toFixed(2) + " m (" + relInfo.eccentricity_correction_ns.toFixed(1) + " ns)<br>Sagnac: " + relInfo.sagnac_correction_m.toFixed(2) + " m (" + relInfo.sagnac_correction_ns.toFixed(1) + " ns)"
         : "";
+      var metSat = (lastPayload && lastPayload.meteorology_satellites && lastPayload.meteorology_satellites[match.key]) ? lastPayload.meteorology_satellites[match.key] : null;
+      var metTip = metSat
+        ? "<br><strong>Water Vapor:</strong> Slant WV: " + metSat.swv_mm.toFixed(1) + " mm (" + metSat.swv_kg_m2.toFixed(1) + " kg/m²)"
+        : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -1014,6 +1060,7 @@
         klobTip +
         tropoTip +
         relTip +
+        metTip +
         mpTip;
     } else {
       tooltip.style.display = "none";
