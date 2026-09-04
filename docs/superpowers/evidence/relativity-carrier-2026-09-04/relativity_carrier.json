@@ -1,0 +1,2247 @@
+{
+ "generated": "2026-09-04T11:53:42.368609Z",
+ "question": "Is the GPS relativistic periodic clock term dt_r = F e sqrtA sin(Ek) (F = -4.442807633e-10) present in the station's carrier-phase archive with amplitude a = 1 and the IS-GPS-200 sign?",
+ "headline": {
+  "a_formal": [
+   0.9091,
+   0.0548
+  ],
+  "chi2_windows": [
+   3.3,
+   4
+  ],
+  "n_windows": 5,
+  "a_jackknife_weighted": [
+   0.8941,
+   0.2335
+  ],
+  "chi2_jackknife": [
+   0.1,
+   4
+  ],
+  "a_all_windows_formal": [
+   0.8975,
+   0.0542
+  ],
+  "a_all_windows_jackknife": [
+   0.8903,
+   0.2326
+  ],
+  "a_with_per_sat_quadratic_nuisance": [
+   1.1478,
+   0.2898
+  ],
+  "null_cosE_same_amplitude": [
+   -0.1995,
+   0.1239
+  ],
+  "sig_a0": {
+   "formal": 16.6,
+   "jackknife": 3.8
+  },
+  "sig_a1": {
+   "formal": -1.7,
+   "jackknife": -0.5
+  },
+  "verdict": "The relativistic periodic term is present with the IS-GPS-200 sign: a = 0.91 +/- 0.05 (formal, 5 windows, chi2 3.3/4) and a = 0.89 +/- 0.23 with leave-one-satellite-out (systematic-inclusive) errors. a = 0 is excluded at 17 sigma (formal) / 3.8 sigma (jackknife); a = 1 is consistent (1.7 / 0.5 sigma). With a free per-satellite quadratic nuisance a = 1.15 +/- 0.29. The phase-shifted null regressor (cos Ek, same amplitude) fits -0.20 +/- 0.12, which bounds residual once-per-rev systematics (single-frequency ionosphere, broadcast orbit/clock) at the ~15-20% level; per-satellite values scatter by ~+/-1 for the same reason, so the result is decisive for existence and sign, and ~20% in amplitude."
+ },
+ "data": {
+  "carrier_source": "observations/telemetry_log.jsonl rows with per-sat carrier_cycles (10 s collector cadence, 2026-08-25 01:24 .. 2026-09-04 10:05 UTC; 403285 GPS samples); only rows after 2026-08-30 20:00 UTC used (commit 3107967 made the per-sat epoch the sample-accurate stream epoch; earlier epochs are wall-clock-at-emission and carry >1 m tag jitter)",
+  "ephemeris": "BKG BRDC00WRD_R daily RINEX 3 (DOY 237-246, downloaded to scratchpad/brdc) + observations/brdc_latest.rnx (DOY 246-247); per-sample nearest-toe GPS record, |t-toe| <= 2.5 h, record switches flagged so no jump enters an increment; Klobuchar GPSA/GPSB from the daily headers (DOY 237-243; nearest day otherwise)",
+  "site": "observations/site.json via geocorrector_helper.get_site_ecef()",
+  "tropo": "ZTD 2.418 m (state.tropo.json) x 1/sin(el), el >= 10 deg",
+  "tracker_restarts_utc": [
+   "2026-08-31T11:30:11.750791",
+   "2026-09-01T12:02:20.927613",
+   "2026-09-01T18:33:05.479616",
+   "2026-09-02T12:32:58.229180",
+   "2026-09-02T16:15:36.287624",
+   "2026-09-02T21:10:56.991605",
+   "2026-09-02T22:06:39.014122",
+   "2026-09-03T18:40:09.710370",
+   "2026-09-03T19:33:31.710370",
+   "2026-09-03T19:43:39.710370",
+   "2026-09-04T03:37:49.710370"
+  ]
+ },
+ "sign_derivation": "L = -(cycles_H - cycles_R) * c/f_L1 [m]. carrier_cycles rate == doppler_hz (archive check: ratio 0.9996, corr 0.9992); tracker Doppler is positive for closing range, so -lambda*cycles tracks +range: L = (rho_H-rho_R) - c(dt_sv_H-dt_sv_R) + tropo - iono + const. Empirical check per arc: doppler_sign_slope = slope of d(L)/dt against d(M)/dt, expected +1. M uses the broadcast polynomial clock only; Rreg = -c(dt_r_H - dt_r_R) with dt_r = F e sqrtA sin(Ek); a = +1 <=> IS-GPS-200 sign. Multi-satellite form: D_s = -cycles_s*lambda - [rho_s(t_tag+delta0) - c*poly_s + ZTD/sin(el) - I_klob]; regressor R_s = -c*dt_r,s so that a = +1 reproduces IS-GPS-200 (satellite clock reads early by dt_r>0 => carrier arrives with phase corresponding to a SHORTER apparent range, i.e. D decreases by c*dt_r).",
+ "data_quality_findings": [
+  "carrier_cycles is a true integrated phase: after removing common-mode terms the increment noise core is 1.8-2.1 cm per 10 s (0.1 cycle), but 25-35 %% of 10 s increments carry steps of 0.1-100 m.",
+  "Steps are per-channel and mostly common-mode-proportional to range-rate: live.rs note_gap advances stream time through USB drop holes but does not propagate the NCO phase, so each hole of g seconds leaves a step ~ rdot_s*g (+ Costas half-cycle re-pull); such steps are absorbed exactly by the per-epoch (clock, g_k) projection, the rest are excluded as increment outliers.",
+  "The stream epoch lags true receive time by a session-dependent constant: 4.4 s (Aug 31 - Sep 2 sessions), 45.2 s (Sep 1 19:04 - Sep 2 session), 2692 s (Sep 3 19:45 session); solved per window (delta0) and the model is re-evaluated at t_tag+delta0.",
+  "Per-satellite ionospheric slant delay (single-frequency L1) varies by 5-15 m over a pass, the same order as the relativistic swing (10-22 m for e>=0.015 satellites); it is the dominant systematic and the reason per-satellite a values scatter by ~+/-1. A per-satellite VTEC x mapping nuisance is nearly collinear with sin(Ek) over a pass and destroys the conditioning (reported as iono_mapping_nuisance variants, not used).",
+  "A per-channel code-epoch sawtooth (residual increment ~ rdot^2/c) was tested and is NOT present (binned medians within +/-3 mm vs 9-23 mm predicted)."
+ ],
+ "method": "Multi-satellite carrier-phase measurement of the GPS relativistic periodic\nclock term (per-epoch common-mode elimination; increment domain).\n\nPer window (a merged span of high-e slip-free arcs), all GPS satellites with\nslip-free carrier segments enter.  For sat s at tagged epoch t:\n    D_s = L_s - M_s,  L_s = -cycles_s * lambda,\n    M_s = rho_s(t_tag + delta0) - c*poly_s + ZTD/sin(el_s)\nFirst differences between consecutive samples (8-12 s) of one segment:\n    dD_s,k = dClock_k + rdot_s * g_k + a * dR_s,k + slope_seg * dt\n             (+ ddelta0 * d(rdot_s))  + eps\ndClock_k (receiver clock, common) and g_k (common time-tag / USB-hole\nincrement, proportional to each sat's range-rate) are free per epoch pair\nand eliminated exactly by per-epoch projection (Frisch-Waugh-Lovell),\nwhich needs >= 3 satellites per epoch.  Common-mode hole steps of ANY size\nare thereby removed; per-channel cycle slips remain and are handled by\nexcluding epoch pairs whose max |residual| exceeds THR.  delta0 (tagged\ntime -> true receive time) is solved and the model re-evaluated at\nt_tag + delta0 (2 passes) so second-order range terms are exact.\na = +1 <=> IS-GPS-200 relativistic term with its published sign\n(regressor R_s = -c * F e sqrtA sin Ek).\n",
+ "windows": [
+  {
+   "label": "G15+G24 08-31 11:32",
+   "window_utc": [
+    "2026-08-31 11:32",
+    "2026-08-31 18:25"
+   ],
+   "span_h": 6.89,
+   "n_sats": 12,
+   "sats": [
+    5,
+    10,
+    11,
+    15,
+    18,
+    20,
+    23,
+    24,
+    28,
+    29,
+    31,
+    32
+   ],
+   "tag_offset_delta0_s": 4.435,
+   "core_sigma_m_per_10s": 0.01847,
+   "frac_increments_excluded": 0.33235,
+   "n_increments_kept": 6139,
+   "n_eff": 6139.0,
+   "rel_swing_m_by_sat": {
+    "G10": 11.26,
+    "G15": 10.91,
+    "G18": 4.46,
+    "G23": 4.67,
+    "G24": 12.0,
+    "G29": 3.57,
+    "G32": 8.0
+   },
+   "a": 1.20866,
+   "a_err_formal": 0.27061,
+   "a_err_jackknife_sats": 0.99517,
+   "sig_a0_formal": 4.47,
+   "sig_a1_formal": 0.77,
+   "variants": {
+    "no_klobuchar": [
+     1.20345,
+     0.26956
+    ],
+    "tag_const": [
+     1.28291,
+     0.27206
+    ],
+    "tag_quadratic": [
+     1.42495,
+     0.26908
+    ],
+    "per_sat_quadratic_nuisance": [
+     0.90491,
+     1.90408
+    ],
+    "min4_sats_per_epoch": [
+     1.30446,
+     0.3071
+    ],
+    "whole_epoch_exclusion": [
+     1.42408,
+     0.31994
+    ],
+    "null_cosE_regressor": [
+     -0.75194,
+     0.24946
+    ],
+    "null_cosE_no_klobuchar": [
+     -0.61004,
+     0.24741
+    ],
+    "both_sin_and_cos": [
+     [
+      1.33176,
+      0.39076
+     ],
+     [
+      0.13826,
+      0.35846
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     1.1813,
+     1.56149
+    ],
+    "iono_mapping_nuisance_2": [
+     26.99552,
+     5.80921
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 1.0764,
+      "a_err": 0.1813,
+      "frac_excluded": 0.364
+     },
+     "0.10": {
+      "a": 1.6854,
+      "a_err": 0.4328,
+      "frac_excluded": 0.29
+     },
+     "0.20": {
+      "a": 3.2312,
+      "a_err": 0.7993,
+      "frac_excluded": 0.237
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G10": {
+     "a": -0.3515,
+     "a_err": 0.5415,
+     "a_iono1": 0.4281,
+     "a_iono1_err": 1.7363
+    },
+    "G15": {
+     "a": 1.2295,
+     "a_err": 0.2989,
+     "a_iono1": -0.1844,
+     "a_iono1_err": 2.7517
+    },
+    "G24": {
+     "a": 0.3575,
+     "a_err": 0.2878,
+     "a_iono1": -5.191,
+     "a_iono1_err": 2.5954
+    },
+    "G32": {
+     "a": 2.5344,
+     "a_err": 0.9037,
+     "a_iono1": 13.9944,
+     "a_iono1_err": 5.5674
+    }
+   },
+   "leave_one_sat_out": {
+    "G05": 1.126,
+    "G10": 1.222,
+    "G11": 1.227,
+    "G15": 1.326,
+    "G18": 1.341,
+    "G20": 0.681,
+    "G23": 1.277,
+    "G24": 0.79,
+    "G28": 1.241,
+    "G29": 0.331,
+    "G31": 1.274,
+    "G32": 1.073
+   }
+  },
+  {
+   "label": "G02+G07+G16 08-31 18:56",
+   "window_utc": [
+    "2026-08-31 18:56",
+    "2026-09-01 06:09"
+   ],
+   "span_h": 11.21,
+   "n_sats": 21,
+   "sats": [
+    1,
+    2,
+    3,
+    4,
+    7,
+    8,
+    9,
+    10,
+    14,
+    16,
+    17,
+    19,
+    22,
+    23,
+    25,
+    26,
+    27,
+    28,
+    30,
+    31,
+    32
+   ],
+   "tag_offset_delta0_s": 4.422,
+   "core_sigma_m_per_10s": 0.01819,
+   "frac_increments_excluded": 0.27519,
+   "n_increments_kept": 12811,
+   "n_eff": 12811.0,
+   "rel_swing_m_by_sat": {
+    "G02": 18.53,
+    "G03": 8.42,
+    "G07": 20.85,
+    "G08": 10.67,
+    "G09": 4.22,
+    "G10": 4.65,
+    "G14": 3.98,
+    "G16": 16.17,
+    "G17": 4.38,
+    "G19": 6.34,
+    "G22": 7.98,
+    "G25": 3.58,
+    "G26": 12.95,
+    "G27": 13.46,
+    "G31": 13.19,
+    "G32": 3.11
+   },
+   "a": 0.8625,
+   "a_err_formal": 0.08596,
+   "a_err_jackknife_sats": 0.2784,
+   "sig_a0_formal": 10.03,
+   "sig_a1_formal": -1.6,
+   "variants": {
+    "no_klobuchar": [
+     0.80012,
+     0.08586
+    ],
+    "tag_const": [
+     0.85876,
+     0.08575
+    ],
+    "tag_quadratic": [
+     0.84982,
+     0.08738
+    ],
+    "per_sat_quadratic_nuisance": [
+     1.63632,
+     0.29987
+    ],
+    "min4_sats_per_epoch": [
+     0.92549,
+     0.0867
+    ],
+    "whole_epoch_exclusion": [
+     1.02609,
+     0.10307
+    ],
+    "null_cosE_regressor": [
+     -0.15538,
+     0.0813
+    ],
+    "null_cosE_no_klobuchar": [
+     -0.19966,
+     0.08091
+    ],
+    "both_sin_and_cos": [
+     [
+      0.85585,
+      0.08612
+     ],
+     [
+      -0.02502,
+      0.08162
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     -0.17342,
+     0.35582
+    ],
+    "iono_mapping_nuisance_2": [
+     2.07553,
+     0.92003
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 0.999,
+      "a_err": 0.0582,
+      "frac_excluded": 0.308
+     },
+     "0.10": {
+      "a": 1.0038,
+      "a_err": 0.1377,
+      "frac_excluded": 0.233
+     },
+     "0.20": {
+      "a": 0.9335,
+      "a_err": 0.255,
+      "frac_excluded": 0.181
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G02": {
+     "a": 0.8705,
+     "a_err": 0.1323,
+     "a_iono1": 0.1959,
+     "a_iono1_err": 0.488
+    },
+    "G03": {
+     "a": 1.8929,
+     "a_err": 0.4222,
+     "a_iono1": 9.1789,
+     "a_iono1_err": 4.7382
+    },
+    "G07": {
+     "a": 0.9985,
+     "a_err": 0.1874,
+     "a_iono1": 0.753,
+     "a_iono1_err": 0.8841
+    },
+    "G08": {
+     "a": 4.9791,
+     "a_err": 1.4975,
+     "a_iono1": 6.5202,
+     "a_iono1_err": 1.8473
+    },
+    "G16": {
+     "a": 0.0748,
+     "a_err": 0.5616,
+     "a_iono1": -5.9043,
+     "a_iono1_err": 1.3834
+    },
+    "G26": {
+     "a": 0.8935,
+     "a_err": 0.8784,
+     "a_iono1": -0.592,
+     "a_iono1_err": 1.2852
+    },
+    "G27": {
+     "a": -0.0079,
+     "a_err": 0.4167,
+     "a_iono1": 2.0498,
+     "a_iono1_err": 1.5374
+    },
+    "G31": {
+     "a": 0.2574,
+     "a_err": 0.2604,
+     "a_iono1": -1.3035,
+     "a_iono1_err": 0.7194
+    }
+   },
+   "leave_one_sat_out": {
+    "G01": 0.771,
+    "G02": 0.697,
+    "G03": 0.92,
+    "G04": 0.842,
+    "G07": 0.815,
+    "G08": 0.759,
+    "G09": 0.824,
+    "G10": 0.838,
+    "G14": 0.823,
+    "G16": 0.887,
+    "G17": 0.902,
+    "G19": 0.881,
+    "G22": 0.801,
+    "G23": 0.844,
+    "G25": 0.841,
+    "G26": 0.931,
+    "G27": 0.888,
+    "G28": 0.939,
+    "G30": 0.908,
+    "G31": 0.873,
+    "G32": 0.942
+   }
+  },
+  {
+   "label": "G15+G24 09-01 12:04",
+   "window_utc": [
+    "2026-09-01 12:04",
+    "2026-09-01 18:21"
+   ],
+   "span_h": 6.29,
+   "n_sats": 13,
+   "sats": [
+    5,
+    10,
+    11,
+    15,
+    18,
+    20,
+    23,
+    24,
+    25,
+    28,
+    29,
+    31,
+    32
+   ],
+   "tag_offset_delta0_s": 4.431,
+   "core_sigma_m_per_10s": 0.01876,
+   "frac_increments_excluded": 0.31746,
+   "n_increments_kept": 5818,
+   "n_eff": 5818.0,
+   "rel_swing_m_by_sat": {
+    "G10": 9.01,
+    "G15": 10.93,
+    "G18": 4.7,
+    "G23": 5.84,
+    "G24": 13.32,
+    "G32": 8.11
+   },
+   "a": 0.93941,
+   "a_err_formal": 0.31307,
+   "a_err_jackknife_sats": 1.38291,
+   "sig_a0_formal": 3.0,
+   "sig_a1_formal": -0.19,
+   "variants": {
+    "no_klobuchar": [
+     0.65645,
+     0.30987
+    ],
+    "tag_const": [
+     0.85414,
+     0.31084
+    ],
+    "tag_quadratic": [
+     1.03273,
+     0.32203
+    ],
+    "per_sat_quadratic_nuisance": [
+     -1.89629,
+     2.40948
+    ],
+    "min4_sats_per_epoch": [
+     0.66993,
+     0.37832
+    ],
+    "whole_epoch_exclusion": [
+     0.71651,
+     0.3673
+    ],
+    "null_cosE_regressor": [
+     -0.43155,
+     0.26354
+    ],
+    "null_cosE_no_klobuchar": [
+     -0.1967,
+     0.26479
+    ],
+    "both_sin_and_cos": [
+     [
+      0.97013,
+      0.47383
+     ],
+     [
+      0.20421,
+      0.39735
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     -7.99541,
+     2.88717
+    ],
+    "iono_mapping_nuisance_2": [
+     22.38868,
+     10.67737
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 1.0133,
+      "a_err": 0.1996,
+      "frac_excluded": 0.355
+     },
+     "0.10": {
+      "a": 0.9879,
+      "a_err": 0.4976,
+      "frac_excluded": 0.276
+     },
+     "0.20": {
+      "a": 0.343,
+      "a_err": 0.9414,
+      "frac_excluded": 0.224
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G10": {
+     "a": -0.4352,
+     "a_err": 0.8153,
+     "a_iono1": 2.4177,
+     "a_iono1_err": 3.2176
+    },
+    "G15": {
+     "a": 0.5425,
+     "a_err": 0.3705,
+     "a_iono1": -8.0118,
+     "a_iono1_err": 5.7391
+    },
+    "G24": {
+     "a": 0.7657,
+     "a_err": 0.2831,
+     "a_iono1": -5.733,
+     "a_iono1_err": 2.6499
+    },
+    "G32": {
+     "a": 3.3659,
+     "a_err": 1.2114,
+     "a_iono1": 23.4785,
+     "a_iono1_err": 11.0577
+    }
+   },
+   "leave_one_sat_out": {
+    "G05": 1.158,
+    "G10": 0.862,
+    "G11": 0.886,
+    "G15": 1.035,
+    "G18": 2.046,
+    "G20": 0.521,
+    "G23": 1.195,
+    "G24": 0.425,
+    "G25": 0.944,
+    "G28": 0.903,
+    "G29": 0.48,
+    "G31": 0.899,
+    "G32": 0.687
+   }
+  },
+  {
+   "label": "G02+G07+G16 09-01 19:04",
+   "window_utc": [
+    "2026-09-01 19:04",
+    "2026-09-02 06:05"
+   ],
+   "span_h": 11.02,
+   "n_sats": 21,
+   "sats": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    14,
+    16,
+    17,
+    19,
+    22,
+    25,
+    26,
+    27,
+    28,
+    30,
+    31,
+    32
+   ],
+   "tag_offset_delta0_s": 45.181,
+   "core_sigma_m_per_10s": 0.01885,
+   "frac_increments_excluded": 0.33777,
+   "n_increments_kept": 11701,
+   "n_eff": 11701.0,
+   "rel_swing_m_by_sat": {
+    "G02": 17.34,
+    "G03": 3.67,
+    "G07": 21.66,
+    "G08": 12.05,
+    "G09": 4.59,
+    "G10": 4.28,
+    "G14": 5.64,
+    "G16": 15.42,
+    "G17": 4.44,
+    "G19": 7.16,
+    "G22": 8.66,
+    "G26": 12.16,
+    "G27": 13.58,
+    "G31": 12.6
+   },
+   "a": 0.90324,
+   "a_err_formal": 0.07693,
+   "a_err_jackknife_sats": 0.50893,
+   "sig_a0_formal": 11.74,
+   "sig_a1_formal": -1.26,
+   "variants": {
+    "no_klobuchar": [
+     0.92412,
+     0.07684
+    ],
+    "tag_const": [
+     0.95835,
+     0.07628
+    ],
+    "tag_quadratic": [
+     0.8582,
+     0.07705
+    ],
+    "per_sat_quadratic_nuisance": [
+     0.67367,
+     0.32154
+    ],
+    "min4_sats_per_epoch": [
+     0.85258,
+     0.07527
+    ],
+    "whole_epoch_exclusion": [
+     0.91638,
+     0.1109
+    ],
+    "null_cosE_regressor": [
+     -0.04301,
+     0.10324
+    ],
+    "null_cosE_no_klobuchar": [
+     0.03299,
+     0.10344
+    ],
+    "both_sin_and_cos": [
+     [
+      0.90839,
+      0.07917
+     ],
+     [
+      -0.17375,
+      0.10362
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     1.15205,
+     0.39175
+    ],
+    "iono_mapping_nuisance_2": [
+     -3.24845,
+     0.84494
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 0.8863,
+      "a_err": 0.0556,
+      "frac_excluded": 0.37
+     },
+     "0.10": {
+      "a": 0.831,
+      "a_err": 0.1228,
+      "frac_excluded": 0.292
+     },
+     "0.20": {
+      "a": 0.8846,
+      "a_err": 0.2245,
+      "frac_excluded": 0.24
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G02": {
+     "a": 0.9766,
+     "a_err": 0.1512,
+     "a_iono1": 0.69,
+     "a_iono1_err": 0.6067
+    },
+    "G07": {
+     "a": 0.6338,
+     "a_err": 0.1533,
+     "a_iono1": 2.7631,
+     "a_iono1_err": 0.7277
+    },
+    "G08": {
+     "a": -0.6957,
+     "a_err": 1.2962,
+     "a_iono1": 2.1761,
+     "a_iono1_err": 1.5218
+    },
+    "G16": {
+     "a": -2.6018,
+     "a_err": 1.0573,
+     "a_iono1": -3.3246,
+     "a_iono1_err": 1.7199
+    },
+    "G22": {
+     "a": 0.2303,
+     "a_err": 0.5333,
+     "a_iono1": 67.8947,
+     "a_iono1_err": 5.7945
+    },
+    "G26": {
+     "a": 2.1087,
+     "a_err": 1.4232,
+     "a_iono1": 1.6123,
+     "a_iono1_err": 1.6472
+    },
+    "G27": {
+     "a": 0.2469,
+     "a_err": 0.4256,
+     "a_iono1": -3.6966,
+     "a_iono1_err": 1.2222
+    },
+    "G31": {
+     "a": -0.6593,
+     "a_err": 0.3743,
+     "a_iono1": -3.3157,
+     "a_iono1_err": 1.0677
+    }
+   },
+   "leave_one_sat_out": {
+    "G01": 0.712,
+    "G02": 0.872,
+    "G03": 0.929,
+    "G04": 0.822,
+    "G06": 0.894,
+    "G07": 1.2,
+    "G08": 0.964,
+    "G09": 0.9,
+    "G10": 0.799,
+    "G14": 0.653,
+    "G16": 0.71,
+    "G17": 0.795,
+    "G19": 0.965,
+    "G22": 0.878,
+    "G25": 0.941,
+    "G26": 0.931,
+    "G27": 0.74,
+    "G28": 0.89,
+    "G30": 0.921,
+    "G31": 0.884,
+    "G32": 0.901
+   }
+  },
+  {
+   "label": "G15+G24 09-02 12:34",
+   "window_utc": [
+    "2026-09-02 12:34",
+    "2026-09-02 16:15"
+   ],
+   "span_h": 3.68,
+   "n_sats": 9,
+   "sats": [
+    5,
+    10,
+    15,
+    18,
+    20,
+    23,
+    24,
+    29,
+    32
+   ],
+   "tag_offset_delta0_s": 4.543,
+   "core_sigma_m_per_10s": 0.01901,
+   "frac_increments_excluded": 0.34123,
+   "n_increments_kept": 3255,
+   "n_eff": 3255.0,
+   "rel_swing_m_by_sat": {
+    "G10": 8.06,
+    "G15": 10.6,
+    "G18": 3.05,
+    "G23": 4.86,
+    "G24": 11.5
+   },
+   "a": 1.53084,
+   "a_err_formal": 0.46367,
+   "a_err_jackknife_sats": 4.4754,
+   "sig_a0_formal": 3.3,
+   "sig_a1_formal": 1.14,
+   "variants": {
+    "no_klobuchar": [
+     1.12042,
+     0.46378
+    ],
+    "tag_const": [
+     1.67733,
+     0.4362
+    ],
+    "tag_quadratic": [
+     2.09651,
+     0.46842
+    ],
+    "per_sat_quadratic_nuisance": [
+     -1.69382,
+     3.34203
+    ],
+    "min4_sats_per_epoch": [
+     1.76955,
+     0.51397
+    ],
+    "whole_epoch_exclusion": [
+     0.85548,
+     0.51141
+    ],
+    "null_cosE_regressor": [
+     -1.20535,
+     0.33166
+    ],
+    "null_cosE_no_klobuchar": [
+     -0.7661,
+     0.33268
+    ],
+    "both_sin_and_cos": [
+     [
+      -0.27853,
+      0.89748
+     ],
+     [
+      -1.39687,
+      0.6482
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     -3.20562,
+     2.49192
+    ],
+    "iono_mapping_nuisance_2": [
+     46.10045,
+     35.5019
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 1.5844,
+      "a_err": 0.285,
+      "frac_excluded": 0.38
+     },
+     "0.10": {
+      "a": 1.9021,
+      "a_err": 0.7987,
+      "frac_excluded": 0.283
+     },
+     "0.20": {
+      "a": 2.2265,
+      "a_err": 1.4291,
+      "frac_excluded": 0.223
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G10": {
+     "a": -5.6646,
+     "a_err": 3.6434,
+     "a_iono1": -2.5812,
+     "a_iono1_err": 11.2502
+    },
+    "G15": {
+     "a": 5.4505,
+     "a_err": 0.8109,
+     "a_iono1": -6.2281,
+     "a_iono1_err": 5.7583
+    },
+    "G24": {
+     "a": 0.9744,
+     "a_err": 0.3236,
+     "a_iono1": -0.9457,
+     "a_iono1_err": 2.9487
+    }
+   },
+   "leave_one_sat_out": {
+    "G05": 1.439,
+    "G10": 1.63,
+    "G15": -2.403,
+    "G18": 2.751,
+    "G20": 1.68,
+    "G23": 1.87,
+    "G24": 3.024,
+    "G29": 3.356,
+    "G32": 1.604
+   }
+  },
+  {
+   "label": "G02+G07+G16 09-03 19:45",
+   "window_utc": [
+    "2026-09-03 19:45",
+    "2026-09-04 03:37"
+   ],
+   "span_h": 7.87,
+   "n_sats": 15,
+   "sats": [
+    1,
+    2,
+    3,
+    4,
+    7,
+    8,
+    9,
+    14,
+    16,
+    17,
+    26,
+    27,
+    30,
+    31,
+    32
+   ],
+   "tag_offset_delta0_s": 2692.112,
+   "core_sigma_m_per_10s": 0.02097,
+   "frac_increments_excluded": 0.446,
+   "n_increments_kept": 5227,
+   "n_eff": 5227.0,
+   "rel_swing_m_by_sat": {
+    "G07": 21.76,
+    "G08": 11.11,
+    "G14": 5.49,
+    "G16": 16.0,
+    "G26": 8.98,
+    "G27": 8.83,
+    "G31": 6.67
+   },
+   "a": 0.38691,
+   "a_err_formal": 0.36452,
+   "a_err_jackknife_sats": 2.69128,
+   "sig_a0_formal": 1.06,
+   "sig_a1_formal": -1.68,
+   "variants": {
+    "no_klobuchar": [
+     0.37625,
+     0.36644
+    ],
+    "tag_const": [
+     0.39414,
+     0.35852
+    ],
+    "tag_quadratic": [
+     0.03906,
+     0.36758
+    ],
+    "per_sat_quadratic_nuisance": [
+     9.32159,
+     2.84858
+    ],
+    "min4_sats_per_epoch": [
+     0.64733,
+     0.42111
+    ],
+    "whole_epoch_exclusion": [
+     0.36054,
+     0.38735
+    ],
+    "null_cosE_regressor": [
+     0.06182,
+     0.28133
+    ],
+    "null_cosE_no_klobuchar": [
+     -0.11442,
+     0.28445
+    ],
+    "both_sin_and_cos": [
+     [
+      0.2727,
+      0.37338
+     ],
+     [
+      0.01813,
+      0.29025
+     ]
+    ],
+    "iono_mapping_nuisance_1": [
+     7.16632,
+     1.93355
+    ],
+    "iono_mapping_nuisance_2": [
+     19.36069,
+     6.44725
+    ],
+    "threshold": {
+     "0.04": {
+      "a": 0.6351,
+      "a_err": 0.2519,
+      "frac_excluded": 0.483
+     },
+     "0.10": {
+      "a": 0.7583,
+      "a_err": 0.5529,
+      "frac_excluded": 0.4
+     },
+     "0.20": {
+      "a": 1.4951,
+      "a_err": 0.9822,
+      "frac_excluded": 0.332
+     }
+    }
+   },
+   "per_sat_a_others_fixed_at_1": {
+    "G07": {
+     "a": -0.7557,
+     "a_err": 0.5108,
+     "a_iono1": 13.5436,
+     "a_iono1_err": 3.2472
+    },
+    "G08": {
+     "a": 4.6814,
+     "a_err": 2.0848,
+     "a_iono1": 13.8346,
+     "a_iono1_err": 5.7242
+    },
+    "G16": {
+     "a": 2.0543,
+     "a_err": 1.0704,
+     "a_iono1": 0.2747,
+     "a_iono1_err": 3.2961
+    },
+    "G26": {
+     "a": -3.0706,
+     "a_err": 1.9165,
+     "a_iono1": 1.3494,
+     "a_iono1_err": 3.3791
+    },
+    "G27": {
+     "a": -2.096,
+     "a_err": 0.929,
+     "a_iono1": 11.9467,
+     "a_iono1_err": 4.7194
+    }
+   },
+   "leave_one_sat_out": {
+    "G01": 1.272,
+    "G02": 0.542,
+    "G03": 0.003,
+    "G04": 0.198,
+    "G07": 2.054,
+    "G08": 0.224,
+    "G09": 0.3,
+    "G14": 0.195,
+    "G16": 0.044,
+    "G17": 0.408,
+    "G26": 0.046,
+    "G27": -1.002,
+    "G30": 0.694,
+    "G31": -0.279,
+    "G32": -0.824
+   }
+  }
+ ],
+ "combined_all_variants": {
+  "headline/lin/a_jackknife_weighted": {
+   "a": 0.8941,
+   "err": 0.2335,
+   "n_windows": 5,
+   "chi2": 0.1,
+   "dof": 4,
+   "sig_a0": 3.8,
+   "sig_a1": -0.5,
+   "per_window": [
+    [
+     1.209,
+     0.995
+    ],
+    [
+     0.862,
+     0.278
+    ],
+    [
+     0.939,
+     1.383
+    ],
+    [
+     0.903,
+     0.509
+    ],
+    [
+     1.531,
+     4.475
+    ]
+   ]
+  },
+  "all/lin/a_jackknife_weighted": {
+   "a": 0.8903,
+   "err": 0.2326,
+   "n_windows": 6,
+   "chi2": 0.2,
+   "dof": 5,
+   "sig_a0": 3.8,
+   "sig_a1": -0.5,
+   "per_window": [
+    [
+     1.209,
+     0.995
+    ],
+    [
+     0.862,
+     0.278
+    ],
+    [
+     0.939,
+     1.383
+    ],
+    [
+     0.903,
+     0.509
+    ],
+    [
+     1.531,
+     4.475
+    ],
+    [
+     0.387,
+     2.691
+    ]
+   ]
+  },
+  "headline/lin/a": {
+   "a": 0.9091,
+   "err": 0.0548,
+   "n_windows": 5,
+   "chi2": 3.3,
+   "dof": 4,
+   "err_scaled": 0.0548,
+   "median": 0.9394,
+   "sig_a0": 16.6,
+   "sig_a1": -1.7,
+   "sig_a0_scaled": 16.6,
+   "sig_a1_scaled": -1.7
+  },
+  "headline/lin_noklob/a": {
+   "a": 0.8796,
+   "err": 0.0547,
+   "n_windows": 5,
+   "chi2": 3.4,
+   "dof": 4,
+   "err_scaled": 0.0547,
+   "median": 0.9241,
+   "sig_a0": 16.1,
+   "sig_a1": -2.2,
+   "sig_a0_scaled": 16.1,
+   "sig_a1_scaled": -2.2
+  },
+  "headline/null_noklob/a_null": {
+   "a": -0.1648,
+   "err": 0.0591,
+   "n_windows": 5,
+   "chi2": 10.4,
+   "dof": 4,
+   "err_scaled": 0.0952,
+   "median": -0.1997,
+   "sig_a0": -2.8,
+   "sig_a1": -19.7,
+   "sig_a0_scaled": -1.7,
+   "sig_a1_scaled": -12.2
+  },
+  "headline/lin_iono1/a": {
+   "a": 0.3407,
+   "err": 0.2573,
+   "n_windows": 5,
+   "chi2": 17.0,
+   "dof": 4,
+   "err_scaled": 0.5309,
+   "median": -0.1734,
+   "sig_a0": 1.3,
+   "sig_a1": -2.6,
+   "sig_a0_scaled": 0.6,
+   "sig_a1_scaled": -1.2
+  },
+  "headline/lin_iono2/a": {
+   "a": -0.4064,
+   "err": 0.6176,
+   "n_windows": 5,
+   "chi2": 47.1,
+   "dof": 4,
+   "err_scaled": 2.1198,
+   "median": 22.3887,
+   "sig_a0": -0.7,
+   "sig_a1": -2.3,
+   "sig_a0_scaled": -0.2,
+   "sig_a1_scaled": -0.7
+  },
+  "headline/lin_tt0/a": {
+   "a": 0.9392,
+   "err": 0.0545,
+   "n_windows": 5,
+   "chi2": 5.5,
+   "dof": 4,
+   "err_scaled": 0.0637,
+   "median": 0.9584,
+   "sig_a0": 17.2,
+   "sig_a1": -1.1,
+   "sig_a0_scaled": 14.7,
+   "sig_a1_scaled": -1.0
+  },
+  "headline/lin_tt2/a": {
+   "a": 0.9011,
+   "err": 0.0553,
+   "n_windows": 5,
+   "chi2": 11.1,
+   "dof": 4,
+   "err_scaled": 0.0922,
+   "median": 1.0327,
+   "sig_a0": 16.3,
+   "sig_a1": -1.8,
+   "sig_a0_scaled": 9.8,
+   "sig_a1_scaled": -1.1
+  },
+  "headline/quad/a": {
+   "a": 1.1478,
+   "err": 0.2165,
+   "n_windows": 5,
+   "chi2": 7.2,
+   "dof": 4,
+   "err_scaled": 0.2898,
+   "median": 0.6737,
+   "sig_a0": 5.3,
+   "sig_a1": 0.7,
+   "sig_a0_scaled": 4.0,
+   "sig_a1_scaled": 0.5
+  },
+  "headline/lin_min4/a": {
+   "a": 0.903,
+   "err": 0.055,
+   "n_windows": 5,
+   "chi2": 5.4,
+   "dof": 4,
+   "err_scaled": 0.0641,
+   "median": 0.9255,
+   "sig_a0": 16.4,
+   "sig_a1": -1.8,
+   "sig_a0_scaled": 14.1,
+   "sig_a1_scaled": -1.5
+  },
+  "headline/lin_pairexcl/a": {
+   "a": 0.9855,
+   "err": 0.0713,
+   "n_windows": 5,
+   "chi2": 3.0,
+   "dof": 4,
+   "err_scaled": 0.0713,
+   "median": 0.9164,
+   "sig_a0": 13.8,
+   "sig_a1": -0.2,
+   "sig_a0_scaled": 13.8,
+   "sig_a1_scaled": -0.2
+  },
+  "headline/null_lin/a_null": {
+   "a": -0.1995,
+   "err": 0.0593,
+   "n_windows": 5,
+   "chi2": 17.5,
+   "dof": 4,
+   "err_scaled": 0.1239,
+   "median": -0.4315,
+   "sig_a0": -3.4,
+   "sig_a1": -20.2,
+   "sig_a0_scaled": -1.6,
+   "sig_a1_scaled": -9.7
+  },
+  "headline/both_lin/a": {
+   "a": 0.8904,
+   "err": 0.0571,
+   "n_windows": 5,
+   "chi2": 3.2,
+   "dof": 4,
+   "err_scaled": 0.0571,
+   "median": 0.9084,
+   "sig_a0": 15.6,
+   "sig_a1": -1.9,
+   "sig_a0_scaled": 15.6,
+   "sig_a1_scaled": -1.9
+  },
+  "headline/both_lin/a_null": {
+   "a": -0.0804,
+   "err": 0.062,
+   "n_windows": 5,
+   "chi2": 6.3,
+   "dof": 4,
+   "err_scaled": 0.0778,
+   "median": -0.025,
+   "sig_a0": -1.3,
+   "sig_a1": -17.4,
+   "sig_a0_scaled": -1.0,
+   "sig_a1_scaled": -13.9
+  },
+  "all/lin/a": {
+   "a": 0.8975,
+   "err": 0.0542,
+   "n_windows": 6,
+   "chi2": 5.3,
+   "dof": 5,
+   "err_scaled": 0.056,
+   "median": 0.9213,
+   "sig_a0": 16.6,
+   "sig_a1": -1.9,
+   "sig_a0_scaled": 16.0,
+   "sig_a1_scaled": -1.8
+  },
+  "all/lin_noklob/a": {
+   "a": 0.8686,
+   "err": 0.0541,
+   "n_windows": 6,
+   "chi2": 5.3,
+   "dof": 5,
+   "err_scaled": 0.0556,
+   "median": 0.8621,
+   "sig_a0": 16.0,
+   "sig_a1": -2.4,
+   "sig_a0_scaled": 15.6,
+   "sig_a1_scaled": -2.4
+  },
+  "all/null_noklob/a_null": {
+   "a": -0.1627,
+   "err": 0.0579,
+   "n_windows": 6,
+   "chi2": 10.4,
+   "dof": 5,
+   "err_scaled": 0.0835,
+   "median": -0.1982,
+   "sig_a0": -2.8,
+   "sig_a1": -20.1,
+   "sig_a0_scaled": -1.9,
+   "sig_a1_scaled": -13.9
+  },
+  "all/lin_iono1/a": {
+   "a": 0.4594,
+   "err": 0.255,
+   "n_windows": 6,
+   "chi2": 29.3,
+   "dof": 5,
+   "err_scaled": 0.6171,
+   "median": 0.4893,
+   "sig_a0": 1.8,
+   "sig_a1": -2.1,
+   "sig_a0_scaled": 0.7,
+   "sig_a1_scaled": -0.9
+  },
+  "all/lin_iono2/a": {
+   "a": -0.2266,
+   "err": 0.6148,
+   "n_windows": 6,
+   "chi2": 56.4,
+   "dof": 5,
+   "err_scaled": 2.0655,
+   "median": 20.8747,
+   "sig_a0": -0.4,
+   "sig_a1": -2.0,
+   "sig_a0_scaled": -0.1,
+   "sig_a1_scaled": -0.6
+  },
+  "all/lin_tt0/a": {
+   "a": 0.9269,
+   "err": 0.0539,
+   "n_windows": 6,
+   "chi2": 7.7,
+   "dof": 5,
+   "err_scaled": 0.067,
+   "median": 0.9086,
+   "sig_a0": 17.2,
+   "sig_a1": -1.4,
+   "sig_a0_scaled": 13.8,
+   "sig_a1_scaled": -1.1
+  },
+  "all/lin_tt2/a": {
+   "a": 0.8821,
+   "err": 0.0546,
+   "n_windows": 6,
+   "chi2": 16.5,
+   "dof": 5,
+   "err_scaled": 0.0993,
+   "median": 0.9455,
+   "sig_a0": 16.1,
+   "sig_a1": -2.2,
+   "sig_a0_scaled": 8.9,
+   "sig_a1_scaled": -1.2
+  },
+  "all/quad/a": {
+   "a": 1.1948,
+   "err": 0.2159,
+   "n_windows": 6,
+   "chi2": 15.3,
+   "dof": 5,
+   "err_scaled": 0.3783,
+   "median": 0.7893,
+   "sig_a0": 5.5,
+   "sig_a1": 0.9,
+   "sig_a0_scaled": 3.2,
+   "sig_a1_scaled": 0.5
+  },
+  "all/lin_min4/a": {
+   "a": 0.8987,
+   "err": 0.0545,
+   "n_windows": 6,
+   "chi2": 5.8,
+   "dof": 5,
+   "err_scaled": 0.0588,
+   "median": 0.889,
+   "sig_a0": 16.5,
+   "sig_a1": -1.9,
+   "sig_a0_scaled": 15.3,
+   "sig_a1_scaled": -1.7
+  },
+  "all/lin_pairexcl/a": {
+   "a": 0.965,
+   "err": 0.0702,
+   "n_windows": 6,
+   "chi2": 5.5,
+   "dof": 5,
+   "err_scaled": 0.0739,
+   "median": 0.8859,
+   "sig_a0": 13.8,
+   "sig_a1": -0.5,
+   "sig_a0_scaled": 13.1,
+   "sig_a1_scaled": -0.5
+  },
+  "all/null_lin/a_null": {
+   "a": -0.1884,
+   "err": 0.058,
+   "n_windows": 6,
+   "chi2": 18.3,
+   "dof": 5,
+   "err_scaled": 0.1109,
+   "median": -0.2935,
+   "sig_a0": -3.2,
+   "sig_a1": -20.5,
+   "sig_a0_scaled": -1.7,
+   "sig_a1_scaled": -10.7
+  },
+  "all/both_lin/a": {
+   "a": 0.8763,
+   "err": 0.0565,
+   "n_windows": 6,
+   "chi2": 5.9,
+   "dof": 5,
+   "err_scaled": 0.0613,
+   "median": 0.8821,
+   "sig_a0": 15.5,
+   "sig_a1": -2.2,
+   "sig_a0_scaled": 14.3,
+   "sig_a1_scaled": -2.0
+  },
+  "all/both_lin/a_null": {
+   "a": -0.0761,
+   "err": 0.0607,
+   "n_windows": 6,
+   "chi2": 6.4,
+   "dof": 5,
+   "err_scaled": 0.0686,
+   "median": -0.0034,
+   "sig_a0": -1.3,
+   "sig_a1": -17.7,
+   "sig_a0_scaled": -1.1,
+   "sig_a1_scaled": -15.7
+  }
+ },
+ "pairwise_diagnostic": {
+  "note": "Task-specified high-e vs low-e single-difference arcs (slip-free per carrier_tdev_analyzer rules, >= 1 h overlap). Superseded by the multi-satellite estimator: with only 3-6 GPS carriers locked at once, low-e references overlapping >= 1 h are rare, arcs are <= 2 h (relativistic swing 3-13 m, degenerate with a quadratic), and sub-threshold hole steps are all of one sign (proportional to d(rdot)), biasing a single pair. Listed for completeness.",
+  "sign_convention": "L = -(cycles_H - cycles_R) * c/f_L1 [m]. carrier_cycles rate == doppler_hz (archive check: ratio 0.9996, corr 0.9992); tracker Doppler is positive for closing range, so -lambda*cycles tracks +range: L = (rho_H-rho_R) - c(dt_sv_H-dt_sv_R) + tropo - iono + const. Empirical check per arc: doppler_sign_slope = slope of d(L)/dt against d(M)/dt, expected +1. M uses the broadcast polynomial clock only; Rreg = -c(dt_r_H - dt_r_R) with dt_r = F e sqrtA sin(Ek); a = +1 <=> IS-GPS-200 sign.",
+  "estimator": "first differences of D at the native 10 s cadence (8-12 s only), OLS with iterative fixed |residual| <= 0.10 m exclusion (removes per-channel carrier steps at USB drop holes); nuisances: slope, receiver time-tag offset dt_rx via d(rdot_H - rdot_R), optional quadratic; errors from kept-residual scatter x n/n_eff(ACF). Level-domain fits (ACF n_eff, with dt_rx nuisance) are reported for comparison only.",
+  "arcs": [
+   {
+    "H": "G07",
+    "R": "G02",
+    "e_H": 0.02093,
+    "e_R": 0.017,
+    "arc_utc": [
+     "2026-09-02 02:11",
+     "2026-09-02 03:58"
+    ],
+    "arc_h": 1.78,
+    "n": 643,
+    "el_H": [
+     45.7,
+     81.5
+    ],
+    "el_R": [
+     36.0,
+     53.1
+    ],
+    "tropo_diff_swing_m": 1.75,
+    "rel_swing_m": 5.87,
+    "rel_rate_max_mm_s": 2.39,
+    "doppler_sign_slope": 1.0051,
+    "a_lin": [
+     2.8576,
+     0.2313
+    ],
+    "a_quad": [
+     30.3847,
+     15.345
+    ],
+    "a_null": [
+     15.865,
+     41.2887
+    ],
+    "fitted_tag_offset_s": 44.99130153012241,
+    "frac_excluded": 0.1293,
+    "core_sigma_m": 0.02,
+    "rms_after_fit_repaired_level_m": 0.116,
+    "level_domain_a": [
+     -27.0004,
+     12.4281
+    ],
+    "note": ""
+   },
+   {
+    "H": "G02",
+    "R": "G07",
+    "e_H": 0.017,
+    "e_R": 0.02093,
+    "arc_utc": [
+     "2026-09-02 02:11",
+     "2026-09-02 03:58"
+    ],
+    "arc_h": 1.78,
+    "n": 643,
+    "el_H": [
+     36.0,
+     53.1
+    ],
+    "el_R": [
+     45.7,
+     81.5
+    ],
+    "tropo_diff_swing_m": 1.75,
+    "rel_swing_m": 5.87,
+    "rel_rate_max_mm_s": 2.39,
+    "doppler_sign_slope": 1.0051,
+    "a_lin": [
+     2.8576,
+     0.2313
+    ],
+    "a_quad": [
+     30.3847,
+     15.345
+    ],
+    "a_null": [
+     15.865,
+     41.2887
+    ],
+    "fitted_tag_offset_s": 44.99130153012241,
+    "frac_excluded": 0.1293,
+    "core_sigma_m": 0.02,
+    "rms_after_fit_repaired_level_m": 0.116,
+    "level_domain_a": [
+     -27.0004,
+     12.4281
+    ],
+    "note": ""
+   },
+   {
+    "H": "G07",
+    "R": "G02",
+    "e_H": 0.02093,
+    "e_R": 0.017,
+    "arc_utc": [
+     "2026-09-01 02:16",
+     "2026-09-01 04:03"
+    ],
+    "arc_h": 1.79,
+    "n": 645,
+    "el_H": [
+     45.3,
+     81.5
+    ],
+    "el_R": [
+     36.2,
+     53.1
+    ],
+    "tropo_diff_swing_m": 1.74,
+    "rel_swing_m": 5.79,
+    "rel_rate_max_mm_s": 2.38,
+    "doppler_sign_slope": 1.0003,
+    "a_lin": [
+     1.0159,
+     0.247
+    ],
+    "a_quad": [
+     11.9632,
+     16.6003
+    ],
+    "a_null": [
+     -6.54,
+     9.7295
+    ],
+    "fitted_tag_offset_s": 4.4139100782828065,
+    "frac_excluded": 0.2733,
+    "core_sigma_m": 0.0214,
+    "rms_after_fit_repaired_level_m": 0.114,
+    "level_domain_a": [
+     20.3597,
+     10.0408
+    ],
+    "note": ""
+   },
+   {
+    "H": "G02",
+    "R": "G07",
+    "e_H": 0.017,
+    "e_R": 0.02093,
+    "arc_utc": [
+     "2026-09-01 02:16",
+     "2026-09-01 04:03"
+    ],
+    "arc_h": 1.79,
+    "n": 645,
+    "el_H": [
+     36.2,
+     53.1
+    ],
+    "el_R": [
+     45.3,
+     81.5
+    ],
+    "tropo_diff_swing_m": 1.74,
+    "rel_swing_m": 5.79,
+    "rel_rate_max_mm_s": 2.38,
+    "doppler_sign_slope": 1.0003,
+    "a_lin": [
+     1.0159,
+     0.247
+    ],
+    "a_quad": [
+     11.9632,
+     16.6003
+    ],
+    "a_null": [
+     -6.54,
+     9.7295
+    ],
+    "fitted_tag_offset_s": 4.4139100782828065,
+    "frac_excluded": 0.2733,
+    "core_sigma_m": 0.0214,
+    "rms_after_fit_repaired_level_m": 0.114,
+    "level_domain_a": [
+     20.3597,
+     10.0408
+    ],
+    "note": ""
+   },
+   {
+    "H": "G15",
+    "R": "G20",
+    "e_H": 0.01715,
+    "e_R": 0.00185,
+    "arc_utc": [
+     "2026-08-31 11:46",
+     "2026-08-31 13:48"
+    ],
+    "arc_h": 2.04,
+    "n": 736,
+    "el_H": [
+     23.7,
+     84.5
+    ],
+    "el_R": [
+     45.9,
+     70.8
+    ],
+    "tropo_diff_swing_m": 3.08,
+    "rel_swing_m": 4.52,
+    "rel_rate_max_mm_s": 1.44,
+    "doppler_sign_slope": 0.9985,
+    "a_lin": [
+     1.7567,
+     0.6727
+    ],
+    "a_quad": [
+     4.528,
+     5.6933
+    ],
+    "a_null": [
+     3.8767,
+     1.6167
+    ],
+    "fitted_tag_offset_s": 4.416383897107708,
+    "frac_excluded": 0.1497,
+    "core_sigma_m": 0.0178,
+    "rms_after_fit_repaired_level_m": 0.085,
+    "level_domain_a": [
+     -40.4495,
+     13.2883
+    ],
+    "note": ""
+   },
+   {
+    "H": "G24",
+    "R": "G18",
+    "e_H": 0.0187,
+    "e_R": 0.00649,
+    "arc_utc": [
+     "2026-09-02 14:19",
+     "2026-09-02 16:11"
+    ],
+    "arc_h": 1.86,
+    "n": 672,
+    "el_H": [
+     35.6,
+     57.7
+    ],
+    "el_R": [
+     41.9,
+     81.8
+    ],
+    "tropo_diff_swing_m": 2.24,
+    "rel_swing_m": 6.95,
+    "rel_rate_max_mm_s": 1.27,
+    "doppler_sign_slope": 1.0024,
+    "a_lin": [
+     4.3291,
+     2.5548
+    ],
+    "a_quad": [
+     4.1527,
+     3.4337
+    ],
+    "a_null": [
+     2.7055,
+     1.6988
+    ],
+    "fitted_tag_offset_s": 4.493466496418794,
+    "frac_excluded": 0.2012,
+    "core_sigma_m": 0.0167,
+    "rms_after_fit_repaired_level_m": 0.082,
+    "level_domain_a": [
+     839.555,
+     123.6334
+    ],
+    "note": ""
+   },
+   {
+    "H": "G15",
+    "R": "G29",
+    "e_H": 0.01715,
+    "e_R": 0.00367,
+    "arc_utc": [
+     "2026-09-01 12:18",
+     "2026-09-01 14:04"
+    ],
+    "arc_h": 1.75,
+    "n": 632,
+    "el_H": [
+     40.6,
+     89.5
+    ],
+    "el_R": [
+     31.9,
+     60.2
+    ],
+    "tropo_diff_swing_m": 3.06,
+    "rel_swing_m": 3.12,
+    "rel_rate_max_mm_s": 1.1,
+    "doppler_sign_slope": 0.9988,
+    "a_lin": [
+     3.7394,
+     3.8561
+    ],
+    "a_quad": [
+     4.7591,
+     8.5914
+    ],
+    "a_null": [
+     2.3395,
+     2.5295
+    ],
+    "fitted_tag_offset_s": 4.397764695442711,
+    "frac_excluded": 0.2171,
+    "core_sigma_m": 0.0211,
+    "rms_after_fit_repaired_level_m": 0.106,
+    "level_domain_a": [
+     -511.3751,
+     190.7274
+    ],
+    "note": ""
+   },
+   {
+    "H": "G24",
+    "R": "G18",
+    "e_H": 0.01869,
+    "e_R": 0.00649,
+    "arc_utc": [
+     "2026-09-01 14:33",
+     "2026-09-01 16:15"
+    ],
+    "arc_h": 1.7,
+    "n": 614,
+    "el_H": [
+     39.7,
+     57.7
+    ],
+    "el_R": [
+     41.7,
+     81.8
+    ],
+    "tropo_diff_swing_m": 1.92,
+    "rel_swing_m": 6.57,
+    "rel_rate_max_mm_s": 1.27,
+    "doppler_sign_slope": 1.0021,
+    "a_lin": [
+     14.3952,
+     4.026
+    ],
+    "a_quad": [
+     -1.3525,
+     6.7582
+    ],
+    "a_null": [
+     8.2967,
+     2.183
+    ],
+    "fitted_tag_offset_s": 4.331059827678455,
+    "frac_excluded": 0.1664,
+    "core_sigma_m": 0.0193,
+    "rms_after_fit_repaired_level_m": 0.084,
+    "level_domain_a": [
+     126.1759,
+     609.2142
+    ],
+    "note": ""
+   },
+   {
+    "H": "G24",
+    "R": "G18",
+    "e_H": 0.01869,
+    "e_R": 0.00649,
+    "arc_utc": [
+     "2026-08-31 14:41",
+     "2026-08-31 16:19"
+    ],
+    "arc_h": 1.64,
+    "n": 592,
+    "el_H": [
+     41.1,
+     57.7
+    ],
+    "el_R": [
+     41.7,
+     81.8
+    ],
+    "tropo_diff_swing_m": 1.82,
+    "rel_swing_m": 6.42,
+    "rel_rate_max_mm_s": 1.27,
+    "doppler_sign_slope": 1.0023,
+    "a_lin": [
+     11.5779,
+     5.0902
+    ],
+    "a_quad": [
+     12.1087,
+     8.8146
+    ],
+    "a_null": [
+     5.6384,
+     2.6994
+    ],
+    "fitted_tag_offset_s": 4.355780387795185,
+    "frac_excluded": 0.181,
+    "core_sigma_m": 0.0225,
+    "rms_after_fit_repaired_level_m": 0.117,
+    "level_domain_a": [
+     -805.0722,
+     597.4631
+    ],
+    "note": ""
+   },
+   {
+    "H": "G07",
+    "R": "G02",
+    "e_H": 0.02093,
+    "e_R": 0.01701,
+    "arc_utc": [
+     "2026-09-04 01:20",
+     "2026-09-04 03:03"
+    ],
+    "arc_h": 1.72,
+    "n": 618,
+    "el_H": [
+     56.6,
+     81.4
+    ],
+    "el_R": [
+     19.0,
+     52.5
+    ],
+    "tropo_diff_swing_m": 4.08,
+    "rel_swing_m": 13.06,
+    "rel_rate_max_mm_s": 3.31,
+    "doppler_sign_slope": 1.8072,
+    "a_lin": [
+     10641.0634,
+     7.9348
+    ],
+    "a_quad": [
+     32035.2544,
+     93.4852
+    ],
+    "a_null": [
+     NaN,
+     NaN
+    ],
+    "fitted_tag_offset_s": 2630.215823278894,
+    "frac_excluded": 0.9741,
+    "core_sigma_m": 0.052,
+    "rms_after_fit_repaired_level_m": 0.017,
+    "level_domain_a": [
+     10911.5524,
+     399.5769
+    ],
+    "note": "tag lag ~2630 s in this session: pairwise linearised tag model invalid (see multi-sat window 09-03 19:45)"
+   },
+   {
+    "H": "G02",
+    "R": "G07",
+    "e_H": 0.01701,
+    "e_R": 0.02093,
+    "arc_utc": [
+     "2026-09-04 01:20",
+     "2026-09-04 03:03"
+    ],
+    "arc_h": 1.72,
+    "n": 618,
+    "el_H": [
+     19.0,
+     52.5
+    ],
+    "el_R": [
+     56.6,
+     81.4
+    ],
+    "tropo_diff_swing_m": 4.08,
+    "rel_swing_m": 13.06,
+    "rel_rate_max_mm_s": 3.31,
+    "doppler_sign_slope": 1.8072,
+    "a_lin": [
+     10641.0634,
+     7.9348
+    ],
+    "a_quad": [
+     32035.2544,
+     93.4852
+    ],
+    "a_null": [
+     NaN,
+     NaN
+    ],
+    "fitted_tag_offset_s": 2630.215823278894,
+    "frac_excluded": 0.9741,
+    "core_sigma_m": 0.052,
+    "rms_after_fit_repaired_level_m": 0.017,
+    "level_domain_a": [
+     10911.5524,
+     399.5769
+    ],
+    "note": "tag lag ~2630 s in this session: pairwise linearised tag model invalid (see multi-sat window 09-03 19:45)"
+   },
+   {
+    "H": "G15",
+    "R": "G29",
+    "e_H": 0.01715,
+    "e_R": 0.00367,
+    "arc_utc": [
+     "2026-09-02 12:32",
+     "2026-09-02 14:01"
+    ],
+    "arc_h": 1.47,
+    "n": 530,
+    "el_H": [
+     49.5,
+     89.5
+    ],
+    "el_R": [
+     31.4,
+     60.0
+    ],
+    "tropo_diff_swing_m": 2.61,
+    "rel_swing_m": 3.19,
+    "rel_rate_max_mm_s": 1.11,
+    "doppler_sign_slope": 1.0026,
+    "a_lin": [
+     0.8753,
+     8.7437
+    ],
+    "a_quad": [
+     2.1057,
+     8.8737
+    ],
+    "a_null": [
+     1.5179,
+     3.1235
+    ],
+    "fitted_tag_offset_s": 4.520378436904386,
+    "frac_excluded": 0.1947,
+    "core_sigma_m": 0.0176,
+    "rms_after_fit_repaired_level_m": 0.095,
+    "level_domain_a": [
+     204.1825,
+     255.3368
+    ],
+    "note": ""
+   }
+  ],
+  "combined": {
+   "lowe_ref_best/lin": {
+    "a": 1.8099,
+    "err": 0.6608,
+    "n_arcs": 3,
+    "chi2": 0.3,
+    "dof": 2,
+    "err_scaled": 0.6608,
+    "median_a": 1.7567,
+    "sig_a0": 2.7,
+    "sig_a1": 1.2,
+    "sig_a0_scaled": 2.7,
+    "sig_a1_scaled": 1.2
+   },
+   "lowe_ref_best/quad": {
+    "a": 4.0441,
+    "err": 4.1849,
+    "n_arcs": 3,
+    "chi2": 0.1,
+    "dof": 2,
+    "err_scaled": 4.1849,
+    "median_a": 4.528,
+    "sig_a0": 1.0,
+    "sig_a1": 0.7,
+    "sig_a0_scaled": 1.0,
+    "sig_a1_scaled": 0.7
+   },
+   "lowe_ref_best/lin_nott": {
+    "a": 383.6543,
+    "err": 3.003,
+    "n_arcs": 3,
+    "chi2": 1029.0,
+    "dof": 2,
+    "err_scaled": 68.1155,
+    "median_a": 434.2691,
+    "sig_a0": 127.8,
+    "sig_a1": 127.4,
+    "sig_a0_scaled": 5.6,
+    "sig_a1_scaled": 5.6
+   },
+   "lowe_ref_best/null_lin": {
+    "a": 3.1252,
+    "err": 1.2486,
+    "n_arcs": 3,
+    "chi2": 0.6,
+    "dof": 2,
+    "err_scaled": 1.2486,
+    "median_a": 2.3395,
+    "sig_a0": 2.5,
+    "sig_a1": 1.7,
+    "sig_a0_scaled": 2.5,
+    "sig_a1_scaled": 1.7
+   },
+   "lowe_ref_best/null_quad": {
+    "a": 1.6646,
+    "err": 1.9613,
+    "n_arcs": 3,
+    "chi2": 0.1,
+    "dof": 2,
+    "err_scaled": 1.9613,
+    "median_a": 1.7476,
+    "sig_a0": 0.8,
+    "sig_a1": 0.3,
+    "sig_a0_scaled": 0.8,
+    "sig_a1_scaled": 0.3
+   },
+   "all_best/lin": {
+    "a": 6.6578,
+    "err": 0.1172,
+    "n_arcs": 12,
+    "chi2": 3594041.1,
+    "dof": 11,
+    "err_scaled": 67.0202,
+    "median_a": 3.2985,
+    "sig_a0": 56.8,
+    "sig_a1": 48.3,
+    "sig_a0_scaled": 0.1,
+    "sig_a1_scaled": 0.1
+   },
+   "all_best/quad": {
+    "a": 43.5245,
+    "err": 2.2783,
+    "n_arcs": 12,
+    "chi2": 234503.7,
+    "dof": 11,
+    "err_scaled": 332.6467,
+    "median_a": 11.9632,
+    "sig_a0": 19.1,
+    "sig_a1": 18.7,
+    "sig_a0_scaled": 0.1,
+    "sig_a1_scaled": 0.1
+   },
+   "all_best/lin_nott": {
+    "a": -34.9551,
+    "err": 1.0468,
+    "n_arcs": 10,
+    "chi2": 31742.6,
+    "dof": 9,
+    "err_scaled": 62.1648,
+    "median_a": 332.9968,
+    "sig_a0": -33.4,
+    "sig_a1": -34.3,
+    "sig_a0_scaled": -0.6,
+    "sig_a1_scaled": -0.6
+   },
+   "all_best/null_lin": {
+    "a": 3.9323,
+    "err": 0.8584,
+    "n_arcs": 10,
+    "chi2": 8.4,
+    "dof": 9,
+    "err_scaled": 0.8584,
+    "median_a": 3.2911,
+    "sig_a0": 4.6,
+    "sig_a1": 3.4,
+    "sig_a0_scaled": 4.6,
+    "sig_a1_scaled": 3.4
+   },
+   "all_best/null_quad": {
+    "a": -0.5792,
+    "err": 1.5969,
+    "n_arcs": 12,
+    "chi2": 152555.4,
+    "dof": 11,
+    "err_scaled": 188.062,
+    "median_a": 3.7722,
+    "sig_a0": -0.4,
+    "sig_a1": -1.0,
+    "sig_a0_scaled": -0.0,
+    "sig_a1_scaled": -0.0
+   },
+   "night_best/lin": {
+    "a": 6.8115,
+    "err": 0.1194,
+    "n_arcs": 6,
+    "chi2": 3593979.9,
+    "dof": 5,
+    "err_scaled": 101.1912,
+    "median_a": 2.8576,
+    "sig_a0": 57.1,
+    "sig_a1": 48.7,
+    "sig_a0_scaled": 0.1,
+    "sig_a1_scaled": 0.1
+   },
+   "night_best/quad": {
+    "a": 480.3476,
+    "err": 7.9106,
+    "n_arcs": 6,
+    "chi2": 231177.1,
+    "dof": 5,
+    "err_scaled": 1700.9678,
+    "median_a": 30.3847,
+    "sig_a0": 60.7,
+    "sig_a1": 60.6,
+    "sig_a0_scaled": 0.3,
+    "sig_a1_scaled": 0.3
+   },
+   "night_best/lin_nott": {
+    "a": -99.9323,
+    "err": 1.1222,
+    "n_arcs": 4,
+    "chi2": 4410.1,
+    "dof": 3,
+    "err_scaled": 43.0245,
+    "median_a": -92.3516,
+    "sig_a0": -89.1,
+    "sig_a1": -89.9,
+    "sig_a0_scaled": -2.3,
+    "sig_a1_scaled": -2.3
+   },
+   "night_best/null_lin": {
+    "a": -5.3613,
+    "err": 6.6964,
+    "n_arcs": 4,
+    "chi2": 0.6,
+    "dof": 3,
+    "err_scaled": 6.6964,
+    "median_a": 4.6625,
+    "sig_a0": -0.8,
+    "sig_a1": -0.9,
+    "sig_a0_scaled": -0.8,
+    "sig_a1_scaled": -0.9
+   },
+   "night_best/null_quad": {
+    "a": -23.1879,
+    "err": 4.6652,
+    "n_arcs": 6,
+    "chi2": 152526.7,
+    "dof": 5,
+    "err_scaled": 814.8194,
+    "median_a": 7.7995,
+    "sig_a0": -5.0,
+    "sig_a1": -5.2,
+    "sig_a0_scaled": -0.0,
+    "sig_a1_scaled": -0.0
+   }
+  }
+ },
+ "plots": [
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G02_G07_G16_09-01_1904.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G02_G07_G16_08-31_1856.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G15_G24_08-31_1132.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G15_G24_09-01_1204.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G02_G07_G16_09-03_1945.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_ms_G15_G24_09-02_1234.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G07_G02_2026-09-02T0211.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G02_G07_2026-09-02T0211.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G07_G02_2026-09-01T0216.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G02_G07_2026-09-01T0216.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G15_G20_2026-08-31T1146.png",
+  "/private/tmp/claude-501/-Volumes-Radiator-8TB/43a4bc6f-9c07-4172-8270-58a5d832053e/scratchpad/relativity_carrier_G15_G20_2026-09-01T1215.png"
+ ]
+}
