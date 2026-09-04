@@ -506,6 +506,19 @@
       Superluminal: <b id="vpVal" style="color:var(--cyan);">+1,968 m/s</b> &Delta;v<sub>p</sub> &bull; Subluminal: <b id="vgVal" style="color:var(--amber);">&minus;1,968 m/s</b> &Delta;v<sub>g</sub> (v<sub>p</sub>v<sub>g</sub>=c&sup2;).
     </div>
   </div>
+
+  <!-- Card 11: High-Order Ionosphere (2nd-Order B0 & Ray Bending) -->
+  <div class="card">
+    <div class="card-label">
+      <span>High-Order Ionosphere (2nd-Order B<sub>0</sub> &amp; Bending)</span>
+      <span class="badge" id="hoiBadge" style="background:rgba(217,70,239,0.15); color:var(--magenta); border:1px solid rgba(217,70,239,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">GEOMAGNETIC SPLIT</span>
+    </div>
+    <div class="card-val" id="hoiVal">+1.17 <span class="unit">mm I<sub>2</sub></span></div>
+    <div class="card-sub">N-S Asymmetry: <b id="nsAsymVal">0.21 mm</b> &bull; Faraday: <b id="faradayVal" style="color:var(--cyan);">2.2&deg;</b> &bull; Delay: <b id="hoiPsVal">3.9 ps</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      BDS 1/f&sup3; Excess: <b id="bdsHoiGain">+2.8%</b> &bull; Max Ray Bending: <b id="rayBendVal">-0.031 mm</b> &bull; Status: <span id="hoiStatusText" style="color:var(--green);">ACTIVE</span>.
+    </div>
+  </div>
 </div>
 
 <script>
@@ -825,6 +838,40 @@
       if (ccb && csum.hatch_status) {
         ccb.textContent = csum.hatch_status.replace(/_/g, " ");
         ccb.style.color = csum.hatch_status === "DIVERGENCE_QUIET" ? "var(--green)" : (csum.hatch_status === "MODERATE_GRADIENT" ? "var(--amber)" : "var(--magenta)");
+      }
+    }
+
+    // High-Order Ionosphere (2nd-Order B0 & Ray Bending)
+    if (st.hoi_summary) {
+      var hsum = st.hoi_summary;
+      var hov = document.getElementById("hoiVal");
+      if (hov && hsum.mean_i2_phase_mm !== undefined) {
+        hov.innerHTML = (hsum.mean_i2_phase_mm >= 0 ? "+" : "") + hsum.mean_i2_phase_mm.toFixed(2) + ' <span class="unit">mm I<sub>2</sub></span>';
+      }
+      var nsv = document.getElementById("nsAsymVal");
+      if (nsv && hsum.north_south_asymmetry_mm !== undefined) {
+        nsv.textContent = hsum.north_south_asymmetry_mm.toFixed(2) + " mm";
+      }
+      var fv = document.getElementById("faradayVal");
+      if (fv && hsum.mean_faraday_rotation_deg !== undefined) {
+        fv.textContent = hsum.mean_faraday_rotation_deg.toFixed(1) + "°";
+      }
+      var hpv = document.getElementById("hoiPsVal");
+      if (hpv && hsum.mean_total_hoi_ps !== undefined) {
+        hpv.textContent = hsum.mean_total_hoi_ps.toFixed(1) + " ps";
+      }
+      var rbv = document.getElementById("rayBendVal");
+      if (rbv && hsum.max_ray_bending_phase_mm !== undefined) {
+        rbv.textContent = "-" + hsum.max_ray_bending_phase_mm.toFixed(3) + " mm";
+      }
+      var bgv = document.getElementById("bdsHoiGain");
+      if (bgv && hsum.bds_dispersion_ratio !== undefined) {
+        bgv.textContent = "+" + ((hsum.bds_dispersion_ratio - 1.0) * 100.0).toFixed(1) + "%";
+      }
+      var hob = document.getElementById("hoiBadge");
+      if (hob && hsum.status) {
+        hob.textContent = hsum.status.replace(/_/g, " ");
+        hob.style.color = "var(--magenta)";
       }
     }
 

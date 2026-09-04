@@ -79,6 +79,7 @@ async function main() {
     "rfiBadge", "tsysVal", "fsplVal", "marginVal", "n0Val", "tskyVal", "lnaNf", "meanCn0",
     "gdopBadge", "gdopVal", "hdopVal", "vdopVal", "ellipseVal", "gdopAdvVal", "areaAdvVal", "ellipseAz",
     "ccdBadge", "ccdVal", "hatchBiasVal", "cmcNoiseVal", "vpVal", "vgVal",
+    "hoiBadge", "hoiVal", "nsAsymVal", "faradayVal", "hoiPsVal", "rayBendVal", "bdsHoiGain",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -144,6 +145,10 @@ async function main() {
   console.log("CCD Hatch Bias / Noise:", elements["hatchBiasVal"].textContent, "/", elements["cmcNoiseVal"].textContent);
   console.log("CCD Plasma v_p / v_g:", elements["vpVal"].textContent, "/", elements["vgVal"].textContent);
   console.log("CCD Status:", elements["ccdBadge"].textContent);
+  console.log("HOI Val:", elements["hoiVal"].innerHTML);
+  console.log("HOI N-S Asymmetry / Delay:", elements["nsAsymVal"].textContent, "/", elements["hoiPsVal"].textContent);
+  console.log("HOI Faraday / Bending:", elements["faradayVal"].textContent, "/", elements["rayBendVal"].textContent);
+  console.log("HOI Status:", elements["hoiBadge"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }
