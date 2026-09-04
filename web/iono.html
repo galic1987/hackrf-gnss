@@ -358,6 +358,7 @@
         <th>Klobuchar Delay</th>
         <th>Tropo Delay</th>
         <th>Total Atm</th>
+        <th>Relativity (Ecc / Sagnac)</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
@@ -367,7 +368,7 @@
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="15" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="16" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
@@ -436,6 +437,19 @@
     <div class="card-sub">Hydro: <b id="zhdVal">2.30 m</b> &bull; Wet: <b id="zwdVal">0.12 m</b> (<b id="ztdNs">8.07 ns</b>)</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       Niell mapping &bull; P<sub>0</sub>: <span id="p0Val">1010.8 hPa</span> &bull; 20m station elevation.
+    </div>
+  </div>
+
+  <!-- Card 6: Relativistic Space-Time Inspector -->
+  <div class="card">
+    <div class="card-label">
+      <span>Relativistic Space-Time Inspector</span>
+      <span class="badge" id="relBadge" style="background:rgba(168,85,247,0.15); color:var(--purple); border:1px solid rgba(168,85,247,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">EINSTEIN</span>
+    </div>
+    <div class="card-val" id="relVal">+38.5 <span class="unit">&mu;s/day</span></div>
+    <div class="card-sub">GR: <b id="relGr">+45.7 &mu;s/d</b> &bull; SR: <b id="relSr">&minus;7.2 &mu;s/d</b> (&Delta;f: <b id="relFactory">&minus;4.55 mHz</b>)</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Uncompensated: <b id="relDrift">11.5 km/d</b> &bull; Max Sagnac: <b id="relSagnac">24.8 m</b> &bull; Max Ecc: <b id="relEcc">5.7 m</b>.
     </div>
   </div>
 </div>
@@ -619,6 +633,39 @@
       if (zp && st.surface_p0_hpa !== undefined) zp.textContent = st.surface_p0_hpa.toFixed(1) + " hPa";
     }
 
+    // Relativistic Space-Time Inspector
+    if (st.relativity_summary) {
+      var rsum = st.relativity_summary;
+      var rv = document.getElementById("relVal");
+      if (rv && rsum.mean_net_secular_us_day !== undefined) {
+        rv.innerHTML = (rsum.mean_net_secular_us_day >= 0 ? "+" : "") + rsum.mean_net_secular_us_day.toFixed(1) + ' <span class="unit">&mu;s/day</span>';
+      }
+      var rgr = document.getElementById("relGr");
+      if (rgr && rsum.mean_gr_rate_us_day !== undefined) {
+        rgr.textContent = (rsum.mean_gr_rate_us_day >= 0 ? "+" : "") + rsum.mean_gr_rate_us_day.toFixed(1) + " \u03bcs/d";
+      }
+      var rsr = document.getElementById("relSr");
+      if (rsr && rsum.mean_sr_rate_us_day !== undefined) {
+        rsr.textContent = rsum.mean_sr_rate_us_day.toFixed(1) + " \u03bcs/d";
+      }
+      var rfac = document.getElementById("relFactory");
+      if (rfac && rsum.factory_frequency_offset_mhz !== undefined) {
+        rfac.textContent = rsum.factory_frequency_offset_mhz.toFixed(2) + " mHz";
+      }
+      var rdr = document.getElementById("relDrift");
+      if (rdr && rsum.uncompensated_drift_km_day !== undefined) {
+        rdr.textContent = rsum.uncompensated_drift_km_day.toFixed(1) + " km/d";
+      }
+      var rsag = document.getElementById("relSagnac");
+      if (rsag && rsum.max_sagnac_m !== undefined) {
+        rsag.textContent = rsum.max_sagnac_m.toFixed(1) + " m";
+      }
+      var recc = document.getElementById("relEcc");
+      if (recc && rsum.max_periodic_ecc_m !== undefined) {
+        recc.textContent = rsum.max_periodic_ecc_m.toFixed(1) + " m";
+      }
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -629,7 +676,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='15' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='16' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -661,6 +708,12 @@
         ? "<strong>" + tropoInfo.total_atm_delay_m.toFixed(2) + " m</strong> (" + tropoInfo.total_atm_delay_ns.toFixed(1) + " ns)"
         : "—";
 
+      var relInfo = (lastPayload && lastPayload.relativity_satellites && lastPayload.relativity_satellites[keys[i]]) ? lastPayload.relativity_satellites[keys[i]] : null;
+      var relCol = relInfo
+        ? "<span style='color:var(--purple); font-weight:600;'>" + (relInfo.eccentricity_correction_m >= 0 ? "+" : "") + relInfo.eccentricity_correction_m.toFixed(1) + "m</span> / " +
+          "<span style='color:var(--cyan); font-weight:600;'>" + (relInfo.sagnac_correction_m >= 0 ? "+" : "") + relInfo.sagnac_correction_m.toFixed(1) + "m</span>"
+        : "—";
+
       var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
       var mpCol = mpInfo
         ? (mpInfo.reflection_risk === "HIGH" ? "<span style='color:var(--magenta); font-weight:600;'>HIGH (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
@@ -678,6 +731,7 @@
         "<td>" + klobDelay + "</td>" +
         "<td>" + tropoCol + "</td>" +
         "<td>" + totalAtmCol + "</td>" +
+        "<td>" + relCol + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -944,6 +998,10 @@
         ? "<br>Troposphere: " + lastPayload.tropo_satellites[match.key].tropo_delay_m.toFixed(2) + " m (" + lastPayload.tropo_satellites[match.key].tropo_delay_ns.toFixed(1) + " ns)" +
           "<br><strong>Total Atmosphere: " + lastPayload.tropo_satellites[match.key].total_atm_delay_m.toFixed(2) + " m</strong> (" + lastPayload.tropo_satellites[match.key].total_atm_delay_ns.toFixed(1) + " ns)"
         : "";
+      var relInfo = (lastPayload && lastPayload.relativity_satellites && lastPayload.relativity_satellites[match.key]) ? lastPayload.relativity_satellites[match.key] : null;
+      var relTip = relInfo
+        ? "<br><strong>Relativity:</strong> Net " + relInfo.net_secular_us_day.toFixed(2) + " μs/d (" + relInfo.uncompensated_drift_km_day.toFixed(1) + " km/d)<br>Ecc: " + relInfo.eccentricity_correction_m.toFixed(2) + " m (" + relInfo.eccentricity_correction_ns.toFixed(1) + " ns)<br>Sagnac: " + relInfo.sagnac_correction_m.toFixed(2) + " m (" + relInfo.sagnac_correction_ns.toFixed(1) + " ns)"
+        : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -955,6 +1013,7 @@
         "S4: " + (s.s4 ? s.s4.toFixed(3) : "—") +
         klobTip +
         tropoTip +
+        relTip +
         mpTip;
     } else {
       tooltip.style.display = "none";

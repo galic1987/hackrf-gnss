@@ -74,6 +74,7 @@ async function main() {
     "thermalY", "thermalMhz", "thermalMmDay", "thermalDiurnal", "thermalPs",
     "thermalRms", "thermalHours", "mpiBadge", "mpiVal", "mpiReflective", "mpiClean",
     "mpiActiveRisk", "tropoBadge", "ztdVal", "zhdVal", "zwdVal", "ztdNs", "p0Val",
+    "relBadge", "relVal", "relGr", "relSr", "relFactory", "relDrift", "relSagnac", "relEcc",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -121,6 +122,10 @@ async function main() {
   console.log("Cleanest Sector:", elements["mpiClean"].textContent);
   console.log("Reflective Sector:", elements["mpiReflective"].textContent);
   console.log("ZTD Val:", elements["ztdVal"].innerHTML);
+  console.log("Relativity Val:", elements["relVal"].innerHTML);
+  console.log("Relativity GR / SR:", elements["relGr"].textContent, "/", elements["relSr"].textContent);
+  console.log("Relativity Uncompensated:", elements["relDrift"].textContent);
+  console.log("Relativity Sagnac Max:", elements["relSagnac"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }
