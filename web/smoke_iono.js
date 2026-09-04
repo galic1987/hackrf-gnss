@@ -69,31 +69,14 @@ async function main() {
   // Pre-populate known element IDs
   [
     "weatherVal", "weatherSub", "sigmaVal", "s4Val", "tecVal", "rotiVal",
-    "satTableBody", "tidBadge", "tidVal", "tidAmp", "tidSnr", "tidSpan",
-    "isbVal", "isbMad", "isbPath", "isbAdev", "isbSpan", "isbN",
-    "thermalY", "thermalMhz", "thermalMmDay", "thermalDiurnal", "thermalPs",
-    "thermalRms", "thermalHours", "mpiBadge", "mpiVal", "mpiReflective", "mpiClean",
-    "mpiActiveRisk", "tropoBadge", "ztdVal", "zhdVal", "zwdVal", "ztdNs", "p0Val",
-    "relBadge", "relVal", "relGr", "relSr", "relFactory", "relDrift", "relSagnac", "relEcc",
-    "pwvBadge", "pwvVal", "pwvMass", "tmVal", "tdVal", "bevisPi", "regimeVal", "maxSwv",
-    "rfiBadge", "tsysVal", "fsplVal", "marginVal", "n0Val", "tskyVal", "lnaNf", "meanCn0",
-    "gdopBadge", "gdopVal", "hdopVal", "vdopVal", "ellipseVal", "gdopAdvVal", "areaAdvVal", "ellipseAz",
-    "ccdBadge", "ccdVal", "hatchBiasVal", "cmcNoiseVal", "vpVal", "vgVal",
-    "hoiBadge", "hoiVal", "nsAsymVal", "faradayVal", "hoiPsVal", "rayBendVal", "bdsHoiGain",
-    "sdVal", "sdPivotSat", "sdPairsCount", "sdNoiseVal",
-    "ddVal", "ddFixRate", "ddBadge", "solarDtecVal", "solarGhiVal",
-    "tdVal", "tdPivotSat", "tdPairsCount", "tdBadge", "tdAmbStatus",
-    "sidVal", "sidBadge", "sidAccelVal", "sidEventVal", "sriThreatVal",
-    "lifVal", "lifBadge", "lifCount", "lifWlVal",
-    "pppVal", "pppBadge", "pppEnuVal", "pppZwdVal", "pppClkVal",
-    "noonVal", "noonBadge", "noonElVal", "noonAirmassVal", "noonChapVal", "noonLagVal",
-    "iqVal", "iqBadge", "iqSkewVal", "iqDcVal", "iqEvmVal",
-    "lambdaVal", "lambdaBadge", "lambdaRatioVal", "lambdaCountVal", "lambdaResVal",
-    "srpVal", "srpBadge", "srpPressVal", "srpDriftVal", "srpStateVal",
-    "agwVal", "agwBadge", "agwAzVal", "agwPeriodVal", "agwModeVal",
-    "tideVal", "tideBadge", "tideSolarVal", "tideLunarVal", "tideOtlVal", "tide3dVal", "tidePhaseVal", "tideH2Val", "tideL2Val",
-    "tropoRefVal", "tropoRefBadge", "tropoDnVal", "tropoDmVal", "tropoHorizonVal", "tropoDryVal", "tropoWetVal", "tropoRiskVal",
-    "satClockVal", "satClockBadge", "satClockPrime", "satClockGpsVal", "satClockRatio", "satClockCount",
+    "satTableBody",
+    "gpsTrackBadge", "gpsTrackVal", "gpsTrackSub", "gpsMeanCn0", "gpsMaxLock",
+    "bdsTrackBadge", "bdsTrackVal", "bdsTrackSub", "bdsMeanCn0", "bdsMaxLock",
+    "atscBadge", "atscVal", "atscSub", "atscDisp", "atscSigma",
+    "tdcBadge", "tdcVal", "tdcSub", "tdcResidual", "tdcGpsdo", "tdcSatCount",
+    "isbBadge", "isbVal", "isbMad", "isbPath", "isbAdev", "isbSpan", "isbN",
+    "thermalBadge", "thermalY", "thermalMhz", "thermalMmDay", "thermalDiurnal", "thermalPs",
+    "thermalRms", "thermalHours",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -133,50 +116,21 @@ async function main() {
   console.log("Table rendered rows length:", tableHtml.length);
   if (!tableHtml || tableHtml.length < 50) throw new Error("satTableBody was empty or unexpectedly short");
 
-  // Check that experiment values are rendered
-  console.log("TID Val:", elements["tidVal"].innerHTML);
-  console.log("ISB Val:", elements["isbVal"].innerHTML);
-  console.log("Thermal Val:", elements["thermalY"].innerHTML);
-  console.log("MPI Val:", elements["mpiVal"].innerHTML);
-  console.log("Cleanest Sector:", elements["mpiClean"].textContent);
-  console.log("Reflective Sector:", elements["mpiReflective"].textContent);
-  console.log("ZTD Val:", elements["ztdVal"].innerHTML);
-  console.log("Relativity Val:", elements["relVal"].innerHTML);
-  console.log("Relativity GR / SR:", elements["relGr"].textContent, "/", elements["relSr"].textContent);
-  console.log("Relativity Uncompensated:", elements["relDrift"].textContent);
-  console.log("Relativity Sagnac Max:", elements["relSagnac"].textContent);
-  console.log("PWV Val:", elements["pwvVal"].innerHTML);
-  console.log("PWV Mass / Tm / Td:", elements["pwvMass"].textContent, "/", elements["tmVal"].textContent, "/", elements["tdVal"].textContent);
-  console.log("PWV Regime:", elements["regimeVal"].textContent);
-  console.log("Radiometry Tsys:", elements["tsysVal"].innerHTML);
-  console.log("Radiometry FSPL / Margin:", elements["fsplVal"].textContent, "/", elements["marginVal"].textContent);
-  console.log("Radiometry Threat:", elements["rfiBadge"].textContent);
-  console.log("GDOP Val:", elements["gdopVal"].innerHTML);
-  console.log("GDOP HDOP / VDOP:", elements["hdopVal"].textContent, "/", elements["vdopVal"].textContent);
-  console.log("GDOP 95% Ellipse:", elements["ellipseVal"].textContent, "@", elements["ellipseAz"].textContent);
-  console.log("GDOP Advantage vs GPS:", elements["gdopAdvVal"].textContent, "(Area:", elements["areaAdvVal"].textContent + ")");
-  console.log("CCD Val:", elements["ccdVal"].innerHTML);
-  console.log("CCD Hatch Bias / Noise:", elements["hatchBiasVal"].textContent, "/", elements["cmcNoiseVal"].textContent);
-  console.log("CCD Plasma v_p / v_g:", elements["vpVal"].textContent, "/", elements["vgVal"].textContent);
-  console.log("CCD Status:", elements["ccdBadge"].textContent);
-  console.log("HOI Val:", elements["hoiVal"].innerHTML);
-  console.log("HOI N-S Asymmetry / Delay:", elements["nsAsymVal"].textContent, "/", elements["hoiPsVal"].textContent);
-  console.log("HOI Faraday / Bending:", elements["faradayVal"].textContent, "/", elements["rayBendVal"].textContent);
-  console.log("HOI Status:", elements["hoiBadge"].textContent);
-  if (elements["sdVal"]) console.log("Single-Diff Val:", elements["sdVal"].innerHTML, "| Pivot:", elements["sdPivotSat"] ? elements["sdPivotSat"].textContent : "--");
-  if (elements["ddVal"]) console.log("Double-Diff Val:", elements["ddVal"].innerHTML, "| Fix Rate:", elements["ddFixRate"] ? elements["ddFixRate"].textContent : "--", "| dTEC/dt:", elements["solarDtecVal"] ? elements["solarDtecVal"].textContent : "--");
-  if (elements["tdVal"]) console.log("Triple-Diff Val:", elements["tdVal"].innerHTML, "| Pivot:", elements["tdPivotSat"] ? elements["tdPivotSat"].textContent : "--", "| Ambiguity:", elements["tdAmbStatus"] ? elements["tdAmbStatus"].textContent : "--");
-  if (elements["sidVal"]) console.log("SID Val:", elements["sidVal"].innerHTML, "| Flux:", elements["sidBadge"] ? elements["sidBadge"].textContent : "--", "| Accel:", elements["sidAccelVal"] ? elements["sidAccelVal"].textContent : "--");
-  if (elements["lifVal"]) console.log("L_IF Val:", elements["lifVal"].innerHTML, "| Channels:", elements["lifCount"] ? elements["lifCount"].textContent : "--", "| Wide-Lane:", elements["lifWlVal"] ? elements["lifWlVal"].textContent : "--");
-  if (elements["pppVal"]) console.log("PPP Val:", elements["pppVal"].innerHTML, "| Tier:", elements["pppBadge"] ? elements["pppBadge"].textContent : "--", "| ENU:", elements["pppEnuVal"] ? elements["pppEnuVal"].textContent : "--");
-  if (elements["noonVal"]) console.log("Solar Noon Val:", elements["noonVal"].innerHTML, "| Milestone:", elements["noonBadge"] ? elements["noonBadge"].textContent : "--", "| Chapman:", elements["noonChapVal"] ? elements["noonChapVal"].textContent : "--");
-  if (elements["iqVal"]) console.log("Frontend IQ Val:", elements["iqVal"].innerHTML, "| IRR:", elements["iqBadge"] ? elements["iqBadge"].textContent : "--", "| Skew:", elements["iqSkewVal"] ? elements["iqSkewVal"].textContent : "--");
-  if (elements["lambdaVal"]) console.log("LAMBDA Val:", elements["lambdaVal"].innerHTML, "| Badge:", elements["lambdaBadge"] ? elements["lambdaBadge"].textContent : "--", "| Ratio:", elements["lambdaRatioVal"] ? elements["lambdaRatioVal"].textContent : "--");
-  if (elements["srpVal"]) console.log("SRP Val:", elements["srpVal"].innerHTML, "| Pressure:", elements["srpPressVal"] ? elements["srpPressVal"].textContent : "--", "| Drift:", elements["srpDriftVal"] ? elements["srpDriftVal"].textContent : "--");
-  if (elements["agwVal"]) console.log("AGW Val:", elements["agwVal"].innerHTML, "| Azimuth:", elements["agwAzVal"] ? elements["agwAzVal"].textContent : "--", "| Period:", elements["agwPeriodVal"] ? elements["agwPeriodVal"].textContent : "--");
-  if (elements["tideVal"]) console.log("Solid Tide Val:", elements["tideVal"].innerHTML, "| Up:", elements["tideVal"] ? elements["tideVal"].textContent : "--", "| 3D:", elements["tide3dVal"] ? elements["tide3dVal"].textContent : "--");
-  if (elements["tropoRefVal"]) console.log("Tropo Refractivity Val:", elements["tropoRefVal"].innerHTML, "| Lapse:", elements["tropoDnVal"] ? elements["tropoDnVal"].textContent : "--", "| Risk:", elements["tropoRiskVal"] ? elements["tropoRiskVal"].textContent : "--");
-  if (elements["satClockVal"]) console.log("Sat Clock Val:", elements["satClockVal"].innerHTML, "| Prime:", elements["satClockPrime"] ? elements["satClockPrime"].textContent : "--", "| Ratio:", elements["satClockRatio"] ? elements["satClockRatio"].textContent : "--");
+  // Check genuine physical observables & baseline diagnostics (Cards 1-6)
+  console.log("Card 1 (GPS L1 C/A):", elements["gpsTrackVal"].innerHTML, "| Mean C/N0:", elements["gpsMeanCn0"].textContent, "| Max Lock:", elements["gpsMaxLock"].textContent);
+  console.log("Card 2 (BeiDou B1I):", elements["bdsTrackVal"].innerHTML, "| Mean C/N0:", elements["bdsMeanCn0"].textContent, "| Max Lock:", elements["bdsMaxLock"].textContent);
+  console.log("Card 3 (ATSC Ch35):", elements["atscVal"].innerHTML, "| Disp:", elements["atscDisp"].textContent, "| Sigma:", elements["atscSigma"].textContent);
+  console.log("Card 4 (Hardware TDC):", elements["tdcVal"].innerHTML, "| Residual:", elements["tdcResidual"].textContent, "| GPSDO:", elements["tdcGpsdo"].textContent);
+  console.log("Card 5 (ISB Baseline):", elements["isbVal"].innerHTML, "| Scatter:", elements["isbMad"].innerHTML, "| RF dL:", elements["isbPath"].innerHTML);
+  console.log("Card 6 (Thermal Baseline):", elements["thermalY"].innerHTML, "| Secular:", elements["thermalMhz"].innerHTML, "| Drift:", elements["thermalMmDay"].innerHTML);
+
+  // Assert essential fields are not empty
+  if (!elements["gpsTrackVal"].innerHTML) throw new Error("gpsTrackVal is empty");
+  if (!elements["bdsTrackVal"].innerHTML) throw new Error("bdsTrackVal is empty");
+  if (!elements["atscVal"].innerHTML) throw new Error("atscVal is empty");
+  if (!elements["tdcVal"].innerHTML) throw new Error("tdcVal is empty");
+  if (!elements["isbVal"].innerHTML) throw new Error("isbVal is empty");
+  if (!elements["thermalY"].innerHTML) throw new Error("thermalY is empty");
 
   console.log("SMOKE_IONO: PASS");
 }

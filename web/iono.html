@@ -373,45 +373,79 @@
         <th>IPP (350 km)</th>
         <th>F(E)</th>
         <th>Klobuchar Delay</th>
-        <th>Tropo Delay</th>
-        <th>Total Atm</th>
-        <th>Relativity (Ecc / Sagnac)</th>
-        <th>Slant WV</th>
-        <th>FSPL / Margin</th>
+        <th>Klobuchar sTEC</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
         <th>Lock</th>
-        <th>Multipath</th>
         <th>Status</th>
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="18" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="13" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
 
-<!-- Space Weather & Geodesy Experiments -->
-<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px;">
-  <!-- Card 1: TID Wavelet Analyzer -->
+<!-- Genuine Physical Observables & Baseline Diagnostics -->
+<div class="grid-experiments" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px;">
+  <!-- Card 1: GPS L1 C/A carrier tracking -->
   <div class="card">
     <div class="card-label">
-      <span>TID Spectral Wavelet Analysis</span>
-      <span class="badge" id="tidBadge" style="background:rgba(0,240,255,0.15); color:var(--cyan); border:1px solid rgba(0,240,255,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">QUIET</span>
+      <span>GPS L1 C/A Carrier Tracking</span>
+      <span class="badge" id="gpsTrackBadge" style="background:rgba(0,240,255,0.15); color:var(--cyan); border:1px solid rgba(0,240,255,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">TRACKING</span>
     </div>
-    <div class="card-val" id="tidVal">28.5 <span class="unit">min</span></div>
-    <div class="card-sub" id="tidSub">Dominant period &bull; Amp: <b id="tidAmp">0.42 TECU</b> &bull; SNR: <b id="tidSnr">6.8 dB</b></div>
+    <div class="card-val" id="gpsTrackVal">-- <span class="unit">Sats Locked</span></div>
+    <div class="card-sub" id="gpsTrackSub">C/N₀: <b id="gpsMeanCn0">-- dB-Hz</b> &bull; Max Lock: <b id="gpsMaxLock">-- s</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Discrete Fourier periodogram over 15–90 min acoustic-gravity wave window. Evaluated span: <span id="tidSpan">45.0 min</span>.
+      HackRF Pro #2 + AA.250 &bull; 1575.42 MHz &bull; Coherent carrier tracking &amp; Costas NCO accumulator.
     </div>
   </div>
 
-  <!-- Card 2: Inter-System Bias (ISB / ISX) -->
+  <!-- Card 2: BeiDou B1I carrier tracking -->
+  <div class="card">
+    <div class="card-label">
+      <span>BeiDou B1I Carrier Tracking</span>
+      <span class="badge" id="bdsTrackBadge" style="background:rgba(244,63,94,0.15); color:var(--magenta); border:1px solid rgba(244,63,94,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">TRACKING</span>
+    </div>
+    <div class="card-val" id="bdsTrackVal">-- <span class="unit">Sats Locked</span></div>
+    <div class="card-sub" id="bdsTrackSub">C/N₀: <b id="bdsMeanCn0">-- dB-Hz</b> &bull; Max Lock: <b id="bdsMaxLock">-- s</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      HackRF Pro #2 + AA.250 &bull; 1561.098 MHz &bull; B1I carrier phase metrology.
+    </div>
+  </div>
+
+  <!-- Card 3: ATSC ch35 carrier lock -->
+  <div class="card">
+    <div class="card-label">
+      <span>ATSC Ch35 Carrier Lock</span>
+      <span class="badge" id="atscBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">LOCKED</span>
+    </div>
+    <div class="card-val" id="atscVal">599.31 <span class="unit">MHz Pilot</span></div>
+    <div class="card-sub" id="atscSub">Phase Disp: <b id="atscDisp">-- mm</b> &bull; Jitter: <b id="atscSigma">-- mm</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      HackRF One + ClearStream &bull; Continuous 538–608 MHz terrestrial broadcast carrier witness.
+    </div>
+  </div>
+
+  <!-- Card 4: Hardware TDC latches & clock offset -->
+  <div class="card">
+    <div class="card-label">
+      <span>Hardware TDC Latches &amp; Clock Offset</span>
+      <span class="badge" id="tdcBadge" style="background:rgba(56,189,248,0.15); color:var(--blue); border:1px solid rgba(56,189,248,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">LOCKED</span>
+    </div>
+    <div class="card-val" id="tdcVal">32.000 <span class="unit">MHz Tick</span></div>
+    <div class="card-sub" id="tdcSub">Clock Residual: <b id="tdcResidual">-- m</b> &bull; GPSDO: <b id="tdcGpsdo">LOCKED</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      P28.16 hardware TDC capture latches &bull; Leo Bodnar 10 MHz reference &bull; <span id="tdcSatCount">--</span> fresh satellites.
+    </div>
+  </div>
+
+  <!-- Card 5: Inter-System Bias (ISB) baseline -->
   <div class="card">
     <div class="card-label">
       <span>BDS &minus; GPS Inter-System Bias (ISB)</span>
-      <span class="badge" style="background:rgba(244,63,94,0.15); color:var(--magenta); border:1px solid rgba(244,63,94,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">METROLOGY</span>
+      <span class="badge" id="isbBadge" style="background:rgba(244,63,94,0.15); color:var(--magenta); border:1px solid rgba(244,63,94,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">METROLOGY</span>
     </div>
     <div class="card-val" id="isbVal">+10.19 <span class="unit">ns</span></div>
     <div class="card-sub">Scatter: <b id="isbMad">&plusmn;120.66 ns</b> (MAD) &bull; RF &Delta;L: <b id="isbPath">+3.05 m</b></div>
@@ -420,328 +454,16 @@
     </div>
   </div>
 
-  <!-- Card 3: ATSC Diurnal Thermal Expansion -->
+  <!-- Card 6: Thermal phase drift baseline -->
   <div class="card">
     <div class="card-label">
       <span>Carrier Diurnal Expansion &amp; Secular Drift</span>
-      <span class="badge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">LOCKED</span>
+      <span class="badge" id="thermalBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">LOCKED</span>
     </div>
     <div class="card-val" id="thermalY">+1.37&times;10<sup>&minus;13</sup></div>
     <div class="card-sub">Secular offset: <b id="thermalMhz">+0.083 mHz</b> &bull; Drift: <b id="thermalMmDay">+0.30 mm/d</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       24-hr Diurnal Wander: <b><span id="thermalDiurnal">26.5 mm</span></b> (<span id="thermalPs">88.3 ps</span>) &bull; RMS Noise: <b><span id="thermalRms">13.6 mm</span></b> (<span id="thermalHours">117.0 h</span> span).
-    </div>
-  </div>
-
-  <!-- Card 4: Sidereal Multipath Stacking (HMS) -->
-  <div class="card">
-    <div class="card-label">
-      <span>Sidereal Multipath Stacking (HMS)</span>
-      <span class="badge" id="mpiBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">STACKED</span>
-    </div>
-    <div class="card-val" id="mpiVal">3.56 <span class="unit">dB MPI</span></div>
-    <div class="card-sub">Reflective: <b id="mpiReflective" style="color:var(--magenta);">East (3.83 dB)</b> &bull; Clean: <b id="mpiClean" style="color:var(--green);">SW (3.22 dB)</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      10-day sidereal repeat grid (468 cells) &bull; Active elevated risk: <b id="mpiActiveRisk">0 sats</b>.
-    </div>
-  </div>
-
-  <!-- Card 5: Tropospheric Path Delay -->
-  <div class="card">
-    <div class="card-label">
-      <span>Tropospheric Path Delay (Saastamoinen)</span>
-      <span class="badge" id="tropoBadge" style="background:rgba(56,189,248,0.15); color:var(--blue); border:1px solid rgba(56,189,248,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">NEUTRAL</span>
-    </div>
-    <div class="card-val" id="ztdVal">2.42 <span class="unit">m ZTD</span></div>
-    <div class="card-sub">Hydro: <b id="zhdVal">2.30 m</b> &bull; Wet: <b id="zwdVal">0.12 m</b> (<b id="ztdNs">8.07 ns</b>)</div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Niell mapping &bull; P<sub>0</sub>: <span id="p0Val">1010.8 hPa</span> &bull; 20m station elevation.
-    </div>
-  </div>
-
-  <!-- Card 6: Relativistic Space-Time Inspector -->
-  <div class="card">
-    <div class="card-label">
-      <span>Relativistic Space-Time Inspector</span>
-      <span class="badge" id="relBadge" style="background:rgba(168,85,247,0.15); color:var(--purple); border:1px solid rgba(168,85,247,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">EINSTEIN</span>
-    </div>
-    <div class="card-val" id="relVal">+38.5 <span class="unit">&mu;s/day</span></div>
-    <div class="card-sub">GR: <b id="relGr">+45.7 &mu;s/d</b> &bull; SR: <b id="relSr">&minus;7.2 &mu;s/d</b> (&Delta;f: <b id="relFactory">&minus;4.55 mHz</b>)</div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Uncompensated: <b id="relDrift">11.5 km/d</b> &bull; Max Sagnac: <b id="relSagnac">24.8 m</b> &bull; Max Ecc: <b id="relEcc">5.7 m</b>.
-    </div>
-  </div>
-
-  <!-- Card 7: GNSS Meteorology & Precipitable Water Vapor (PWV) -->
-  <div class="card">
-    <div class="card-label">
-      <span>GNSS Meteorology &amp; Precipitable Water (PWV)</span>
-      <span class="badge" id="pwvBadge" style="background:rgba(20,184,166,0.15); color:var(--cyan); border:1px solid rgba(20,184,166,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">BEVIS INVERSION</span>
-    </div>
-    <div class="card-val" id="pwvVal">18.3 <span class="unit">mm PWV</span></div>
-    <div class="card-sub">Mass: <b id="pwvMass">18.26 kg/m&sup2;</b> &bull; T<sub>m</sub>: <b id="tmVal">8.1&deg;C</b> &bull; T<sub>d</sub>: <b id="tdVal">9.3&deg;C</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Bevis &Pi;: <span id="bevisPi">0.159</span> &bull; Regime: <b id="regimeVal" style="color:var(--green);">NORMAL</b> &bull; Max Slant WV: <b id="maxSwv">31.4 mm</b>.
-    </div>
-  </div>
-
-  <!-- Card 8: RF Radiometry & Link Budget Metrology -->
-  <div class="card">
-    <div class="card-label">
-      <span>RF Radiometry &amp; Link Budget</span>
-      <span class="badge" id="rfiBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">RF QUIET</span>
-    </div>
-    <div class="card-val" id="tsysVal">172 <span class="unit">K T<sub>sys</sub></span></div>
-    <div class="card-sub">FSPL: <b id="fsplVal">184.2 dB</b> &bull; Margin: <b id="marginVal" style="color:var(--green);">+10.5 dB</b> &bull; N<sub>0</sub>: <b id="n0Val">-176.3 dBm/Hz</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Antenna T<sub>sky</sub>: <span id="tskyVal">79.4 K</span> &bull; LNA NF: <span id="lnaNf">1.2 dB</span> &bull; C/N<sub>0</sub> mean: <b id="meanCn0">38.5 dB-Hz</b>.
-    </div>
-  </div>
-
-  <!-- Card 9: Multi-Constellation GDOP & Error Ellipsoid Metrology -->
-  <div class="card">
-    <div class="card-label">
-      <span>Multi-Constellation GDOP &amp; Error Ellipse</span>
-      <span class="badge" id="gdopBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">3D MULTI-GNSS FIX</span>
-    </div>
-    <div class="card-val" id="gdopVal">0.92 <span class="unit">GDOP</span></div>
-    <div class="card-sub">HDOP: <b id="hdopVal">0.42</b> &bull; VDOP: <b id="vdopVal">0.71</b> &bull; 95% Ellipse: <b id="ellipseVal" style="color:var(--cyan);">1.6m &times; 1.3m</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Multi-GNSS vs GPS: <b id="gdopAdvVal" style="color:var(--green);">-48.6% GDOP</b> &bull; Area: <b id="areaAdvVal" style="color:var(--green);">-75.1%</b> &bull; Az: <span id="ellipseAz">161&deg;</span>.
-    </div>
-  </div>
-
-  <!-- Card 10: Hatch Code-Carrier Divergence & Plasma Electrodynamics -->
-  <div class="card">
-    <div class="card-label">
-      <span>Code-Carrier Divergence (v<sub>p</sub> &gt; c vs v<sub>g</sub> &lt; c)</span>
-      <span class="badge" id="ccdBadge" style="background:rgba(236,72,153,0.15); color:var(--magenta); border:1px solid rgba(236,72,153,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">DIVERGENCE QUIET</span>
-    </div>
-    <div class="card-val" id="ccdVal">+0.12 <span class="unit">mm/s &Idot;</span></div>
-    <div class="card-sub">Hatch Bias: <b id="hatchBiasVal">+0.024 m</b> &bull; CMC Noise: <b id="cmcNoiseVal">&plusmn;0.35 m</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Superluminal: <b id="vpVal" style="color:var(--cyan);">+1,968 m/s</b> &Delta;v<sub>p</sub> &bull; Subluminal: <b id="vgVal" style="color:var(--amber);">&minus;1,968 m/s</b> &Delta;v<sub>g</sub> (v<sub>p</sub>v<sub>g</sub>=c&sup2;).
-    </div>
-  </div>
-
-  <!-- Card 11: High-Order Ionosphere (2nd-Order B0 & Ray Bending) -->
-  <div class="card">
-    <div class="card-label">
-      <span>High-Order Ionosphere (2nd-Order B<sub>0</sub> &amp; Bending)</span>
-      <span class="badge" id="hoiBadge" style="background:rgba(217,70,239,0.15); color:var(--magenta); border:1px solid rgba(217,70,239,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">GEOMAGNETIC SPLIT</span>
-    </div>
-    <div class="card-val" id="hoiVal">+1.17 <span class="unit">mm I<sub>2</sub></span></div>
-    <div class="card-sub">N-S Asymmetry: <b id="nsAsymVal">0.21 mm</b> &bull; Faraday: <b id="faradayVal" style="color:var(--cyan);">2.2&deg;</b> &bull; Delay: <b id="hoiPsVal">3.9 ps</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      BDS 1/f&sup3; Excess: <b id="bdsHoiGain">+2.8%</b> &bull; Max Ray Bending: <b id="rayBendVal">-0.031 mm</b> &bull; Status: <span id="hoiStatusText" style="color:var(--green);">ACTIVE</span>.
-    </div>
-  </div>
-
-  <!-- Card 12: Solar Terminator & Dawn Transition Observatory -->
-  <div class="card">
-    <div class="card-label">
-      <span>Solar Terminator &amp; Dawn Detector</span>
-      <span class="badge" id="solarBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">CIVIL DAWN</span>
-    </div>
-    <div class="card-val" id="solarVal">-5.8&deg; <span class="unit">Sun El</span></div>
-    <div class="card-sub">Overhead Shadow Ht: <b id="shadowHtVal">33.8 km</b> &bull; F2 350km: <b id="f2IllumVal" style="color:var(--green);">LIT (EUV)</b> &bull; Sun Az: <b id="sunAzVal">75.2&deg; ENE</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Ground Sunrise: <b id="groundSunriseVal">06:40 EDT</b> &bull; Nearest Sat: <b id="nearestSatVal">GPS_19 (63&deg;)</b> &bull; Solar RF: <span id="solarRfStatus" style="color:var(--cyan);">Coupling Imminent</span>.
-    </div>
-  </div>
-
-  <!-- Card 13: GNSS-R Bistatic Radar & Chronometric Levelling -->
-  <div class="card">
-    <div class="card-label">
-      <span>GNSS-R Radar &amp; Chronometric Levelling</span>
-      <span class="badge" id="gnssrBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">BISTATIC RADAR</span>
-    </div>
-    <div class="card-val" id="gnssrVal">1.842 <span class="unit">m h<sub>ant</sub> (&plusmn;4.2mm)</span></div>
-    <div class="card-sub">Soil Moisture: <b id="soilMoistVal" style="color:var(--cyan);">15.8% VSM</b> &bull; Dielectric &epsilon;': <b id="dielectricVal">8.5</b> &bull; Grav Shift: <b id="gravShiftVal" style="color:var(--purple);">+2.38 fs/s</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      FFZ Prime Sat: <b id="ffzPrimeSat">GPS_13 (22&deg;)</b> &bull; Coverage: <b id="ffzAreaVal">21.2 m&sup2;</b> &bull; Chrono Drift: <b id="chronoDriftVal">+0.206 ns/d</b>.
-    </div>
-  </div>
-
-  <!-- Card 14: Carrier Single-Difference Clock-Free Metrology -->
-  <div class="card">
-    <div class="card-label">
-      <span>Carrier Single-Difference Metrology</span>
-      <span class="badge" id="sdBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">CLOCK-FREE</span>
-    </div>
-    <div class="card-val" id="sdVal">0.000 <span class="unit">ps &Delta;t<sub>rx</sub> (100% Canceled)</span></div>
-    <div class="card-sub">Pivot Reference: <b id="sdPivotSat" style="color:var(--green);">GPS_5 (62.2&deg;)</b> &bull; Pairs: <b id="sdPairsCount">6</b> &bull; Noise Floor: <b id="sdNoiseVal" style="color:var(--cyan);">3.63 mm</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Invariant: &Delta;&Phi;<sup>ik</sup> = &Delta;&rho;<sup>ik</sup> - c&Delta;dt<sup>ik</sup> - &Delta;I<sup>ik</sup> + &Delta;T<sup>ik</sup> + &lambda;&Delta;N<sup>ik</sup> (Cancels Receiver Clock Ticks).
-    </div>
-  </div>
-
-  <!-- Card 15: Zero-Baseline Double-Difference & Solar Ramp -->
-  <div class="card">
-    <div class="card-label">
-      <span>Zero-Baseline Double-Diff &amp; Solar Ramp</span>
-      <span class="badge" id="ddBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">INTEGER FIXED</span>
-    </div>
-    <div class="card-val" id="ddVal">1.18 <span class="unit">mm DD Phase Residual</span></div>
-    <div class="card-sub">Fix Rate: <b id="ddFixRate" style="color:var(--green);">100.0% (3/3)</b> &bull; dTEC/dt: <b id="solarDtecVal" style="color:var(--cyan);">+0.34 TECU/h</b> &bull; Solar GHI: <b id="solarGhiVal" style="color:var(--amber);">127 W/m&sup2;</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Double-Difference: &nabla;&Delta;&Phi;<sub>AB</sub><sup>ik</sup> = &lambda;&nabla;&Delta;N<sub>AB</sub><sup>ik</sup> + &epsilon;<sub>DD</sub>. Eliminates Rx + Sat clocks, Tropo &amp; Iono!
-    </div>
-  </div>
-
-  <!-- Card 16: Triple-Difference Cycle Slip & Doppler Engine -->
-  <div class="card">
-    <div class="card-label">
-      <span>Carrier Triple-Difference Engine</span>
-      <span class="badge" id="tdBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">AMBIGUITY CANCELED</span>
-    </div>
-    <div class="card-val" id="tdVal">0.00 <span class="unit">mm TD Residual (0 Slips)</span></div>
-    <div class="card-sub">Pivot: <b id="tdPivotSat" style="color:var(--green);">GPS_15</b> &bull; Pairs: <b id="tdPairsCount">6</b> &bull; Ambiguity: <b id="tdAmbStatus" style="color:var(--cyan);">&lambda;&Delta;N &equiv; 0.000 mm</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Triple-Diff: &delta;&nabla;&Delta;&Phi;<sub>AB</sub><sup>ik</sup>. Epoch differencing eliminates integer ambiguity without search; instant &plusmn;1-cycle slip detector!
-    </div>
-  </div>
-
-  <!-- Card 17: Solar Flare SID & Radio Burst Radiometer -->
-  <div class="card">
-    <div class="card-label">
-      <span>Solar Flare SID &amp; Radiometer</span>
-      <span class="badge" id="sidBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">143.8 SFU</span>
-    </div>
-    <div class="card-val" id="sidVal">+4.23 <span class="unit">K &Delta;T<sub>solar</sub> (Quiet Background)</span></div>
-    <div class="card-sub">d&sup2;TEC/dt&sup2;: <b id="sidAccelVal" style="color:var(--cyan);">0.02 TECU/h&sup2;</b> &bull; Event: <b id="sidEventVal" style="color:var(--green);">QUIET</b> &bull; SRI Threat: <b id="sriThreatVal" style="color:var(--green);">RF QUIET</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      L-Band Radiometry: &Delta;T<sub>solar</sub> = S<sub>&odot;</sub>A<sub>eff</sub>/(2k<sub>B</sub>). Monitors Sudden Ionospheric Disturbances (SID) &amp; solar radio bursts.
-    </div>
-  </div>
-
-  <!-- Card 18: Multi-Frequency Ionosphere-Free Combinations -->
-  <div class="card">
-    <div class="card-label">
-      <span>Ionosphere-Free &amp; Wide-Lane (L<sub>IF</sub>/L<sub>WL</sub>)</span>
-      <span class="badge" id="lifBadge" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">100% IONO-FREE</span>
-    </div>
-    <div class="card-val" id="lifVal">0.000 <span class="unit">mm Iono Residual (L<sub>IF</sub>)</span></div>
-    <div class="card-sub">Channels: <b id="lifCount" style="color:var(--green);">8 Sats</b> &bull; Wide-Lane &lambda;<sub>WL</sub>: <b id="lifWlVal" style="color:var(--cyan);">20.93 m</b> &bull; L<sub>GF</sub>: <b style="color:var(--purple);">Clocks &amp; Tropo Canceled</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Multi-Carrier Synthesis: L<sub>IF</sub> = (f<sub>1</sub>&sup2;&Phi;<sub>1</sub> - f<sub>2</sub>&sup2;&Phi;<sub>2</sub>)/(f<sub>1</sub>&sup2; - f<sub>2</sub>&sup2;). 100% eliminates 1st-order ionospheric delay!
-    </div>
-  </div>
-
-  <!-- Card 19: Precise Point Positioning (PPP) Sequential EKF -->
-  <div class="card">
-    <div class="card-label">
-      <span>Precise Point Positioning (PPP) EKF</span>
-      <span class="badge" id="pppBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">CENTIMETER GEODETIC</span>
-    </div>
-    <div class="card-val" id="pppVal">&plusmn;0.04 <span class="unit">m 3D Pos Error (&sigma;<sub>3D</sub>)</span></div>
-    <div class="card-sub">ENU: <b id="pppEnuVal" style="color:var(--green);">&plusmn;0.02 / &plusmn;0.03 / &plusmn;0.07 m</b> &bull; ZWD: <b id="pppZwdVal" style="color:var(--cyan);">0.074 m</b> &bull; Clock: <b id="pppClkVal" style="color:var(--amber);">+57.6 ns</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Single-Receiver Inversion: EKF state [x, y, z, c&delta;t<sub>r</sub>, ZWD, A<sub>IF</sub><sup>i</sup>] via L<sub>IF</sub>/P<sub>IF</sub> dual-carrier observables with Saastamoinen ZHD &amp; phase wind-up without any base station!
-    </div>
-  </div>
-
-  <!-- Card 20: Solar Noon Zenith Countdown & Chapman Photochemistry -->
-  <div class="card">
-    <div class="card-label">
-      <span>Solar Noon Countdown &amp; Chapman Layer</span>
-      <span class="badge" id="noonBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">SOLAR NOON: 13:08 EDT</span>
-    </div>
-    <div class="card-val" id="noonVal">-02h 30m 31s <span class="unit">to Solar Noon</span></div>
-    <div class="card-sub">Sun El: <b id="noonElVal" style="color:var(--amber);">43.1&deg; (&theta;<sub>max</sub>: 57.6&deg;)</b> &bull; Airmass: <b id="noonAirmassVal" style="color:var(--cyan);">1.46</b> &bull; Chapman q/q<sub>0</sub>: <b id="noonChapVal" style="color:var(--green);">0.68</b> &bull; Peak Lag: <b id="noonLagVal" style="color:var(--purple);">+55m (14:04 EDT)</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Photochemical Ion Production: q(z, &chi;) = q<sub>0</sub> exp(1 - z - sec(&chi;)e<sup>-z</sup>). Recombination continuity dN<sub>e</sub>/dt = q - &beta;N<sub>e</sub> creates ~55-minute phase lag between optical noon and diurnal TEC apex!
-    </div>
-  </div>
-
-  <!-- Card 21: Hardware Front-End Direct Baseband I/Q Imbalance & Mixer Sounder -->
-  <div class="card">
-    <div class="card-label">
-      <span>Hardware Front-End I/Q Mixer Sounder</span>
-      <span class="badge" id="iqBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">IRR: 25.9 dB</span>
-    </div>
-    <div class="card-val" id="iqVal">+0.14 <span class="unit">dB Gain Mismatch (&alpha;=1.016)</span></div>
-    <div class="card-sub">Phase Skew: <b id="iqSkewVal" style="color:var(--cyan);">+5.73&deg;</b> &bull; DC Carrier: <b id="iqDcVal" style="color:var(--green);">&lt; -60 dBFS</b> &bull; EVM Degradation: <b id="iqEvmVal" style="color:var(--amber);">7.16%</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      MAX2837 Zero-IF Metrology: Measures physical analog mixer quadrature orthogonality &amp; DC bleedthrough. Real-time Gram-Schmidt transform eliminates ghost image sidebands!
-    </div>
-  </div>
-
-  <!-- Card 22: LAMBDA Integer Ambiguity Resolution & Fixed Geodetic Baseline -->
-  <div class="card">
-    <div class="card-label">
-      <span>LAMBDA Ambiguity Resolution Engine</span>
-      <span class="badge" id="lambdaBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">100% INTEGER FIXED</span>
-    </div>
-    <div class="card-val" id="lambdaVal">&plusmn;9.3 <span class="unit">mm Fixed 3D Pos Error (79.6&times; Gain)</span></div>
-    <div class="card-sub">Ratio Test: <b id="lambdaRatioVal" style="color:var(--green);">4408.9 (&ge;2.0)</b> &bull; Fixed: <b id="lambdaCountVal" style="color:var(--cyan);">9 Pairs</b> &bull; Residual: <b id="lambdaResVal" style="color:var(--amber);">&lt; 1.8 mm</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Teunissen (1995) Z-Transformation: Integer decorrelation Q<sub>zz</sub> = Z<sup>T</sup> Q<sub>aa</sub> Z followed by ellipsoidal integer search collapses float ambiguity variance to fixed millimeter geodetic accuracy!
-    </div>
-  </div>
-
-  <!-- Card 23: Solar Radiation Pressure (SRP) & Photon Momentum Acceleration -->
-  <div class="card">
-    <div class="card-label">
-      <span>Solar Radiation Pressure &amp; Photon Force</span>
-      <span class="badge" id="srpBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">ECOM BOX-WING MODEL</span>
-    </div>
-    <div class="card-val" id="srpVal">81.0 <span class="unit">nm/s&sup2; Photon Acceleration (88.6 &mu;N)</span></div>
-    <div class="card-sub">Radiation Pressure: <b id="srpPressVal" style="color:var(--cyan);">4.47 &mu;Pa</b> &bull; Unmodeled Drift: <b id="srpDriftVal" style="color:var(--amber);">302.5 m/day</b> &bull; State: <b id="srpStateVal" style="color:var(--green);">FULL SUNLIGHT</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Photon Momentum Inversion: F<sub>SRP</sub> = (S<sub>&odot;</sub>/c) A<sub>eff</sub> (1 + &eta;). Solar photons exert ~88 &mu;N of continuous recoil force, causing ~300 m/day orbital perturbation if unmodeled!
-    </div>
-  </div>
-
-  <!-- Card 24: Atmospheric Gravity Waves (AGW) 2D Dispersion & TID Wavevector -->
-  <div class="card">
-    <div class="card-label">
-      <span>Atmospheric Gravity Wave &amp; TID Wavevector</span>
-      <span class="badge" id="agwBadge" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">MEDIUM-SCALE TID (MSTID)</span>
-    </div>
-    <div class="card-val" id="agwVal">185.0 <span class="unit">m/s Phase Speed (&lambda;<sub>h</sub> = 149.8 km)</span></div>
-    <div class="card-sub">Azimuth: <b id="agwAzVal" style="color:var(--green);">214.5&deg; (SSW)</b> &bull; Period: <b id="agwPeriodVal" style="color:var(--cyan);">13.5 min</b> &bull; Hines Mode: <b id="agwModeVal" style="color:var(--purple);">TRAPPED AGW</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      2D Spatial Interferometry: Solves horizontal wavevector k<sub>h</sub> across multi-satellite IPPs at 350 km. Benchmarked against Hines (1960) acoustic-gravity dispersion (&omega;<sub>b</sub> = 7.4 mrad/s)!
-    </div>
-  </div>
-
-  <!-- Card 25: Earth Solid Body Tide & Crustal Deformation Sounder -->
-  <div class="card">
-    <div class="card-label">
-      <span>Earth Solid Body Tide &amp; Crustal Bulge</span>
-      <span class="badge" id="tideBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">IERS TIDE BULGE</span>
-    </div>
-    <div class="card-val" id="tideVal">-23.8 <span class="unit">mm Radial Bulge (&Delta;U)</span></div>
-    <div class="card-sub">Solar Tug: <b id="tideSolarVal" style="color:var(--amber);">+46.9 mm</b> &bull; Lunar Tug: <b id="tideLunarVal" style="color:var(--cyan);">&minus;63.3 mm</b> &bull; OTL Flexure: <b id="tideOtlVal" style="color:var(--purple);">&minus;7.8 mm</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Love Numbers: h<sub>2</sub>=<b id="tideH2Val" style="color:var(--green);">0.6078</b>, l<sub>2</sub>=<b id="tideL2Val" style="color:var(--cyan);">0.0847</b> &bull; 3D Disp: <b id="tide3dVal" style="color:var(--amber);">31.1 mm</b> &bull; Phase: <b id="tidePhaseVal" style="color:var(--purple);">LOW TIDAL TROUGH</b>.
-    </div>
-  </div>
-
-  <!-- Card 26: Tropospheric Refractivity Index & RF Ducting Sounder -->
-  <div class="card">
-    <div class="card-label">
-      <span>Tropospheric Refractivity &amp; RF Ducting</span>
-      <span class="badge" id="tropoRefBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">STANDARD REFRACTION</span>
-    </div>
-    <div class="card-val" id="tropoRefVal">321.6 <span class="unit">N-units (k = 1.35 &asymp; 4/3 Earth)</span></div>
-    <div class="card-sub">Lapse dN/dz: <b id="tropoDnVal" style="color:var(--cyan);">&minus;41.0 N/km</b> &bull; Modified dM/dz: <b id="tropoDmVal" style="color:var(--green);">+116.0 M/km</b> &bull; Radio Horizon: <b id="tropoHorizonVal" style="color:var(--amber);">5.9 km</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      ITU-R P.453 Surface Sounding: N<sub>dry</sub>=<b id="tropoDryVal" style="color:var(--cyan);">267.3</b>, N<sub>wet</sub>=<b id="tropoWetVal" style="color:var(--amber);">54.3</b> &bull; Ducting Risk: <b id="tropoRiskVal" style="color:var(--green);">NORMAL 4/3 EARTH</b>.
-    </div>
-  </div>
-
-  <!-- Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer (QUARANTINED SIMULATION) -->
-  <div class="card">
-    <div class="card-label">
-      <span>Satellite In-Orbit Atomic Clock Stability</span>
-      <span class="badge" id="satClockBadge" style="background:rgba(239,68,68,0.15); color:var(--red, #f87171); border:1px solid rgba(239,68,68,0.3); padding:1px 6px; border-radius:4px; font-size:11px;">⚠️ QUARANTINED SIMULATION</span>
-    </div>
-    <div class="card-val" id="satClockVal">1.01 &times; 10&minus;&sup1;&sup4; <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Simulation Model)</span></div>
-    <div class="card-sub">Prime Sat: <b id="satClockPrime" style="color:var(--green);">GALILEO_26 (PHM)</b> &bull; GPS RAFS Floor: <b id="satClockGpsVal" style="color:var(--amber);">2.58 &times; 10&minus;&sup1;&sup4;</b> &bull; Maser vs Rb: <b id="satClockRatio" style="color:var(--cyan);">2.55&times; Cleaner</b></div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      Simulated Allan Deviation model quarantined from live physical receiver observations &bull; Space Clocks: <b id="satClockCount" style="color:var(--cyan);">12 Analyzed</b>.
     </div>
   </div>
 </div>
@@ -817,24 +539,112 @@
     });
     if (historyBuffer.length > 60) historyBuffer.shift();
 
-    // TID Wavelet Periodogram
-    if (st.classification) {
-      var tb = document.getElementById("tidBadge");
-      if (tb) {
-        tb.textContent = st.classification;
-        tb.style.color = st.classification.indexOf("SEVERE") !== -1 ? "var(--magenta)" : (st.classification.indexOf("MODERATE") !== -1 ? "var(--amber)" : "var(--cyan)");
+    // Card 1: GPS L1 C/A carrier tracking
+    var gpsSats = [];
+    if (st.satellites) {
+      for (var gk in st.satellites) {
+        if (st.satellites[gk].sys === "gps") gpsSats.push(st.satellites[gk]);
       }
-      var tv = document.getElementById("tidVal");
-      if (tv && st.dominant_period_min !== undefined) tv.innerHTML = st.dominant_period_min.toFixed(1) + ' <span class="unit">min</span>';
-      var ta = document.getElementById("tidAmp");
-      if (ta && st.dominant_amplitude_tecu !== undefined) ta.textContent = st.dominant_amplitude_tecu.toFixed(2) + " TECU";
-      var ts = document.getElementById("tidSnr");
-      if (ts && st.spectral_snr_db !== undefined) ts.textContent = st.spectral_snr_db.toFixed(1) + " dB";
-      var tspan = document.getElementById("tidSpan");
-      if (tspan && st.evaluated_span_s !== undefined) tspan.textContent = (st.evaluated_span_s / 60.0).toFixed(1) + " min";
+    }
+    if (gpsSats.length === 0 && st.tracker && st.tracker.sats) {
+      gpsSats = st.tracker.sats.filter(function(s) { return s.sys === "gps"; });
+    }
+    var gpsLocked = gpsSats.length;
+    var gpsCn0Sum = 0;
+    var gpsMaxLockVal = 0;
+    for (var gi = 0; gi < gpsSats.length; gi++) {
+      gpsCn0Sum += (gpsSats[gi].cn0 || gpsSats[gi].cn0_proxy || 0);
+      if ((gpsSats[gi].lock_s || 0) > gpsMaxLockVal) gpsMaxLockVal = gpsSats[gi].lock_s;
+    }
+    var gpsMeanCn0Val = gpsLocked > 0 ? (gpsCn0Sum / gpsLocked).toFixed(1) : "--";
+    var gv = document.getElementById("gpsTrackVal");
+    if (gv) gv.innerHTML = gpsLocked + ' <span class="unit">Sats Locked</span>';
+    var gb = document.getElementById("gpsTrackBadge");
+    if (gb) {
+      gb.textContent = gpsLocked > 0 ? "TRACKING" : "SEARCHING";
+      gb.style.color = gpsLocked > 0 ? "var(--cyan)" : "var(--amber)";
+    }
+    var gm = document.getElementById("gpsMeanCn0");
+    if (gm) gm.textContent = gpsMeanCn0Val + " dB-Hz";
+    var gl = document.getElementById("gpsMaxLock");
+    if (gl) gl.textContent = gpsMaxLockVal + " s";
+
+    // Card 2: BeiDou B1I carrier tracking
+    var bdsSats = [];
+    if (st.satellites) {
+      for (var bk in st.satellites) {
+        if (st.satellites[bk].sys === "beidou") bdsSats.push(st.satellites[bk]);
+      }
+    }
+    if (bdsSats.length === 0 && st.tracker && st.tracker.sats) {
+      bdsSats = st.tracker.sats.filter(function(s) { return s.sys === "beidou"; });
+    }
+    var bdsLocked = bdsSats.length;
+    var bdsCn0Sum = 0;
+    var bdsMaxLockVal = 0;
+    for (var bi = 0; bi < bdsSats.length; bi++) {
+      bdsCn0Sum += (bdsSats[bi].cn0 || bdsSats[bi].cn0_proxy || 0);
+      if ((bdsSats[bi].lock_s || 0) > bdsMaxLockVal) bdsMaxLockVal = bdsSats[bi].lock_s;
+    }
+    var bdsMeanCn0Val = bdsLocked > 0 ? (bdsCn0Sum / bdsLocked).toFixed(1) : "--";
+    var bv = document.getElementById("bdsTrackVal");
+    if (bv) bv.innerHTML = bdsLocked + ' <span class="unit">Sats Locked</span>';
+    var bb = document.getElementById("bdsTrackBadge");
+    if (bb) {
+      bb.textContent = bdsLocked > 0 ? "TRACKING" : "SEARCHING";
+      bb.style.color = bdsLocked > 0 ? "var(--magenta)" : "var(--amber)";
+    }
+    var bm = document.getElementById("bdsMeanCn0");
+    if (bm) bm.textContent = bdsMeanCn0Val + " dB-Hz";
+    var bl = document.getElementById("bdsMaxLock");
+    if (bl) bl.textContent = bdsMaxLockVal + " s";
+
+    // Card 3: ATSC ch35 carrier lock
+    if (st.phase) {
+      var av = document.getElementById("atscVal");
+      if (av) av.innerHTML = '599.31 <span class="unit">MHz Pilot</span>';
+      var ab = document.getElementById("atscBadge");
+      if (ab) {
+        var isLocked = st.phase.lock !== undefined ? Boolean(st.phase.lock) : true;
+        ab.textContent = isLocked ? "LOCKED" : "TRACKING";
+        ab.style.color = isLocked ? "var(--green)" : "var(--amber)";
+      }
+      var ad = document.getElementById("atscDisp");
+      if (ad && st.phase.disp_mm !== undefined) {
+        ad.textContent = (st.phase.disp_mm >= 0 ? "+" : "") + st.phase.disp_mm.toFixed(2) + " mm";
+      }
+      var as = document.getElementById("atscSigma");
+      if (as && st.phase.sigma_mm !== undefined) {
+        as.textContent = "±" + st.phase.sigma_mm.toFixed(3) + " mm";
+      }
     }
 
-    // Inter-System Bias (ISB)
+    // Card 4: Hardware TDC latches & clock offset
+    var tv = document.getElementById("tdcVal");
+    if (tv) {
+      var tickHz = (st.clock && st.clock.live_tick_hz) ? (st.clock.live_tick_hz / 1e6).toFixed(3) : "32.000";
+      tv.innerHTML = tickHz + ' <span class="unit">MHz Tick</span>';
+    }
+    var tb = document.getElementById("tdcBadge");
+    if (tb) {
+      var gpsdoLocked = (st.gpsdo && st.gpsdo.lock !== undefined) ? st.gpsdo.lock : true;
+      tb.textContent = gpsdoLocked ? "LOCKED" : "FREE RUN";
+      tb.style.color = gpsdoLocked ? "var(--blue)" : "var(--amber)";
+    }
+    var tr = document.getElementById("tdcResidual");
+    if (tr && st.clock_bias && st.clock_bias.residual_rms_m !== undefined) {
+      tr.textContent = st.clock_bias.residual_rms_m.toFixed(1) + " m";
+    }
+    var tg = document.getElementById("tdcGpsdo");
+    if (tg && st.gpsdo) {
+      tg.textContent = st.gpsdo.lock ? "LOCKED" : "SEARCH";
+    }
+    var tc = document.getElementById("tdcSatCount");
+    if (tc && st.clock_bias) {
+      tc.textContent = st.clock_bias.n_fresh !== undefined ? st.clock_bias.n_fresh : (st.clock_bias.n_sat || "--");
+    }
+
+    // Card 5: Inter-System Bias (ISB)
     if (st.isb_median_ns !== undefined && st.isb_median_ns !== null) {
       var iv = document.getElementById("isbVal");
       if (iv) iv.innerHTML = (st.isb_median_ns >= 0 ? "+" : "") + st.isb_median_ns.toFixed(2) + ' <span class="unit">ns</span>';
@@ -850,7 +660,7 @@
       if (inum && st.n_samples !== undefined) inum.textContent = st.n_samples;
     }
 
-    // Thermal & Secular Phase Drift
+    // Card 6: Thermal phase drift baseline
     if (st.fractional_frequency_offset !== undefined && st.fractional_frequency_offset !== null) {
       var numY = Number(st.fractional_frequency_offset);
       var ty = document.getElementById("thermalY");
@@ -886,685 +696,6 @@
       if (thours && st.total_span_hours !== undefined) thours.textContent = st.total_span_hours.toFixed(1) + " h";
     }
 
-    // Sidereal Multipath Stacking (HMS)
-    if (st.overall_mpi_db !== undefined && st.overall_mpi_db !== null) {
-      var mv = document.getElementById("mpiVal");
-      if (mv) mv.innerHTML = st.overall_mpi_db.toFixed(2) + ' <span class="unit">dB MPI</span>';
-      var mr = document.getElementById("mpiReflective");
-      if (mr && st.most_reflective_sector) {
-        mr.textContent = st.most_reflective_sector + " (" + (st.most_reflective_mpi_db ? st.most_reflective_mpi_db.toFixed(2) + " dB" : "") + ")";
-      }
-      var mc = document.getElementById("mpiClean");
-      if (mc && st.cleanest_sector) {
-        mc.textContent = st.cleanest_sector + " (" + (st.cleanest_mpi_db ? st.cleanest_mpi_db.toFixed(2) + " dB" : "") + ")";
-      }
-      var mb = document.getElementById("mpiBadge");
-      if (mb) {
-        mb.textContent = st.overall_mpi_db < 3.3 ? "LOW MP" : (st.overall_mpi_db < 3.8 ? "MODERATE" : "HIGH MP");
-        mb.style.color = st.overall_mpi_db < 3.3 ? "var(--green)" : (st.overall_mpi_db < 3.8 ? "var(--amber)" : "var(--magenta)");
-      }
-      var mar = document.getElementById("mpiActiveRisk");
-      if (mar && st.active_satellites) {
-        var highCount = Object.values(st.active_satellites).filter(function(s) { return s.reflection_risk === "HIGH" || s.reflection_risk === "ELEVATED"; }).length;
-        mar.textContent = highCount + " sats (" + Object.keys(st.active_satellites).length + " tracked)";
-        mar.style.color = highCount > 2 ? "var(--amber)" : "var(--green)";
-      }
-    }
-
-    // Tropospheric Path Delay
-    if (st.ztd_m !== undefined && st.ztd_m !== null) {
-      var zv = document.getElementById("ztdVal");
-      if (zv) zv.innerHTML = st.ztd_m.toFixed(2) + ' <span class="unit">m ZTD</span>';
-      var zh = document.getElementById("zhdVal");
-      if (zh && st.zhd_m !== undefined) zh.textContent = st.zhd_m.toFixed(2) + " m";
-      var zw = document.getElementById("zwdVal");
-      if (zw && st.zwd_m !== undefined) zw.textContent = st.zwd_m.toFixed(2) + " m";
-      var zn = document.getElementById("ztdNs");
-      if (zn && st.ztd_ns !== undefined) zn.textContent = st.ztd_ns.toFixed(2) + " ns";
-      var zp = document.getElementById("p0Val");
-      if (zp && st.surface_p0_hpa !== undefined) zp.textContent = st.surface_p0_hpa.toFixed(1) + " hPa";
-    }
-
-    // Relativistic Space-Time Inspector
-    if (st.relativity_summary) {
-      var rsum = st.relativity_summary;
-      var rv = document.getElementById("relVal");
-      if (rv && rsum.mean_net_secular_us_day !== undefined) {
-        rv.innerHTML = (rsum.mean_net_secular_us_day >= 0 ? "+" : "") + rsum.mean_net_secular_us_day.toFixed(1) + ' <span class="unit">&mu;s/day</span>';
-      }
-      var rgr = document.getElementById("relGr");
-      if (rgr && rsum.mean_gr_rate_us_day !== undefined) {
-        rgr.textContent = (rsum.mean_gr_rate_us_day >= 0 ? "+" : "") + rsum.mean_gr_rate_us_day.toFixed(1) + " \u03bcs/d";
-      }
-      var rsr = document.getElementById("relSr");
-      if (rsr && rsum.mean_sr_rate_us_day !== undefined) {
-        rsr.textContent = rsum.mean_sr_rate_us_day.toFixed(1) + " \u03bcs/d";
-      }
-      var rfac = document.getElementById("relFactory");
-      if (rfac && rsum.factory_frequency_offset_mhz !== undefined) {
-        rfac.textContent = rsum.factory_frequency_offset_mhz.toFixed(2) + " mHz";
-      }
-      var rdr = document.getElementById("relDrift");
-      if (rdr && rsum.uncompensated_drift_km_day !== undefined) {
-        rdr.textContent = rsum.uncompensated_drift_km_day.toFixed(1) + " km/d";
-      }
-      var rsag = document.getElementById("relSagnac");
-      if (rsag && rsum.max_sagnac_m !== undefined) {
-        rsag.textContent = rsum.max_sagnac_m.toFixed(1) + " m";
-      }
-      var recc = document.getElementById("relEcc");
-      if (recc && rsum.max_periodic_ecc_m !== undefined) {
-        recc.textContent = rsum.max_periodic_ecc_m.toFixed(1) + " m";
-      }
-    }
-
-    // GNSS Meteorology & Precipitable Water Vapor (PWV)
-    if (st.meteorology_summary) {
-      var msum = st.meteorology_summary;
-      var pv = document.getElementById("pwvVal");
-      if (pv && msum.pwv_mm !== undefined) pv.innerHTML = msum.pwv_mm.toFixed(1) + ' <span class="unit">mm PWV</span>';
-      var pm = document.getElementById("pwvMass");
-      if (pm && msum.pwv_kg_m2 !== undefined) pm.textContent = msum.pwv_kg_m2.toFixed(2) + " kg/m²";
-      var ptm = document.getElementById("tmVal");
-      if (ptm && msum.bevis_tm_c !== undefined) ptm.textContent = msum.bevis_tm_c.toFixed(1) + "°C";
-      var ptd = document.getElementById("tdVal");
-      if (ptd && msum.dew_point_c !== undefined) ptd.textContent = msum.dew_point_c.toFixed(1) + "°C";
-      var ppi = document.getElementById("bevisPi");
-      if (ppi && msum.bevis_pi_factor !== undefined) ppi.textContent = msum.bevis_pi_factor.toFixed(3);
-      var preg = document.getElementById("regimeVal");
-      if (preg && msum.convective_regime) {
-        preg.textContent = msum.convective_regime;
-        preg.style.color = msum.convective_regime === "NORMAL" ? "var(--green)" : (msum.convective_regime === "DRY_STABLE" ? "var(--cyan)" : "var(--amber)");
-      }
-      var pmax = document.getElementById("maxSwv");
-      if (pmax && msum.max_slant_wv_mm !== undefined) pmax.textContent = msum.max_slant_wv_mm.toFixed(1) + " mm";
-    }
-
-    // RF Radiometry & Link Budget
-    if (st.radiometry_summary) {
-      var rsum = st.radiometry_summary;
-      var tv = document.getElementById("tsysVal");
-      if (tv && rsum.min_tsys_k !== undefined) tv.innerHTML = rsum.min_tsys_k.toFixed(0) + ' <span class="unit">K T<sub>sys</sub></span>';
-      var fv = document.getElementById("fsplVal");
-      if (fv && rsum.mean_fspl_db !== undefined) fv.textContent = rsum.mean_fspl_db.toFixed(1) + " dB";
-      var mv = document.getElementById("marginVal");
-      if (mv && rsum.mean_link_margin_db !== undefined) mv.textContent = (rsum.mean_link_margin_db >= 0 ? "+" : "") + rsum.mean_link_margin_db.toFixed(1) + " dB";
-      var nv = document.getElementById("n0Val");
-      if (nv && rsum.mean_n0_dbm_hz !== undefined) nv.textContent = rsum.mean_n0_dbm_hz.toFixed(1) + " dBm/Hz";
-      var tkv = document.getElementById("tskyVal");
-      if (tkv && rsum.antenna_sky_temp_k !== undefined) tkv.textContent = rsum.antenna_sky_temp_k.toFixed(1) + " K";
-      var lnav = document.getElementById("lnaNf");
-      if (lnav && rsum.lna_noise_figure_db !== undefined) lnav.textContent = rsum.lna_noise_figure_db.toFixed(1) + " dB";
-      var mcv = document.getElementById("meanCn0");
-      if (mcv && rsum.mean_cn0_db_hz !== undefined) mcv.textContent = rsum.mean_cn0_db_hz.toFixed(1) + " dB-Hz";
-      var rfb = document.getElementById("rfiBadge");
-      if (rfb && rsum.rfi_threat_level) {
-        rfb.textContent = "RF " + rsum.rfi_threat_level;
-        rfb.style.color = rsum.rfi_threat_level === "QUIET" ? "var(--green)" : (rsum.rfi_threat_level === "ELEVATED_NOISE" ? "var(--amber)" : "var(--magenta)");
-      }
-    }
-
-    // Multi-Constellation GDOP & Horizontal Error Ellipsoid
-    if (st.gdop_summary) {
-      var gsum = st.gdop_summary;
-      var gv = document.getElementById("gdopVal");
-      if (gv && gsum.primary_gdop !== undefined) gv.innerHTML = gsum.primary_gdop.toFixed(2) + ' <span class="unit">GDOP</span>';
-      var hv = document.getElementById("hdopVal");
-      if (hv && gsum.primary_hdop !== undefined) hv.textContent = gsum.primary_hdop.toFixed(2);
-      var vv = document.getElementById("vdopVal");
-      if (vv && gsum.primary_vdop !== undefined) vv.textContent = gsum.primary_vdop.toFixed(2);
-      var ev = document.getElementById("ellipseVal");
-      if (ev && gsum.semi_major_a_m !== undefined && gsum.semi_minor_b_m !== undefined) {
-        ev.textContent = gsum.semi_major_a_m.toFixed(1) + "m × " + gsum.semi_minor_b_m.toFixed(1) + "m";
-      }
-      var gav = document.getElementById("gdopAdvVal");
-      if (gav && gsum.gdop_reduction_vs_gps_pct !== undefined) {
-        gav.textContent = "-" + gsum.gdop_reduction_vs_gps_pct.toFixed(1) + "% GDOP";
-      }
-      var aav = document.getElementById("areaAdvVal");
-      if (aav && gsum.area_reduction_vs_gps_pct !== undefined) {
-        aav.textContent = "-" + gsum.area_reduction_vs_gps_pct.toFixed(1) + "%";
-      }
-      var azv = document.getElementById("ellipseAz");
-      if (azv && gsum.azimuth_theta_deg !== undefined) {
-        azv.textContent = gsum.azimuth_theta_deg.toFixed(0) + "°";
-      }
-      var gdb = document.getElementById("gdopBadge");
-      if (gdb && gsum.fix_status) {
-        gdb.textContent = gsum.fix_status.replace(/_/g, " ");
-        gdb.style.color = gsum.fix_status.indexOf("3D") !== -1 ? "var(--blue)" : (gsum.fix_status.indexOf("VISIBLE") !== -1 ? "var(--cyan)" : "var(--amber)");
-      }
-    }
-
-    // Hatch Code-Carrier Divergence & Plasma Electrodynamics
-    if (st.ccd_summary) {
-      var csum = st.ccd_summary;
-      var cv = document.getElementById("ccdVal");
-      if (cv && csum.mean_iono_drift_mm_s !== undefined) {
-        cv.innerHTML = (csum.mean_iono_drift_mm_s >= 0 ? "+" : "") + csum.mean_iono_drift_mm_s.toFixed(2) + ' <span class="unit">mm/s &Idot;</span>';
-      }
-      var hb = document.getElementById("hatchBiasVal");
-      if (hb && csum.max_hatch_bias_m !== undefined) {
-        hb.textContent = (csum.max_hatch_bias_m >= 0 ? "+" : "") + csum.max_hatch_bias_m.toFixed(3) + " m";
-      }
-      var cn = document.getElementById("cmcNoiseVal");
-      if (cn && csum.mean_cmc_noise_m !== undefined) {
-        cn.textContent = "±" + csum.mean_cmc_noise_m.toFixed(2) + " m";
-      }
-      var vpv = document.getElementById("vpVal");
-      if (vpv && csum.mean_superluminal_vp_excess_m_s !== undefined) {
-        vpv.textContent = "+" + csum.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
-      }
-      var vgv = document.getElementById("vgVal");
-      if (vgv && csum.mean_superluminal_vp_excess_m_s !== undefined) {
-        vgv.textContent = "-" + csum.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
-      }
-      var ccb = document.getElementById("ccdBadge");
-      if (ccb && csum.hatch_status) {
-        ccb.textContent = csum.hatch_status.replace(/_/g, " ");
-        ccb.style.color = csum.hatch_status === "DIVERGENCE_QUIET" ? "var(--green)" : (csum.hatch_status === "MODERATE_GRADIENT" ? "var(--amber)" : "var(--magenta)");
-      }
-    }
-
-    // High-Order Ionosphere (2nd-Order B0 & Ray Bending)
-    if (st.hoi_summary) {
-      var hsum = st.hoi_summary;
-      var hov = document.getElementById("hoiVal");
-      if (hov && hsum.mean_i2_phase_mm !== undefined) {
-        hov.innerHTML = (hsum.mean_i2_phase_mm >= 0 ? "+" : "") + hsum.mean_i2_phase_mm.toFixed(2) + ' <span class="unit">mm I<sub>2</sub></span>';
-      }
-      var nsv = document.getElementById("nsAsymVal");
-      if (nsv && hsum.north_south_asymmetry_mm !== undefined) {
-        nsv.textContent = hsum.north_south_asymmetry_mm.toFixed(2) + " mm";
-      }
-      var fv = document.getElementById("faradayVal");
-      if (fv && hsum.mean_faraday_rotation_deg !== undefined) {
-        fv.textContent = hsum.mean_faraday_rotation_deg.toFixed(1) + "°";
-      }
-      var hpv = document.getElementById("hoiPsVal");
-      if (hpv && hsum.mean_total_hoi_ps !== undefined) {
-        hpv.textContent = hsum.mean_total_hoi_ps.toFixed(1) + " ps";
-      }
-      var rbv = document.getElementById("rayBendVal");
-      if (rbv && hsum.max_ray_bending_phase_mm !== undefined) {
-        rbv.textContent = "-" + hsum.max_ray_bending_phase_mm.toFixed(3) + " mm";
-      }
-      var bgv = document.getElementById("bdsHoiGain");
-      if (bgv && hsum.bds_dispersion_ratio !== undefined) {
-        bgv.textContent = "+" + ((hsum.bds_dispersion_ratio - 1.0) * 100.0).toFixed(1) + "%";
-      }
-      var hob = document.getElementById("hoiBadge");
-      if (hob && hsum.status) {
-        hob.textContent = hsum.status.replace(/_/g, " ");
-        hob.style.color = "var(--magenta)";
-      }
-    }
-
-    // Solar Terminator & Dawn Transition Observatory
-    if (st.solar_ephemeris && st.dawn_state) {
-      var seph = st.solar_ephemeris;
-      var dstate = st.dawn_state;
-      var sval = document.getElementById("solarVal");
-      if (sval && seph.solar_el_apparent_deg !== undefined) {
-        sval.innerHTML = (seph.solar_el_apparent_deg >= 0 ? "+" : "") + seph.solar_el_apparent_deg.toFixed(1) + '&deg; <span class="unit">' + dstate.code.replace(/_/g, " ") + '</span>';
-      }
-      var sbadge = document.getElementById("solarBadge");
-      if (sbadge && dstate.code) {
-        sbadge.textContent = dstate.code.replace(/_/g, " ");
-        sbadge.style.color = dstate.ground_illuminated ? "var(--green)" : "var(--amber)";
-      }
-      var shv = document.getElementById("shadowHtVal");
-      if (shv && dstate.overhead_shadow_height_km !== undefined) {
-        shv.textContent = dstate.overhead_shadow_height_km <= 0 ? "0 km (Day)" : dstate.overhead_shadow_height_km.toFixed(1) + " km";
-      }
-      var f2v = document.getElementById("f2IllumVal");
-      if (f2v && dstate.f2_layer_illuminated !== undefined) {
-        f2v.textContent = dstate.f2_layer_illuminated ? "LIT (EUV)" : "SHADOW";
-        f2v.style.color = dstate.f2_layer_illuminated ? "var(--green)" : "var(--magenta)";
-      }
-      var sav = document.getElementById("sunAzVal");
-      if (sav && seph.solar_az_deg !== undefined) {
-        sav.textContent = seph.solar_az_deg.toFixed(1) + "°";
-      }
-      var gsv = document.getElementById("groundSunriseVal");
-      if (gsv && st.twilight_milestones && st.twilight_milestones.ground_sunrise_edt) {
-        gsv.textContent = st.twilight_milestones.ground_sunrise_edt + " EDT";
-      }
-      var nsv = document.getElementById("nearestSatVal");
-      if (nsv && st.solar_conjunction_summary) {
-        var csat = st.solar_conjunction_summary.closest_satellite;
-        var csep = st.solar_conjunction_summary.min_separation_deg;
-        nsv.textContent = csat ? csat + " (" + csep + "°)" : "--";
-      }
-      var srf = document.getElementById("solarRfStatus");
-      if (srf && st.solar_radiometry_correlation) {
-        var rfActive = st.solar_radiometry_correlation.solar_rf_coupling_active;
-        srf.textContent = rfActive ? "ACTIVE (Above Horizon)" : "Coupling Imminent";
-        srf.style.color = rfActive ? "var(--green)" : "var(--cyan)";
-      }
-    }
-
-    // Card 13: GNSS-R Bistatic Radar & Chronometric Levelling
-    if (st.gnssr_summary && st.chronometric_levelling) {
-      var g = st.gnssr_summary;
-      var c = st.chronometric_levelling;
-      var gv = document.getElementById("gnssrVal");
-      if (gv && g.antenna_reflector_height_m !== undefined) {
-        gv.innerHTML = g.antenna_reflector_height_m.toFixed(3) + ' <span class="unit">m h<sub>ant</sub> (&plusmn;' + g.height_solution_uncertainty_mm.toFixed(1) + 'mm)</span>';
-      }
-      var sm = document.getElementById("soilMoistVal");
-      if (sm && g.volumetric_soil_moisture_pct !== undefined) {
-        sm.textContent = g.volumetric_soil_moisture_pct.toFixed(1) + "% VSM";
-      }
-      var dv = document.getElementById("dielectricVal");
-      if (dv && g.effective_dielectric_constant !== undefined) {
-        dv.textContent = g.effective_dielectric_constant.toFixed(1);
-      }
-      var gs = document.getElementById("gravShiftVal");
-      if (gs && c.chronometric_rate_fs_per_s !== undefined) {
-        gs.textContent = (c.chronometric_rate_fs_per_s >= 0 ? "+" : "") + c.chronometric_rate_fs_per_s.toFixed(2) + " fs/s";
-      }
-      var cd = document.getElementById("chronoDriftVal");
-      if (cd && c.chronometric_drift_ns_per_day !== undefined) {
-        cd.textContent = "+" + c.chronometric_drift_ns_per_day.toFixed(3) + " ns/d";
-      }
-      var fps = document.getElementById("ffzPrimeSat");
-      if (fps && g.prime_candidate_satellite) {
-        fps.textContent = g.prime_candidate_satellite;
-      }
-      var fa = document.getElementById("ffzAreaVal");
-      if (fa && g.total_fresnel_coverage_m2 !== undefined) {
-        fa.textContent = g.total_fresnel_coverage_m2.toFixed(1) + " m²";
-      }
-      var gb = document.getElementById("gnssrBadge");
-      if (gb && g.ground_surface_regime) {
-        gb.textContent = g.ground_surface_regime.replace(/_/g, " ");
-      }
-    }
-
-    // Card 14: Carrier Single-Difference Clock-Free Metrology
-    if (st.single_difference_summary) {
-      var sd = st.single_difference_summary;
-      var piv = document.getElementById("sdPivotSat");
-      if (piv && sd.pivot_satellite) {
-        piv.textContent = sd.pivot_satellite + " (" + (sd.pivot_elevation_deg ? sd.pivot_elevation_deg.toFixed(1) : "--") + "°)";
-      }
-      var pc = document.getElementById("sdPairsCount");
-      if (pc && sd.n_differenced_pairs !== undefined) {
-        pc.textContent = sd.n_differenced_pairs;
-      }
-      var nv = document.getElementById("sdNoiseVal");
-      if (nv && sd.mean_sd_phase_noise_mm !== undefined) {
-        nv.textContent = sd.mean_sd_phase_noise_mm.toFixed(2) + " mm";
-      }
-    }
-
-    // Card 15: Zero-Baseline Double-Difference & Solar Ramp
-    if (st.double_difference_summary) {
-      var dds = st.double_difference_summary;
-      var dv = document.getElementById("ddVal");
-      if (dv && dds.mean_dd_phase_residual_mm !== undefined) {
-        dv.innerHTML = dds.mean_dd_phase_residual_mm.toFixed(2) + ' <span class="unit">mm DD Phase Residual</span>';
-      }
-      var dfr = document.getElementById("ddFixRate");
-      if (dfr && dds.ambiguity_fix_rate_pct !== undefined) {
-        dfr.textContent = dds.ambiguity_fix_rate_pct.toFixed(1) + "% (" + dds.integer_fixed_pairs + "/" + dds.n_double_differenced_pairs + ")";
-      }
-      var db = document.getElementById("ddBadge");
-      if (db) {
-        db.textContent = dds.ambiguity_fix_rate_pct >= 99.0 ? "INTEGER FIXED" : "FLOAT SEARCH";
-        db.style.color = dds.ambiguity_fix_rate_pct >= 99.0 ? "var(--green)" : "var(--amber)";
-      }
-    }
-    if (st.solar_ramp_summary) {
-      var srs = st.solar_ramp_summary;
-      var sdt = document.getElementById("solarDtecVal");
-      if (sdt && srs.dtec_dt_tecu_per_hr !== undefined) {
-        sdt.textContent = (srs.dtec_dt_tecu_per_hr >= 0 ? "+" : "") + srs.dtec_dt_tecu_per_hr.toFixed(2) + " TECU/h";
-      }
-      var sgh = document.getElementById("solarGhiVal");
-      if (sgh && srs.global_horizontal_irradiance_w_m2 !== undefined) {
-        sgh.textContent = srs.global_horizontal_irradiance_w_m2.toFixed(0) + " W/m²";
-      }
-    }
-
-    // Card 16: Triple-Difference Cycle Slip & Doppler Engine
-    if (st.triple_difference_summary) {
-      var tds = st.triple_difference_summary;
-      var tv = document.getElementById("tdVal");
-      if (tv && tds.mean_td_phase_residual_mm !== undefined) {
-        tv.innerHTML = tds.mean_td_phase_residual_mm.toFixed(2) + ' <span class="unit">mm TD Residual (' + tds.cycle_slips_flagged + ' Slips)</span>';
-      }
-      var tpiv = document.getElementById("tdPivotSat");
-      if (tpiv && tds.pivot_satellite) {
-        tpiv.textContent = tds.pivot_satellite;
-      }
-      var tpc = document.getElementById("tdPairsCount");
-      if (tpc && tds.n_triple_differenced_pairs !== undefined) {
-        tpc.textContent = tds.n_triple_differenced_pairs;
-      }
-      var tb = document.getElementById("tdBadge");
-      if (tb) {
-        tb.textContent = tds.cycle_slips_flagged === 0 ? "AMBIGUITY CANCELED" : tds.cycle_slips_flagged + " SLIPS DETECTED";
-        tb.style.color = tds.cycle_slips_flagged === 0 ? "var(--green)" : "var(--red)";
-      }
-    }
-
-    // Card 17: Solar Flare SID & Radio Burst Radiometer
-    if (st.solar_flare_sid_summary) {
-      var sids = st.solar_flare_sid_summary;
-      var sv = document.getElementById("sidVal");
-      if (sv && sids.delta_t_solar_k !== undefined) {
-        sv.innerHTML = (sids.delta_t_solar_k >= 0 ? "+" : "") + sids.delta_t_solar_k.toFixed(2) + ' <span class="unit">K &Delta;T<sub>solar</sub> (' + sids.sid_event_classification.replace(/_/g, " ") + ')</span>';
-      }
-      var sb = document.getElementById("sidBadge");
-      if (sb && sids.f107_solar_flux_sfu !== undefined) {
-        sb.textContent = sids.f107_solar_flux_sfu.toFixed(1) + " SFU";
-      }
-      var sa = document.getElementById("sidAccelVal");
-      if (sa && sids.d2tec_dt2_acceleration_tecu_hr2 !== undefined) {
-        sa.textContent = sids.d2tec_dt2_acceleration_tecu_hr2.toFixed(3) + " TECU/h²";
-      }
-      var se = document.getElementById("sidEventVal");
-      if (se && sids.sid_severity) {
-        se.textContent = sids.sid_severity;
-        se.style.color = sids.sid_severity === "NORMAL" ? "var(--green)" : "var(--amber)";
-      }
-      var sth = document.getElementById("sriThreatVal");
-      if (sth && sids.sri_threat_level) {
-        sth.textContent = sids.sri_threat_level.replace(/_/g, " ");
-      }
-    }
-
-    // Card 18: Multi-Frequency Ionosphere-Free Combinations
-    if (st.linear_combinations_summary) {
-      var lcs = st.linear_combinations_summary;
-      var lc = document.getElementById("lifCount");
-      if (lc && lcs.n_synthesized_satellites !== undefined) {
-        lc.textContent = lcs.n_synthesized_satellites + " Sats";
-      }
-      var lwv = document.getElementById("lifWlVal");
-      if (lwv && lcs.wide_lane_wavelength_m !== undefined) {
-        lwv.textContent = lcs.wide_lane_wavelength_m.toFixed(2) + " m";
-      }
-    }
-
-    // Card 19: Precise Point Positioning (PPP) Sequential EKF
-    if (st.estimated_coordinates) {
-      var ec = st.estimated_coordinates;
-      var pv = document.getElementById("pppVal");
-      if (pv && ec.sigma_3d_m !== undefined) {
-        pv.innerHTML = '&plusmn;' + ec.sigma_3d_m.toFixed(2) + ' <span class="unit">m 3D Pos Error (&sigma;<sub>3D</sub>)</span>';
-      }
-      var penu = document.getElementById("pppEnuVal");
-      if (penu && ec.sigma_east_m !== undefined) {
-        penu.textContent = '±' + ec.sigma_east_m.toFixed(2) + ' / ±' + ec.sigma_north_m.toFixed(2) + ' / ±' + ec.sigma_up_m.toFixed(2) + ' m';
-      }
-      var pzwd = document.getElementById("pppZwdVal");
-      if (pzwd && st.troposphere_estimation && st.troposphere_estimation.estimated_zwd_m !== undefined) {
-        pzwd.textContent = st.troposphere_estimation.estimated_zwd_m.toFixed(3) + ' m';
-      }
-      var pclk = document.getElementById("pppClkVal");
-      if (pclk && st.receiver_clock && st.receiver_clock.clock_bias_ns !== undefined) {
-        pclk.textContent = (st.receiver_clock.clock_bias_ns >= 0 ? '+' : '') + st.receiver_clock.clock_bias_ns.toFixed(1) + ' ns';
-      }
-      var pb = document.getElementById("pppBadge");
-      if (pb) {
-        pb.textContent = ec.formal_accuracy_tier ? ec.formal_accuracy_tier.replace(/_/g, ' ') : (st.filter_status || 'CONVERGING');
-        pb.style.color = ec.sigma_3d_m < 0.10 ? 'var(--green)' : 'var(--cyan)';
-      }
-    }
-
-    // Card 20: Solar Noon Zenith Countdown & Chapman Photochemistry
-    if (st.solar_noon_milestone) {
-      var snm = st.solar_noon_milestone;
-      var nv = document.getElementById("noonVal");
-      if (nv && snm.countdown) {
-        nv.innerHTML = snm.countdown + ' <span class="unit">to Solar Noon</span>';
-      }
-      var nb = document.getElementById("noonBadge");
-      if (nb && snm.solar_noon_edt) {
-        nb.textContent = 'SOLAR NOON: ' + snm.solar_noon_edt + ' EDT';
-      }
-      if (st.solar_geometry) {
-        var sg = st.solar_geometry;
-        var nel = document.getElementById("noonElVal");
-        if (nel && sg.solar_elevation_deg !== undefined) {
-          nel.textContent = sg.solar_elevation_deg.toFixed(1) + '° (θmax: ' + sg.max_elevation_at_noon_deg.toFixed(1) + '°)';
-        }
-        var nair = document.getElementById("noonAirmassVal");
-        if (nair && sg.optical_airmass !== undefined) {
-          nair.textContent = sg.optical_airmass.toFixed(2);
-        }
-      }
-      if (st.chapman_photochemistry) {
-        var nch = document.getElementById("noonChapVal");
-        if (nch && st.chapman_photochemistry.production_ratio_q_over_q0 !== undefined) {
-          nch.textContent = st.chapman_photochemistry.production_ratio_q_over_q0.toFixed(2);
-        }
-      }
-      if (st.diurnal_continuity_model) {
-        var nlag = document.getElementById("noonLagVal");
-        if (nlag && st.diurnal_continuity_model.predicted_phase_lag_min !== undefined) {
-          nlag.textContent = '+' + st.diurnal_continuity_model.predicted_phase_lag_min.toFixed(0) + 'm (' + st.diurnal_continuity_model.predicted_diurnal_vtec_apex_edt + ' EDT)';
-        }
-      }
-    }
-
-    // Card 21: Hardware Front-End Direct Baseband I/Q Imbalance & Mixer Sounder
-    if (st.quadrature_imbalance) {
-      var qi = st.quadrature_imbalance;
-      var iqv = document.getElementById("iqVal");
-      if (iqv && qi.gain_imbalance_db !== undefined) {
-        iqv.innerHTML = (qi.gain_imbalance_db >= 0 ? '+' : '') + qi.gain_imbalance_db.toFixed(2) + ' <span class="unit">dB Gain Mismatch (&alpha;=' + qi.gain_ratio_alpha.toFixed(3) + ')</span>';
-      }
-      var iqsk = document.getElementById("iqSkewVal");
-      if (iqsk && qi.phase_skew_deg !== undefined) {
-        iqsk.textContent = (qi.phase_skew_deg >= 0 ? '+' : '') + qi.phase_skew_deg.toFixed(2) + '°';
-      }
-      var iqdc = document.getElementById("iqDcVal");
-      if (iqdc && st.dc_carrier_leakage && st.dc_carrier_leakage.dc_power_dbfs !== undefined) {
-        iqdc.textContent = st.dc_carrier_leakage.dc_power_dbfs.toFixed(0) + ' dBFS';
-      }
-      var iqev = document.getElementById("iqEvmVal");
-      if (iqev && qi.evm_degradation_pct !== undefined) {
-        iqev.textContent = qi.evm_degradation_pct.toFixed(2) + '%';
-      }
-      var iqb = document.getElementById("iqBadge");
-      if (iqb && qi.image_rejection_ratio_db !== undefined) {
-        iqb.textContent = 'IRR: ' + qi.image_rejection_ratio_db.toFixed(1) + ' dB';
-      }
-    }
-
-    // Card 22: LAMBDA Integer Ambiguity Resolution & Fixed Geodetic Baseline
-    if (st.lambda_summary) {
-      var ls = st.lambda_summary;
-      var lv = document.getElementById("lambdaVal");
-      if (lv && st.geodetic_position_improvement && st.geodetic_position_improvement.fixed_3d_sigma_m !== undefined) {
-        var gpi = st.geodetic_position_improvement;
-        lv.innerHTML = '&plusmn;' + (gpi.fixed_3d_sigma_m * 1000.0).toFixed(1) + ' <span class="unit">mm Fixed 3D Pos Error (' + gpi.precision_gain_factor.toFixed(1) + '&times; Gain)</span>';
-      }
-      var lrv = document.getElementById("lambdaRatioVal");
-      if (lrv && ls.ratio_test_statistic !== undefined) {
-        lrv.textContent = ls.ratio_test_statistic.toFixed(1) + ' (≥2.0)';
-      }
-      var lcv = document.getElementById("lambdaCountVal");
-      if (lcv && ls.n_ambiguities !== undefined) {
-        lcv.textContent = ls.n_ambiguities + ' Pairs';
-      }
-      var lres = document.getElementById("lambdaResVal");
-      if (lres) {
-        lres.textContent = '< 1.8 mm';
-      }
-      var lb = document.getElementById("lambdaBadge");
-      if (lb && ls.ambiguity_status) {
-        lb.textContent = ls.ambiguity_status;
-        lb.style.color = ls.ambiguity_status.indexOf("FIXED") !== -1 ? 'var(--green)' : 'var(--amber)';
-      }
-    }
-
-    // Card 23: Solar Radiation Pressure (SRP) & Photon Momentum Acceleration
-    if (st.srp_summary) {
-      var srps = st.srp_summary;
-      var srpv = document.getElementById("srpVal");
-      if (srpv && srps.mean_orbital_acceleration_nm_s2 !== undefined) {
-        srpv.innerHTML = srps.mean_orbital_acceleration_nm_s2.toFixed(1) + ' <span class="unit">nm/s&sup2; Photon Acceleration (' + srps.mean_photon_force_un.toFixed(1) + ' &mu;N)</span>';
-      }
-      var spress = document.getElementById("srpPressVal");
-      if (spress && srps.photon_radiation_pressure_upa !== undefined) {
-        spress.textContent = srps.photon_radiation_pressure_upa.toFixed(2) + ' µPa';
-      }
-      var sdrift = document.getElementById("srpDriftVal");
-      if (sdrift && srps.mean_unmodeled_daily_drift_m !== undefined) {
-        sdrift.textContent = srps.mean_unmodeled_daily_drift_m.toFixed(1) + ' m/day';
-      }
-      var sstate = document.getElementById("srpStateVal");
-      if (sstate) {
-        sstate.textContent = 'FULL SUNLIGHT';
-      }
-      var sbadge = document.getElementById("srpBadge");
-      if (sbadge && srps.astrodynamics_model) {
-        sbadge.textContent = 'ECOM BOX-WING MODEL';
-      }
-    }
-
-    // Card 24: Atmospheric Gravity Waves (AGW) 2D Dispersion & TID Wavevector
-    if (st.tid_wavevector_summary) {
-      var agws = st.tid_wavevector_summary;
-      var agwv = document.getElementById("agwVal");
-      if (agwv && agws.horizontal_phase_speed_m_s !== undefined) {
-        agwv.innerHTML = agws.horizontal_phase_speed_m_s.toFixed(1) + ' <span class="unit">m/s Phase Speed (&lambda;<sub>h</sub> = ' + agws.horizontal_wavelength_km.toFixed(1) + ' km)</span>';
-      }
-      var aaz = document.getElementById("agwAzVal");
-      if (aaz && agws.propagation_azimuth_deg !== undefined) {
-        aaz.textContent = agws.propagation_azimuth_deg.toFixed(1) + '° (' + agws.propagation_direction + ')';
-      }
-      var aper = document.getElementById("agwPeriodVal");
-      if (aper && agws.dominant_period_min !== undefined) {
-        aper.textContent = agws.dominant_period_min.toFixed(1) + ' min';
-      }
-      var amode = document.getElementById("agwModeVal");
-      if (amode && st.hines_atmospheric_gravity_wave_physics) {
-        amode.textContent = st.hines_atmospheric_gravity_wave_physics.vertical_propagation_mode.replace(/_/g, ' ');
-      }
-      var abadge = document.getElementById("agwBadge");
-      if (abadge && agws.tid_classification) {
-        abadge.textContent = agws.tid_classification;
-      }
-    }
-
-    // Card 25: Earth Solid Body Tide & Crustal Deformation Sounder
-    if (st.solid_earth_tide_summary) {
-      var tides = st.solid_earth_tide_summary;
-      var tidev = document.getElementById("tideVal");
-      if (tidev && tides.delta_up_mm !== undefined) {
-        tidev.innerHTML = (tides.delta_up_mm >= 0 ? "+" : "") + tides.delta_up_mm.toFixed(1) + ' <span class="unit">mm Radial Bulge (&Delta;U)</span>';
-      }
-      var tsolar = document.getElementById("tideSolarVal");
-      if (tsolar && st.constituents_breakdown) {
-        tsolar.textContent = (st.constituents_breakdown.solar_tide_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.solar_tide_up_mm.toFixed(1) + " mm";
-      }
-      var tlunar = document.getElementById("tideLunarVal");
-      if (tlunar && st.constituents_breakdown) {
-        tlunar.textContent = (st.constituents_breakdown.lunar_tide_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.lunar_tide_up_mm.toFixed(1) + " mm";
-      }
-      var totl = document.getElementById("tideOtlVal");
-      if (totl && st.constituents_breakdown) {
-        totl.textContent = (st.constituents_breakdown.ocean_loading_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.ocean_loading_up_mm.toFixed(1) + " mm";
-      }
-      var t3d = document.getElementById("tide3dVal");
-      if (t3d && tides.total_3d_displacement_mm !== undefined) {
-        t3d.textContent = tides.total_3d_displacement_mm.toFixed(1) + " mm";
-      }
-      var tphase = document.getElementById("tidePhaseVal");
-      if (tphase && tides.geodetic_tide_phase) {
-        tphase.textContent = tides.geodetic_tide_phase.replace(/_/g, " ");
-      }
-      var th2 = document.getElementById("tideH2Val");
-      if (th2 && tides.love_number_h2 !== undefined) {
-        th2.textContent = tides.love_number_h2.toFixed(4);
-      }
-      var tl2 = document.getElementById("tideL2Val");
-      if (tl2 && tides.shida_number_l2 !== undefined) {
-        tl2.textContent = tides.shida_number_l2.toFixed(4);
-      }
-      var tbadge = document.getElementById("tideBadge");
-      if (tbadge && tides.geodetic_tide_phase) {
-        tbadge.textContent = tides.geodetic_tide_phase.replace(/_/g, " ");
-      }
-    }
-
-    // Card 26: Tropospheric Refractivity Index & RF Ducting Sounder
-    if (st.refractivity_summary) {
-      var refs = st.refractivity_summary;
-      var refv = document.getElementById("tropoRefVal");
-      if (refv && refs.surface_refractivity_n0 !== undefined) {
-        refv.innerHTML = refs.surface_refractivity_n0.toFixed(1) + ' <span class="unit">N-units (k = ' + refs.effective_earth_radius_k_factor.toFixed(2) + ' &asymp; 4/3 Earth)</span>';
-      }
-      var rdn = document.getElementById("tropoDnVal");
-      if (rdn && refs.refractivity_gradient_dn_dz_per_km !== undefined) {
-        rdn.textContent = (refs.refractivity_gradient_dn_dz_per_km >= 0 ? "+" : "") + refs.refractivity_gradient_dn_dz_per_km.toFixed(1) + " N/km";
-      }
-      var rdm = document.getElementById("tropoDmVal");
-      if (rdm && refs.modified_gradient_dm_dz_per_km !== undefined) {
-        rdm.textContent = (refs.modified_gradient_dm_dz_per_km >= 0 ? "+" : "") + refs.modified_gradient_dm_dz_per_km.toFixed(1) + " M/km";
-      }
-      var rhoriz = document.getElementById("tropoHorizonVal");
-      if (rhoriz && refs.ground_radio_horizon_km !== undefined) {
-        rhoriz.textContent = refs.ground_radio_horizon_km.toFixed(1) + " km";
-      }
-      var rdry = document.getElementById("tropoDryVal");
-      if (rdry && refs.dry_refractivity_n_dry !== undefined) {
-        rdry.textContent = refs.dry_refractivity_n_dry.toFixed(1);
-      }
-      var rwet = document.getElementById("tropoWetVal");
-      if (rwet && refs.wet_refractivity_n_wet !== undefined) {
-        rwet.textContent = refs.wet_refractivity_n_wet.toFixed(1);
-      }
-      var rrisk = document.getElementById("tropoRiskVal");
-      if (rrisk && refs.ducting_risk_classification) {
-        rrisk.textContent = refs.ducting_risk_classification.replace(/_/g, " ");
-      }
-      var rbadge = document.getElementById("tropoRefBadge");
-      if (rbadge && refs.refraction_regime) {
-        rbadge.textContent = refs.refraction_regime.replace(/_/g, " ");
-      }
-    }
-
-    // Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer (Quarantined Simulation)
-    var simClockData = (st.simulations && st.simulations.satellite_clock_adev) ? st.simulations.satellite_clock_adev : (st.satellite_clock_adev || null);
-    var cks = (simClockData && simClockData.satellite_atomic_clock_summary) ? simClockData.satellite_atomic_clock_summary : st.satellite_atomic_clock_summary;
-    if (cks) {
-      var ckv = document.getElementById("satClockVal");
-      if (ckv && cks.best_adev_tau_300s !== undefined) {
-        ckv.innerHTML = cks.best_adev_tau_300s.toExponential(2) + ' <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Simulation Model)</span>';
-      }
-      var cprime = document.getElementById("satClockPrime");
-      if (cprime && cks.most_stable_satellite) {
-        cprime.textContent = cks.most_stable_satellite + " (" + (cks.most_stable_clock_type || "Atomic") + ")";
-      }
-      var cgps = document.getElementById("satClockGpsVal");
-      if (cgps) {
-        cgps.textContent = "2.58e-14";
-      }
-      var cratio = document.getElementById("satClockRatio");
-      if (cratio && cks.best_adev_tau_300s) {
-        var ratio = 2.58e-14 / Math.max(1e-16, cks.best_adev_tau_300s);
-        cratio.textContent = ratio.toFixed(2) + "× Cleaner";
-      }
-      var ccount = document.getElementById("satClockCount");
-      if (ccount && cks.n_space_clocks_benchmarked !== undefined) {
-        ccount.textContent = cks.n_space_clocks_benchmarked + " (Simulated)";
-      }
-      var cbadge = document.getElementById("satClockBadge");
-      if (cbadge) {
-        cbadge.textContent = "⚠️ QUARANTINED SIMULATION";
-        cbadge.style.background = "rgba(239,68,68,0.15)";
-        cbadge.style.color = "var(--red, #f87171)";
-        cbadge.style.borderColor = "rgba(239,68,68,0.3)";
-      }
-    }
-
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -1575,7 +706,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='18' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='13' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -1585,7 +716,7 @@
       var sysCls = "sys-" + (s.sys || "gps");
       var az = s.az_deg !== null && s.az_deg !== undefined ? s.az_deg.toFixed(1) + "°" : "—";
       var el = s.el_deg !== null && s.el_deg !== undefined ? s.el_deg.toFixed(1) + "°" : "—";
-      var cn0 = s.cn0 ? s.cn0.toFixed(1) + " dB-Hz" : "—";
+      var cn0 = (s.cn0 || s.cn0_proxy) ? (s.cn0 || s.cn0_proxy).toFixed(1) + " dB-Hz" : "—";
       var sig = s.sigma_phi_rad !== undefined ? s.sigma_phi_rad.toFixed(4) + " rad" : "—";
       var s4 = s.s4 !== undefined ? s.s4.toFixed(4) : "—";
       var lock = s.lock_s ? s.lock_s.toFixed(0) + " s" : "—";
@@ -1598,38 +729,8 @@
 
       var klobDelay = (s.klobuchar_delay_ns !== undefined && s.klobuchar_delay_ns !== null)
         ? s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_delay_m.toFixed(1) + " m)" : "—";
-
-      var tropoInfo = (lastPayload && lastPayload.tropo_satellites && lastPayload.tropo_satellites[keys[i]]) ? lastPayload.tropo_satellites[keys[i]] : null;
-      var tropoCol = tropoInfo
-        ? tropoInfo.tropo_delay_m.toFixed(2) + " m (" + tropoInfo.tropo_delay_ns.toFixed(1) + " ns)"
-        : "—";
-      var totalAtmCol = tropoInfo
-        ? "<strong>" + tropoInfo.total_atm_delay_m.toFixed(2) + " m</strong> (" + tropoInfo.total_atm_delay_ns.toFixed(1) + " ns)"
-        : "—";
-
-      var relInfo = (lastPayload && lastPayload.relativity_satellites && lastPayload.relativity_satellites[keys[i]]) ? lastPayload.relativity_satellites[keys[i]] : null;
-      var relCol = relInfo
-        ? "<span style='color:var(--purple); font-weight:600;'>" + (relInfo.eccentricity_correction_m >= 0 ? "+" : "") + relInfo.eccentricity_correction_m.toFixed(1) + "m</span> / " +
-          "<span style='color:var(--cyan); font-weight:600;'>" + (relInfo.sagnac_correction_m >= 0 ? "+" : "") + relInfo.sagnac_correction_m.toFixed(1) + "m</span>"
-        : "—";
-
-      var metSat = (lastPayload && lastPayload.meteorology_satellites && lastPayload.meteorology_satellites[keys[i]]) ? lastPayload.meteorology_satellites[keys[i]] : null;
-      var swvCol = metSat
-        ? "<span style='color:var(--cyan); font-weight:600;'>" + metSat.swv_mm.toFixed(1) + " mm</span>"
-        : "—";
-
-      var radSat = (lastPayload && lastPayload.radiometry_satellites && lastPayload.radiometry_satellites[keys[i]]) ? lastPayload.radiometry_satellites[keys[i]] : null;
-      var fsplCol = radSat
-        ? "<span style='color:var(--text-dim); font-size:11px;'>" + radSat.fspl_db.toFixed(1) + " dB</span> / " +
-          "<span style='color:" + (radSat.link_margin_db >= 10 ? "var(--green)" : "var(--amber)") + "; font-weight:600;'>+" + radSat.link_margin_db.toFixed(1) + " dB</span>"
-        : "—";
-
-      var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
-      var mpCol = mpInfo
-        ? (mpInfo.reflection_risk === "HIGH" ? "<span style='color:var(--magenta); font-weight:600;'>HIGH (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
-           : (mpInfo.reflection_risk === "ELEVATED" ? "<span style='color:var(--amber); font-weight:600;'>ELEV (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
-           : "<span style='color:var(--green);'>LOW</span>"))
-        : "<span class='dim'>—</span>";
+      var klobStec = (s.klobuchar_stec_tecu !== undefined && s.klobuchar_stec_tecu !== null)
+        ? s.klobuchar_stec_tecu.toFixed(2) + " TECU" : "—";
 
       html += "<tr>" +
         "<td><strong>" + keys[i] + "</strong></td>" +
@@ -1639,16 +740,11 @@
         "<td>" + ippStr + "</td>" +
         "<td>" + fStr + "</td>" +
         "<td>" + klobDelay + "</td>" +
-        "<td>" + tropoCol + "</td>" +
-        "<td>" + totalAtmCol + "</td>" +
-        "<td>" + relCol + "</td>" +
-        "<td>" + swvCol + "</td>" +
-        "<td>" + fsplCol + "</td>" +
+        "<td>" + klobStec + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
         "<td>" + lock + "</td>" +
-        "<td>" + mpCol + "</td>" +
         "<td>" + status + "</td>" +
       "</tr>";
     }
@@ -1672,36 +768,6 @@
     skyCtx.beginPath();
     skyCtx.arc(cx, cy, rMax, 0, Math.PI * 2);
     skyCtx.fill();
-
-    // Render Sidereal Multipath Stacking (HMS) Heatmap Overlay
-    if (lastPayload && lastPayload.grid) {
-      var grid = lastPayload.grid;
-      for (var gKey in grid) {
-        var cell = grid[gKey];
-        if (!cell || (cell.hits || 0) < 5) continue;
-        var cMpi = cell.mpi_db || 3.5;
-        // Azimuth wedge: [a0, a1]
-        var a0 = (cell.az_deg - 5.0 - 90.0) * Math.PI / 180.0;
-        var a1 = (cell.az_deg + 5.0 - 90.0) * Math.PI / 180.0;
-        // Elevation radii: [rInner, rOuter]
-        var rInner = rMax * (1.0 - Math.min(90.0, cell.el_deg + 2.5) / 90.0);
-        var rOuter = rMax * (1.0 - Math.max(0.0, cell.el_deg - 2.5) / 90.0);
-
-        if (cMpi >= 3.8) {
-          skyCtx.fillStyle = "rgba(244, 63, 94, 0.22)"; // Vivid Magenta: Specular Reflector (East/NE)
-        } else if (cMpi >= 3.3) {
-          skyCtx.fillStyle = "rgba(245, 158, 11, 0.12)"; // Amber: Moderate Scatter
-        } else {
-          skyCtx.fillStyle = "rgba(0, 240, 255, 0.08)"; // Cyan: Clean Open Sky (SW)
-        }
-
-        skyCtx.beginPath();
-        skyCtx.arc(cx, cy, rOuter, a0, a1);
-        skyCtx.arc(cx, cy, rInner, a1, a0, true);
-        skyCtx.closePath();
-        skyCtx.fill();
-      }
-    }
 
     // Concentric elevation circles (0°, 30°, 60°)
     skyCtx.lineWidth = 1;
@@ -1791,79 +857,11 @@
       skyCtx.lineWidth = 2;
       skyCtx.stroke();
 
-      // Multipath Risk Ring
-      var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[key])
-        ? lastPayload.active_satellites[key] : null;
-
-      if (mpInfo && mpInfo.reflection_risk === "HIGH") {
-        skyCtx.strokeStyle = "rgba(244, 63, 94, 0.9)";
-        skyCtx.lineWidth = 3;
-        skyCtx.beginPath();
-        skyCtx.arc(sx, sy, 16, 0, Math.PI * 2);
-        skyCtx.stroke();
-      } else if (mpInfo && mpInfo.reflection_risk === "ELEVATED") {
-        skyCtx.strokeStyle = "rgba(245, 158, 11, 0.8)";
-        skyCtx.lineWidth = 2;
-        skyCtx.beginPath();
-        skyCtx.arc(sx, sy, 14, 0, Math.PI * 2);
-        skyCtx.stroke();
-      }
-
       // Satellite Label
       skyCtx.fillStyle = "#ffffff";
       skyCtx.font = "bold 18px var(--font-mono)";
       skyCtx.fillText(key, sx + 14, sy - 6);
     }
-
-    // Render the Sun on Sky Plot if solar ephemeris is available
-    if (lastPayload && lastPayload.solar_ephemeris) {
-      var se = lastPayload.solar_ephemeris;
-      var sunAz = se.solar_az_deg;
-      var sunEl = se.solar_el_apparent_deg;
-      var sunTheta = (sunAz - 90) * Math.PI / 180.0;
-      var sunRho = rMax * (1.0 - Math.max(0, sunEl) / 90.0);
-      if (sunEl < 0) {
-        sunRho = rMax + Math.min(26, -sunEl * 3.5);
-      }
-      var sunX = cx + Math.cos(sunTheta) * sunRho;
-      var sunY = cy + Math.sin(sunTheta) * sunRho;
-
-      // Sun halo glow
-      var sunGlowR = sunEl >= 0 ? 32 : 18;
-      var sunGlow = skyCtx.createRadialGradient(sunX, sunY, 4, sunX, sunY, sunGlowR);
-      sunGlow.addColorStop(0, sunEl >= 0 ? "rgba(251, 191, 36, 0.9)" : "rgba(245, 158, 11, 0.45)");
-      sunGlow.addColorStop(1, "transparent");
-      skyCtx.fillStyle = sunGlow;
-      skyCtx.beginPath();
-      skyCtx.arc(sunX, sunY, sunGlowR, 0, Math.PI * 2);
-      skyCtx.fill();
-
-      // Sun disk
-      skyCtx.fillStyle = sunEl >= 0 ? "#f59e0b" : "#d97706";
-      skyCtx.beginPath();
-      skyCtx.arc(sunX, sunY, sunEl >= 0 ? 10 : 7, 0, Math.PI * 2);
-      skyCtx.fill();
-      skyCtx.strokeStyle = "#ffffff";
-      skyCtx.lineWidth = 1.5;
-      skyCtx.stroke();
-
-      // Sun label
-      skyCtx.fillStyle = "#fbbf24";
-      skyCtx.font = "bold 14px var(--font-mono)";
-      skyCtx.textAlign = "center";
-      var dLabel = (lastPayload.dawn_state && lastPayload.dawn_state.code) ? lastPayload.dawn_state.code.replace(/_/g, " ") : "SUN";
-      skyCtx.fillText("☀️ " + dLabel + " (" + (sunEl >= 0 ? "+" : "") + sunEl.toFixed(1) + "°)", sunX, sunY - 14);
-    }
-
-    // HMS Heatmap Legend
-    skyCtx.font = "14px var(--font-mono)";
-    skyCtx.textAlign = "center";
-    skyCtx.fillStyle = "rgba(244, 63, 94, 0.9)";
-    skyCtx.fillText("■ Reflector (>3.8 dB)", cx - 140, cy + rMax + 24);
-    skyCtx.fillStyle = "rgba(245, 158, 11, 0.9)";
-    skyCtx.fillText("■ Moderate (3.3-3.8 dB)", cx, cy + rMax + 24);
-    skyCtx.fillStyle = "rgba(0, 240, 255, 0.9)";
-    skyCtx.fillText("■ Clean (<3.3 dB)", cx + 140, cy + rMax + 24);
   }
 
   function drawStripChart() {
@@ -1942,26 +940,9 @@
       var s = match.sat;
       var ippTip = (s.ipp_lat_deg !== undefined && s.ipp_lat_deg !== null)
         ? s.ipp_lat_deg.toFixed(1) + "°N, " + Math.abs(s.ipp_lon_deg).toFixed(1) + "°W" : "—";
-      var klobTip = s.klobuchar_delay_ns ? "<br>Klobuchar: " + s.klobuchar_delay_ns.toFixed(1) + " ns (" + s.klobuchar_stec_tecu.toFixed(1) + " TECU)" : "";
-      var mpTip = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[match.key])
-        ? "<br>HMS Multipath: " + lastPayload.active_satellites[match.key].grid_mpi_db.toFixed(2) + " dB (" + lastPayload.active_satellites[match.key].reflection_risk + ")"
-        : "";
-      var tropoTip = (lastPayload && lastPayload.tropo_satellites && lastPayload.tropo_satellites[match.key])
-        ? "<br>Troposphere: " + lastPayload.tropo_satellites[match.key].tropo_delay_m.toFixed(2) + " m (" + lastPayload.tropo_satellites[match.key].tropo_delay_ns.toFixed(1) + " ns)" +
-          "<br><strong>Total Atmosphere: " + lastPayload.tropo_satellites[match.key].total_atm_delay_m.toFixed(2) + " m</strong> (" + lastPayload.tropo_satellites[match.key].total_atm_delay_ns.toFixed(1) + " ns)"
-        : "";
-      var relInfo = (lastPayload && lastPayload.relativity_satellites && lastPayload.relativity_satellites[match.key]) ? lastPayload.relativity_satellites[match.key] : null;
-      var relTip = relInfo
-        ? "<br><strong>Relativity:</strong> Net " + relInfo.net_secular_us_day.toFixed(2) + " μs/d (" + relInfo.uncompensated_drift_km_day.toFixed(1) + " km/d)<br>Ecc: " + relInfo.eccentricity_correction_m.toFixed(2) + " m (" + relInfo.eccentricity_correction_ns.toFixed(1) + " ns)<br>Sagnac: " + relInfo.sagnac_correction_m.toFixed(2) + " m (" + relInfo.sagnac_correction_ns.toFixed(1) + " ns)"
-        : "";
-      var metSat = (lastPayload && lastPayload.meteorology_satellites && lastPayload.meteorology_satellites[match.key]) ? lastPayload.meteorology_satellites[match.key] : null;
-      var metTip = metSat
-        ? "<br><strong>Water Vapor:</strong> Slant WV: " + metSat.swv_mm.toFixed(1) + " mm (" + metSat.swv_kg_m2.toFixed(1) + " kg/m²)"
-        : "";
-      var radSat = (lastPayload && lastPayload.radiometry_satellites && lastPayload.radiometry_satellites[match.key]) ? lastPayload.radiometry_satellites[match.key] : null;
-      var radTip = radSat
-        ? "<br><strong>RF Link Budget:</strong> FSPL: " + radSat.fspl_db.toFixed(1) + " dB &bull; Margin: +" + radSat.link_margin_db.toFixed(1) + " dB &bull; Tsys: " + radSat.t_sys_k.toFixed(0) + " K"
-        : "";
+      var fTip = (s.obliquity_factor !== undefined && s.obliquity_factor !== null)
+        ? s.obliquity_factor.toFixed(2) : "1.00";
+      var klobTip = s.klobuchar_delay_ns ? "<br>Klobuchar: " + s.klobuchar_delay_ns.toFixed(1) + " ns (" + (s.klobuchar_stec_tecu !== undefined ? s.klobuchar_stec_tecu.toFixed(1) : "—") + " TECU)" : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -1971,12 +952,7 @@
         "C/N0: " + (s.cn0 ? s.cn0.toFixed(1) + " dB" : "—") + "<br>" +
         "σ_φ: " + (s.sigma_phi_rad ? s.sigma_phi_rad.toFixed(3) + " rad" : "—") + "<br>" +
         "S4: " + (s.s4 ? s.s4.toFixed(3) : "—") +
-        klobTip +
-        tropoTip +
-        relTip +
-        metTip +
-        radTip +
-        mpTip;
+        klobTip;
     } else {
       tooltip.style.display = "none";
     }
