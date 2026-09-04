@@ -80,6 +80,11 @@ async function main() {
     "gdopBadge", "gdopVal", "hdopVal", "vdopVal", "ellipseVal", "gdopAdvVal", "areaAdvVal", "ellipseAz",
     "ccdBadge", "ccdVal", "hatchBiasVal", "cmcNoiseVal", "vpVal", "vgVal",
     "hoiBadge", "hoiVal", "nsAsymVal", "faradayVal", "hoiPsVal", "rayBendVal", "bdsHoiGain",
+    "sdVal", "sdPivotSat", "sdPairsCount", "sdNoiseVal",
+    "ddVal", "ddFixRate", "ddBadge", "solarDtecVal", "solarGhiVal",
+    "tdVal", "tdPivotSat", "tdPairsCount", "tdBadge", "tdAmbStatus",
+    "sidVal", "sidBadge", "sidAccelVal", "sidEventVal", "sriThreatVal",
+    "lifVal", "lifBadge", "lifCount", "lifWlVal",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -151,6 +156,9 @@ async function main() {
   console.log("HOI Status:", elements["hoiBadge"].textContent);
   if (elements["sdVal"]) console.log("Single-Diff Val:", elements["sdVal"].innerHTML, "| Pivot:", elements["sdPivotSat"] ? elements["sdPivotSat"].textContent : "--");
   if (elements["ddVal"]) console.log("Double-Diff Val:", elements["ddVal"].innerHTML, "| Fix Rate:", elements["ddFixRate"] ? elements["ddFixRate"].textContent : "--", "| dTEC/dt:", elements["solarDtecVal"] ? elements["solarDtecVal"].textContent : "--");
+  if (elements["tdVal"]) console.log("Triple-Diff Val:", elements["tdVal"].innerHTML, "| Pivot:", elements["tdPivotSat"] ? elements["tdPivotSat"].textContent : "--", "| Ambiguity:", elements["tdAmbStatus"] ? elements["tdAmbStatus"].textContent : "--");
+  if (elements["sidVal"]) console.log("SID Val:", elements["sidVal"].innerHTML, "| Flux:", elements["sidBadge"] ? elements["sidBadge"].textContent : "--", "| Accel:", elements["sidAccelVal"] ? elements["sidAccelVal"].textContent : "--");
+  if (elements["lifVal"]) console.log("L_IF Val:", elements["lifVal"].innerHTML, "| Channels:", elements["lifCount"] ? elements["lifCount"].textContent : "--", "| Wide-Lane:", elements["lifWlVal"] ? elements["lifWlVal"].textContent : "--");
 
   console.log("SMOKE_IONO: PASS");
 }

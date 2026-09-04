@@ -573,6 +573,45 @@
       Double-Difference: &nabla;&Delta;&Phi;<sub>AB</sub><sup>ik</sup> = &lambda;&nabla;&Delta;N<sub>AB</sub><sup>ik</sup> + &epsilon;<sub>DD</sub>. Eliminates Rx + Sat clocks, Tropo &amp; Iono!
     </div>
   </div>
+
+  <!-- Card 16: Triple-Difference Cycle Slip & Doppler Engine -->
+  <div class="card">
+    <div class="card-label">
+      <span>Carrier Triple-Difference Engine</span>
+      <span class="badge" id="tdBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">AMBIGUITY CANCELED</span>
+    </div>
+    <div class="card-val" id="tdVal">0.00 <span class="unit">mm TD Residual (0 Slips)</span></div>
+    <div class="card-sub">Pivot: <b id="tdPivotSat" style="color:var(--green);">GPS_15</b> &bull; Pairs: <b id="tdPairsCount">6</b> &bull; Ambiguity: <b id="tdAmbStatus" style="color:var(--cyan);">&lambda;&Delta;N &equiv; 0.000 mm</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Triple-Diff: &delta;&nabla;&Delta;&Phi;<sub>AB</sub><sup>ik</sup>. Epoch differencing eliminates integer ambiguity without search; instant &plusmn;1-cycle slip detector!
+    </div>
+  </div>
+
+  <!-- Card 17: Solar Flare SID & Radio Burst Radiometer -->
+  <div class="card">
+    <div class="card-label">
+      <span>Solar Flare SID &amp; Radiometer</span>
+      <span class="badge" id="sidBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">143.8 SFU</span>
+    </div>
+    <div class="card-val" id="sidVal">+4.23 <span class="unit">K &Delta;T<sub>solar</sub> (Quiet Background)</span></div>
+    <div class="card-sub">d&sup2;TEC/dt&sup2;: <b id="sidAccelVal" style="color:var(--cyan);">0.02 TECU/h&sup2;</b> &bull; Event: <b id="sidEventVal" style="color:var(--green);">QUIET</b> &bull; SRI Threat: <b id="sriThreatVal" style="color:var(--green);">RF QUIET</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      L-Band Radiometry: &Delta;T<sub>solar</sub> = S<sub>&odot;</sub>A<sub>eff</sub>/(2k<sub>B</sub>). Monitors Sudden Ionospheric Disturbances (SID) &amp; solar radio bursts.
+    </div>
+  </div>
+
+  <!-- Card 18: Multi-Frequency Ionosphere-Free Combinations -->
+  <div class="card">
+    <div class="card-label">
+      <span>Ionosphere-Free &amp; Wide-Lane (L<sub>IF</sub>/L<sub>WL</sub>)</span>
+      <span class="badge" id="lifBadge" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">100% IONO-FREE</span>
+    </div>
+    <div class="card-val" id="lifVal">0.000 <span class="unit">mm Iono Residual (L<sub>IF</sub>)</span></div>
+    <div class="card-sub">Channels: <b id="lifCount" style="color:var(--green);">8 Sats</b> &bull; Wide-Lane &lambda;<sub>WL</sub>: <b id="lifWlVal" style="color:var(--cyan);">20.93 m</b> &bull; L<sub>GF</sub>: <b style="color:var(--purple);">Clocks &amp; Tropo Canceled</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Multi-Carrier Synthesis: L<sub>IF</sub> = (f<sub>1</sub>&sup2;&Phi;<sub>1</sub> - f<sub>2</sub>&sup2;&Phi;<sub>2</sub>)/(f<sub>1</sub>&sup2; - f<sub>2</sub>&sup2;). 100% eliminates 1st-order ionospheric delay!
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1054,6 +1093,67 @@
       var sgh = document.getElementById("solarGhiVal");
       if (sgh && srs.global_horizontal_irradiance_w_m2 !== undefined) {
         sgh.textContent = srs.global_horizontal_irradiance_w_m2.toFixed(0) + " W/m²";
+      }
+    }
+
+    // Card 16: Triple-Difference Cycle Slip & Doppler Engine
+    if (st.triple_difference_summary) {
+      var tds = st.triple_difference_summary;
+      var tv = document.getElementById("tdVal");
+      if (tv && tds.mean_td_phase_residual_mm !== undefined) {
+        tv.innerHTML = tds.mean_td_phase_residual_mm.toFixed(2) + ' <span class="unit">mm TD Residual (' + tds.cycle_slips_flagged + ' Slips)</span>';
+      }
+      var tpiv = document.getElementById("tdPivotSat");
+      if (tpiv && tds.pivot_satellite) {
+        tpiv.textContent = tds.pivot_satellite;
+      }
+      var tpc = document.getElementById("tdPairsCount");
+      if (tpc && tds.n_triple_differenced_pairs !== undefined) {
+        tpc.textContent = tds.n_triple_differenced_pairs;
+      }
+      var tb = document.getElementById("tdBadge");
+      if (tb) {
+        tb.textContent = tds.cycle_slips_flagged === 0 ? "AMBIGUITY CANCELED" : tds.cycle_slips_flagged + " SLIPS DETECTED";
+        tb.style.color = tds.cycle_slips_flagged === 0 ? "var(--green)" : "var(--red)";
+      }
+    }
+
+    // Card 17: Solar Flare SID & Radio Burst Radiometer
+    if (st.solar_flare_sid_summary) {
+      var sids = st.solar_flare_sid_summary;
+      var sv = document.getElementById("sidVal");
+      if (sv && sids.delta_t_solar_k !== undefined) {
+        sv.innerHTML = (sids.delta_t_solar_k >= 0 ? "+" : "") + sids.delta_t_solar_k.toFixed(2) + ' <span class="unit">K &Delta;T<sub>solar</sub> (' + sids.sid_event_classification.replace(/_/g, " ") + ')</span>';
+      }
+      var sb = document.getElementById("sidBadge");
+      if (sb && sids.f107_solar_flux_sfu !== undefined) {
+        sb.textContent = sids.f107_solar_flux_sfu.toFixed(1) + " SFU";
+      }
+      var sa = document.getElementById("sidAccelVal");
+      if (sa && sids.d2tec_dt2_acceleration_tecu_hr2 !== undefined) {
+        sa.textContent = sids.d2tec_dt2_acceleration_tecu_hr2.toFixed(3) + " TECU/h²";
+      }
+      var se = document.getElementById("sidEventVal");
+      if (se && sids.sid_severity) {
+        se.textContent = sids.sid_severity;
+        se.style.color = sids.sid_severity === "NORMAL" ? "var(--green)" : "var(--amber)";
+      }
+      var sth = document.getElementById("sriThreatVal");
+      if (sth && sids.sri_threat_level) {
+        sth.textContent = sids.sri_threat_level.replace(/_/g, " ");
+      }
+    }
+
+    // Card 18: Multi-Frequency Ionosphere-Free Combinations
+    if (st.linear_combinations_summary) {
+      var lcs = st.linear_combinations_summary;
+      var lc = document.getElementById("lifCount");
+      if (lc && lcs.n_synthesized_satellites !== undefined) {
+        lc.textContent = lcs.n_synthesized_satellites + " Sats";
+      }
+      var lwv = document.getElementById("lifWlVal");
+      if (lwv && lcs.wide_lane_wavelength_m !== undefined) {
+        lwv.textContent = lcs.wide_lane_wavelength_m.toFixed(2) + " m";
       }
     }
 
