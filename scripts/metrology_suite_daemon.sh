@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# metrology_suite_daemon.sh — Unified manager for all 16 GNSS metrology and space weather daemons.
+# metrology_suite_daemon.sh — Unified manager for all 30 GNSS metrology and space weather daemons.
 
 WORKDIR="/Volumes/Radiator 8TB/gnss/hackrf_gnss"
 OBS="/Volumes/Radiator 8TB/gnss/observations"
@@ -34,10 +34,13 @@ DAEMONS=(
     "lambda_ambiguity_resolution_engine.py --interval 2.0"
     "solar_radiation_pressure_sounder.py --interval 2.0"
     "agw_tid_wavevector_engine.py --interval 2.0"
+    "earth_solid_tide_sounder.py --interval 2.0"
+    "tropospheric_refractivity_ducting_sounder.py --interval 2.0"
+    "satellite_atomic_clock_analyzer.py --interval 2.0"
 )
 
 start_all() {
-    echo "=== Starting All 27 GNSS Metrology Daemons ==="
+    echo "=== Starting All 30 GNSS Metrology Daemons ==="
     cd "$WORKDIR" || exit 1
     for d in "${DAEMONS[@]}"; do
         script=$(echo "$d" | awk '{print $1}')

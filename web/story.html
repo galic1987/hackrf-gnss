@@ -496,6 +496,12 @@ a { color: inherit; }
     var srpText = srp ? srp.mean_orbital_acceleration_nm_s2.toFixed(1) + " nm/s² (" + srp.mean_photon_force_un.toFixed(1) + " µN) · " + srp.mean_unmodeled_daily_drift_m.toFixed(0) + " m/day" : "MODEL ONLY";
     var agw = n && n.raw && n.raw.tid_wavevector_summary ? n.raw.tid_wavevector_summary : null;
     var agwText = agw ? agw.horizontal_phase_speed_m_s.toFixed(1) + " m/s · Az " + agw.propagation_azimuth_deg.toFixed(1) + "° (" + agw.propagation_direction + ") · λ " + agw.horizontal_wavelength_km.toFixed(1) + " km" : "1D ONLY";
+    var tide = n && n.raw && n.raw.solid_earth_tide_summary ? n.raw.solid_earth_tide_summary : null;
+    var tideText = tide ? (tide.delta_up_mm >= 0 ? "+" : "") + tide.delta_up_mm.toFixed(1) + " mm Up (h2=" + tide.love_number_h2.toFixed(4) + ") · 3D " + tide.total_3d_displacement_mm.toFixed(1) + " mm" : "MODEL ONLY";
+    var tropo = n && n.raw && n.raw.refractivity_summary ? n.raw.refractivity_summary : null;
+    var tropoText = tropo ? tropo.surface_refractivity_n0.toFixed(1) + " N-units · k=" + tropo.effective_earth_radius_k_factor.toFixed(2) + " (" + tropo.refraction_regime.replace(/_/g, " ") + ")" : "STANDARD 4/3";
+    var satClock = n && n.raw && n.raw.satellite_atomic_clock_summary ? n.raw.satellite_atomic_clock_summary : null;
+    var satClockText = satClock ? satClock.most_stable_satellite + " (" + satClock.best_adev_tau_300s.toExponential(2) + " @ 300s) · " + satClock.most_stable_clock_type : "STABLE";
     return [
       metric("Double-diff integer ambiguity", ddText, "state.double_difference · zero-baseline splitter", dd ? "good" : "warn"),
       metric("Morning solar ramp", srText, "state.solar_ramp · ephemeris/flux coupling", sr ? "good" : "warn"),
@@ -505,6 +511,9 @@ a { color: inherit; }
       metric("LAMBDA integer ambiguity", lmbText, "state.lambda_ambiguity · Teunissen Z-transform RTK/PPP-AR", lmb && lmb.ambiguity_status.indexOf("FIXED") !== -1 ? "good" : "warn"),
       metric("Solar radiation pressure", srpText, "state.srp_photon · ECOM photon momentum inversion", srp ? "good" : "warn"),
       metric("Atmospheric gravity wave", agwText, "state.agw_wavevector · Hines (1960) 2D array interferometry", agw ? "good" : "warn"),
+      metric("Solid Earth crustal tide", tideText, "state.solid_earth_tide · IERS (2010) Love h2/l2 body tides", tide ? "good" : "warn"),
+      metric("Atmospheric refractivity & ducting", tropoText, "state.tropo_refractivity · ITU-R P.453 k-factor lapse rate", tropo ? "good" : "warn"),
+      metric("Satellite in-orbit atomic clock", satClockText, "state.satellite_clock_adev · IEEE 1139 Allan deviation", satClock ? "good" : "warn"),
       metric("External PPS capture", "Functionally demonstrated · not current telemetry", "bench record · P28.16"),
       metric("Fine TDC physical scale", "UNCALIBRATED", "no bin widths, DNL, INL, or absolute scale exposed", "warn"),
       metric("PPS arrival delay", "UNCALIBRATED", "matched cables are not delay calibration", "warn"),

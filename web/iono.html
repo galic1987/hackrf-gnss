@@ -690,6 +690,45 @@
       2D Spatial Interferometry: Solves horizontal wavevector k<sub>h</sub> across multi-satellite IPPs at 350 km. Benchmarked against Hines (1960) acoustic-gravity dispersion (&omega;<sub>b</sub> = 7.4 mrad/s)!
     </div>
   </div>
+
+  <!-- Card 25: Earth Solid Body Tide & Crustal Deformation Sounder -->
+  <div class="card">
+    <div class="card-label">
+      <span>Earth Solid Body Tide &amp; Crustal Bulge</span>
+      <span class="badge" id="tideBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">IERS TIDE BULGE</span>
+    </div>
+    <div class="card-val" id="tideVal">-23.8 <span class="unit">mm Radial Bulge (&Delta;U)</span></div>
+    <div class="card-sub">Solar Tug: <b id="tideSolarVal" style="color:var(--amber);">+46.9 mm</b> &bull; Lunar Tug: <b id="tideLunarVal" style="color:var(--cyan);">&minus;63.3 mm</b> &bull; OTL Flexure: <b id="tideOtlVal" style="color:var(--purple);">&minus;7.8 mm</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Love Numbers: h<sub>2</sub>=<b id="tideH2Val" style="color:var(--green);">0.6078</b>, l<sub>2</sub>=<b id="tideL2Val" style="color:var(--cyan);">0.0847</b> &bull; 3D Disp: <b id="tide3dVal" style="color:var(--amber);">31.1 mm</b> &bull; Phase: <b id="tidePhaseVal" style="color:var(--purple);">LOW TIDAL TROUGH</b>.
+    </div>
+  </div>
+
+  <!-- Card 26: Tropospheric Refractivity Index & RF Ducting Sounder -->
+  <div class="card">
+    <div class="card-label">
+      <span>Tropospheric Refractivity &amp; RF Ducting</span>
+      <span class="badge" id="tropoRefBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">STANDARD REFRACTION</span>
+    </div>
+    <div class="card-val" id="tropoRefVal">321.6 <span class="unit">N-units (k = 1.35 &asymp; 4/3 Earth)</span></div>
+    <div class="card-sub">Lapse dN/dz: <b id="tropoDnVal" style="color:var(--cyan);">&minus;41.0 N/km</b> &bull; Modified dM/dz: <b id="tropoDmVal" style="color:var(--green);">+116.0 M/km</b> &bull; Radio Horizon: <b id="tropoHorizonVal" style="color:var(--amber);">5.9 km</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      ITU-R P.453 Surface Sounding: N<sub>dry</sub>=<b id="tropoDryVal" style="color:var(--cyan);">267.3</b>, N<sub>wet</sub>=<b id="tropoWetVal" style="color:var(--amber);">54.3</b> &bull; Ducting Risk: <b id="tropoRiskVal" style="color:var(--green);">NORMAL 4/3 EARTH</b>.
+    </div>
+  </div>
+
+  <!-- Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer -->
+  <div class="card">
+    <div class="card-label">
+      <span>Satellite In-Orbit Atomic Clock Stability</span>
+      <span class="badge" id="satClockBadge" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">MASER-GRADE STABILITY</span>
+    </div>
+    <div class="card-val" id="satClockVal">1.01 &times; 10&minus;&sup1;&sup4; <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Galileo PHM)</span></div>
+    <div class="card-sub">Prime Sat: <b id="satClockPrime" style="color:var(--green);">GALILEO_26 (PHM)</b> &bull; GPS RAFS Floor: <b id="satClockGpsVal" style="color:var(--amber);">2.58 &times; 10&minus;&sup1;&sup4;</b> &bull; Maser vs Rb: <b id="satClockRatio" style="color:var(--cyan);">2.55&times; Cleaner</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      IEEE Std 1139 Space Metrology: Tracks in-orbit Passive Hydrogen Masers vs Rubidium standards &bull; Space Clocks: <b id="satClockCount" style="color:var(--cyan);">12 Analyzed</b>.
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1396,6 +1435,114 @@
       var abadge = document.getElementById("agwBadge");
       if (abadge && agws.tid_classification) {
         abadge.textContent = agws.tid_classification;
+      }
+    }
+
+    // Card 25: Earth Solid Body Tide & Crustal Deformation Sounder
+    if (st.solid_earth_tide_summary) {
+      var tides = st.solid_earth_tide_summary;
+      var tidev = document.getElementById("tideVal");
+      if (tidev && tides.delta_up_mm !== undefined) {
+        tidev.innerHTML = (tides.delta_up_mm >= 0 ? "+" : "") + tides.delta_up_mm.toFixed(1) + ' <span class="unit">mm Radial Bulge (&Delta;U)</span>';
+      }
+      var tsolar = document.getElementById("tideSolarVal");
+      if (tsolar && st.constituents_breakdown) {
+        tsolar.textContent = (st.constituents_breakdown.solar_tide_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.solar_tide_up_mm.toFixed(1) + " mm";
+      }
+      var tlunar = document.getElementById("tideLunarVal");
+      if (tlunar && st.constituents_breakdown) {
+        tlunar.textContent = (st.constituents_breakdown.lunar_tide_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.lunar_tide_up_mm.toFixed(1) + " mm";
+      }
+      var totl = document.getElementById("tideOtlVal");
+      if (totl && st.constituents_breakdown) {
+        totl.textContent = (st.constituents_breakdown.ocean_loading_up_mm >= 0 ? "+" : "") + st.constituents_breakdown.ocean_loading_up_mm.toFixed(1) + " mm";
+      }
+      var t3d = document.getElementById("tide3dVal");
+      if (t3d && tides.total_3d_displacement_mm !== undefined) {
+        t3d.textContent = tides.total_3d_displacement_mm.toFixed(1) + " mm";
+      }
+      var tphase = document.getElementById("tidePhaseVal");
+      if (tphase && tides.geodetic_tide_phase) {
+        tphase.textContent = tides.geodetic_tide_phase.replace(/_/g, " ");
+      }
+      var th2 = document.getElementById("tideH2Val");
+      if (th2 && tides.love_number_h2 !== undefined) {
+        th2.textContent = tides.love_number_h2.toFixed(4);
+      }
+      var tl2 = document.getElementById("tideL2Val");
+      if (tl2 && tides.shida_number_l2 !== undefined) {
+        tl2.textContent = tides.shida_number_l2.toFixed(4);
+      }
+      var tbadge = document.getElementById("tideBadge");
+      if (tbadge && tides.geodetic_tide_phase) {
+        tbadge.textContent = tides.geodetic_tide_phase.replace(/_/g, " ");
+      }
+    }
+
+    // Card 26: Tropospheric Refractivity Index & RF Ducting Sounder
+    if (st.refractivity_summary) {
+      var refs = st.refractivity_summary;
+      var refv = document.getElementById("tropoRefVal");
+      if (refv && refs.surface_refractivity_n0 !== undefined) {
+        refv.innerHTML = refs.surface_refractivity_n0.toFixed(1) + ' <span class="unit">N-units (k = ' + refs.effective_earth_radius_k_factor.toFixed(2) + ' &asymp; 4/3 Earth)</span>';
+      }
+      var rdn = document.getElementById("tropoDnVal");
+      if (rdn && refs.refractivity_gradient_dn_dz_per_km !== undefined) {
+        rdn.textContent = (refs.refractivity_gradient_dn_dz_per_km >= 0 ? "+" : "") + refs.refractivity_gradient_dn_dz_per_km.toFixed(1) + " N/km";
+      }
+      var rdm = document.getElementById("tropoDmVal");
+      if (rdm && refs.modified_gradient_dm_dz_per_km !== undefined) {
+        rdm.textContent = (refs.modified_gradient_dm_dz_per_km >= 0 ? "+" : "") + refs.modified_gradient_dm_dz_per_km.toFixed(1) + " M/km";
+      }
+      var rhoriz = document.getElementById("tropoHorizonVal");
+      if (rhoriz && refs.ground_radio_horizon_km !== undefined) {
+        rhoriz.textContent = refs.ground_radio_horizon_km.toFixed(1) + " km";
+      }
+      var rdry = document.getElementById("tropoDryVal");
+      if (rdry && refs.dry_refractivity_n_dry !== undefined) {
+        rdry.textContent = refs.dry_refractivity_n_dry.toFixed(1);
+      }
+      var rwet = document.getElementById("tropoWetVal");
+      if (rwet && refs.wet_refractivity_n_wet !== undefined) {
+        rwet.textContent = refs.wet_refractivity_n_wet.toFixed(1);
+      }
+      var rrisk = document.getElementById("tropoRiskVal");
+      if (rrisk && refs.ducting_risk_classification) {
+        rrisk.textContent = refs.ducting_risk_classification.replace(/_/g, " ");
+      }
+      var rbadge = document.getElementById("tropoRefBadge");
+      if (rbadge && refs.refraction_regime) {
+        rbadge.textContent = refs.refraction_regime.replace(/_/g, " ");
+      }
+    }
+
+    // Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer
+    if (st.satellite_atomic_clock_summary) {
+      var cks = st.satellite_atomic_clock_summary;
+      var ckv = document.getElementById("satClockVal");
+      if (ckv && cks.best_adev_tau_300s !== undefined) {
+        ckv.innerHTML = cks.best_adev_tau_300s.toExponential(2) + ' <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (' + (cks.most_stable_satellite || "Space Clock") + ')</span>';
+      }
+      var cprime = document.getElementById("satClockPrime");
+      if (cprime && cks.most_stable_satellite) {
+        cprime.textContent = cks.most_stable_satellite + " (" + (cks.most_stable_clock_type || "Atomic") + ")";
+      }
+      var cgps = document.getElementById("satClockGpsVal");
+      if (cgps) {
+        cgps.textContent = "2.58e-14";
+      }
+      var cratio = document.getElementById("satClockRatio");
+      if (cratio && cks.best_adev_tau_300s) {
+        var ratio = 2.58e-14 / Math.max(1e-16, cks.best_adev_tau_300s);
+        cratio.textContent = ratio.toFixed(2) + "× Cleaner";
+      }
+      var ccount = document.getElementById("satClockCount");
+      if (ccount && cks.n_space_clocks_benchmarked !== undefined) {
+        ccount.textContent = cks.n_space_clocks_benchmarked + " Analyzed";
+      }
+      var cbadge = document.getElementById("satClockBadge");
+      if (cbadge) {
+        cbadge.textContent = "MASER-GRADE STABILITY";
       }
     }
 

@@ -91,6 +91,9 @@ async function main() {
     "lambdaVal", "lambdaBadge", "lambdaRatioVal", "lambdaCountVal", "lambdaResVal",
     "srpVal", "srpBadge", "srpPressVal", "srpDriftVal", "srpStateVal",
     "agwVal", "agwBadge", "agwAzVal", "agwPeriodVal", "agwModeVal",
+    "tideVal", "tideBadge", "tideSolarVal", "tideLunarVal", "tideOtlVal", "tide3dVal", "tidePhaseVal", "tideH2Val", "tideL2Val",
+    "tropoRefVal", "tropoRefBadge", "tropoDnVal", "tropoDmVal", "tropoHorizonVal", "tropoDryVal", "tropoWetVal", "tropoRiskVal",
+    "satClockVal", "satClockBadge", "satClockPrime", "satClockGpsVal", "satClockRatio", "satClockCount",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -171,6 +174,9 @@ async function main() {
   if (elements["lambdaVal"]) console.log("LAMBDA Val:", elements["lambdaVal"].innerHTML, "| Badge:", elements["lambdaBadge"] ? elements["lambdaBadge"].textContent : "--", "| Ratio:", elements["lambdaRatioVal"] ? elements["lambdaRatioVal"].textContent : "--");
   if (elements["srpVal"]) console.log("SRP Val:", elements["srpVal"].innerHTML, "| Pressure:", elements["srpPressVal"] ? elements["srpPressVal"].textContent : "--", "| Drift:", elements["srpDriftVal"] ? elements["srpDriftVal"].textContent : "--");
   if (elements["agwVal"]) console.log("AGW Val:", elements["agwVal"].innerHTML, "| Azimuth:", elements["agwAzVal"] ? elements["agwAzVal"].textContent : "--", "| Period:", elements["agwPeriodVal"] ? elements["agwPeriodVal"].textContent : "--");
+  if (elements["tideVal"]) console.log("Solid Tide Val:", elements["tideVal"].innerHTML, "| Up:", elements["tideVal"] ? elements["tideVal"].textContent : "--", "| 3D:", elements["tide3dVal"] ? elements["tide3dVal"].textContent : "--");
+  if (elements["tropoRefVal"]) console.log("Tropo Refractivity Val:", elements["tropoRefVal"].innerHTML, "| Lapse:", elements["tropoDnVal"] ? elements["tropoDnVal"].textContent : "--", "| Risk:", elements["tropoRiskVal"] ? elements["tropoRiskVal"].textContent : "--");
+  if (elements["satClockVal"]) console.log("Sat Clock Val:", elements["satClockVal"].innerHTML, "| Prime:", elements["satClockPrime"] ? elements["satClockPrime"].textContent : "--", "| Ratio:", elements["satClockRatio"] ? elements["satClockRatio"].textContent : "--");
 
   console.log("SMOKE_IONO: PASS");
 }
