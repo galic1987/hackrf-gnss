@@ -23,10 +23,12 @@ DAEMONS=(
     "iono_klobuchar_benchmark.py --interval 2.0"
     "iono_tid_analyzer.py --interval 2.0"
     "iono_scintillation.py --interval 2.0"
+    "carrier_double_difference_engine.py --interval 2.0"
+    "post_sunrise_flux_tracker.py --interval 2.0"
 )
 
 start_all() {
-    echo "=== Starting All 16 GNSS Metrology Daemons ==="
+    echo "=== Starting All 18 GNSS Metrology Daemons ==="
     cd "$WORKDIR" || exit 1
     for d in "${DAEMONS[@]}"; do
         script=$(echo "$d" | awk '{print $1}')

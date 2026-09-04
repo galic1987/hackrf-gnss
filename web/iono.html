@@ -560,6 +560,19 @@
       Invariant: &Delta;&Phi;<sup>ik</sup> = &Delta;&rho;<sup>ik</sup> - c&Delta;dt<sup>ik</sup> - &Delta;I<sup>ik</sup> + &Delta;T<sup>ik</sup> + &lambda;&Delta;N<sup>ik</sup> (Cancels Receiver Clock Ticks).
     </div>
   </div>
+
+  <!-- Card 15: Zero-Baseline Double-Difference & Solar Ramp -->
+  <div class="card">
+    <div class="card-label">
+      <span>Zero-Baseline Double-Diff &amp; Solar Ramp</span>
+      <span class="badge" id="ddBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">INTEGER FIXED</span>
+    </div>
+    <div class="card-val" id="ddVal">1.18 <span class="unit">mm DD Phase Residual</span></div>
+    <div class="card-sub">Fix Rate: <b id="ddFixRate" style="color:var(--green);">100.0% (3/3)</b> &bull; dTEC/dt: <b id="solarDtecVal" style="color:var(--cyan);">+0.34 TECU/h</b> &bull; Solar GHI: <b id="solarGhiVal" style="color:var(--amber);">127 W/m&sup2;</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Double-Difference: &nabla;&Delta;&Phi;<sub>AB</sub><sup>ik</sup> = &lambda;&nabla;&Delta;N<sub>AB</sub><sup>ik</sup> + &epsilon;<sub>DD</sub>. Eliminates Rx + Sat clocks, Tropo &amp; Iono!
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1012,6 +1025,35 @@
       var nv = document.getElementById("sdNoiseVal");
       if (nv && sd.mean_sd_phase_noise_mm !== undefined) {
         nv.textContent = sd.mean_sd_phase_noise_mm.toFixed(2) + " mm";
+      }
+    }
+
+    // Card 15: Zero-Baseline Double-Difference & Solar Ramp
+    if (st.double_difference_summary) {
+      var dds = st.double_difference_summary;
+      var dv = document.getElementById("ddVal");
+      if (dv && dds.mean_dd_phase_residual_mm !== undefined) {
+        dv.innerHTML = dds.mean_dd_phase_residual_mm.toFixed(2) + ' <span class="unit">mm DD Phase Residual</span>';
+      }
+      var dfr = document.getElementById("ddFixRate");
+      if (dfr && dds.ambiguity_fix_rate_pct !== undefined) {
+        dfr.textContent = dds.ambiguity_fix_rate_pct.toFixed(1) + "% (" + dds.integer_fixed_pairs + "/" + dds.n_double_differenced_pairs + ")";
+      }
+      var db = document.getElementById("ddBadge");
+      if (db) {
+        db.textContent = dds.ambiguity_fix_rate_pct >= 99.0 ? "INTEGER FIXED" : "FLOAT SEARCH";
+        db.style.color = dds.ambiguity_fix_rate_pct >= 99.0 ? "var(--green)" : "var(--amber)";
+      }
+    }
+    if (st.solar_ramp_summary) {
+      var srs = st.solar_ramp_summary;
+      var sdt = document.getElementById("solarDtecVal");
+      if (sdt && srs.dtec_dt_tecu_per_hr !== undefined) {
+        sdt.textContent = (srs.dtec_dt_tecu_per_hr >= 0 ? "+" : "") + srs.dtec_dt_tecu_per_hr.toFixed(2) + " TECU/h";
+      }
+      var sgh = document.getElementById("solarGhiVal");
+      if (sgh && srs.global_horizontal_irradiance_w_m2 !== undefined) {
+        sgh.textContent = srs.global_horizontal_irradiance_w_m2.toFixed(0) + " W/m²";
       }
     }
 

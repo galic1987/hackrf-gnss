@@ -149,6 +149,8 @@ async function main() {
   console.log("HOI N-S Asymmetry / Delay:", elements["nsAsymVal"].textContent, "/", elements["hoiPsVal"].textContent);
   console.log("HOI Faraday / Bending:", elements["faradayVal"].textContent, "/", elements["rayBendVal"].textContent);
   console.log("HOI Status:", elements["hoiBadge"].textContent);
+  if (elements["sdVal"]) console.log("Single-Diff Val:", elements["sdVal"].innerHTML, "| Pivot:", elements["sdPivotSat"] ? elements["sdPivotSat"].textContent : "--");
+  if (elements["ddVal"]) console.log("Double-Diff Val:", elements["ddVal"].innerHTML, "| Fix Rate:", elements["ddFixRate"] ? elements["ddFixRate"].textContent : "--", "| dTEC/dt:", elements["solarDtecVal"] ? elements["solarDtecVal"].textContent : "--");
 
   console.log("SMOKE_IONO: PASS");
 }
