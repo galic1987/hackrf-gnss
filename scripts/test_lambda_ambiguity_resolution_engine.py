@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lambda_ambiguity_resolution_engine import (
     LambdaEngine,
     run_lambda_engine,
-    STATE_FILE
+    STATE_FILE,
+    SIM_STATE_FILE
 )
 
 class TestLambdaEngine(unittest.TestCase):
@@ -37,7 +38,6 @@ class TestLambdaEngine(unittest.TestCase):
 
     def test_run_lambda_engine(self):
         res = run_lambda_engine()
-        self.assertTrue(os.path.exists(STATE_FILE))
         self.assertIn("lambda_summary", res)
         self.assertIn("geodetic_position_improvement", res)
         self.assertIn("fixed_satellites", res)
@@ -46,6 +46,21 @@ class TestLambdaEngine(unittest.TestCase):
         self.assertIn("ratio_test_statistic", l_sum)
         self.assertGreater(l_sum["ratio_test_statistic"], 1.0)
         self.assertIn(l_sum["validation_verdict"], ["ACCEPTED_FIXED", "REJECTED_FLOAT"])
+
+        # Evidence Envelope
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        if env["quarantined"]:
+            self.assertEqual(env["claim_class"], "simulation")
+            self.assertFalse(env["validity"])
+            self.assertTrue(os.path.exists(SIM_STATE_FILE))
+            self.assertFalse(os.path.exists(STATE_FILE))
+        else:
+            self.assertEqual(env["claim_class"], "derived")
+            self.assertTrue(env["validity"])
+            self.assertEqual(env["uncertainty"]["units"], "m")
+            self.assertTrue(os.path.exists(STATE_FILE))
+            self.assertFalse(os.path.exists(SIM_STATE_FILE))
 
 if __name__ == "__main__":
     unittest.main()

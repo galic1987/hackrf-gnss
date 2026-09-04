@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from satellite_atomic_clock_analyzer import (
     compute_allan_deviation,
     run_clock_adev_engine,
-    STATE_FILE
+    SIM_STATE_FILE
 )
 
 class TestSatelliteClockAnalyzer(unittest.TestCase):
@@ -39,11 +39,20 @@ class TestSatelliteClockAnalyzer(unittest.TestCase):
 
     def test_run_clock_adev_engine(self):
         res = run_clock_adev_engine()
-        self.assertTrue(os.path.exists(STATE_FILE))
+        self.assertTrue(os.path.exists(SIM_STATE_FILE))
         self.assertIn("satellite_atomic_clock_summary", res)
         self.assertIn("space_clocks", res)
+        self.assertIn("evidence_envelope", res)
+
+        env = res["evidence_envelope"]
+        self.assertEqual(env["claim_class"], "simulation")
+        self.assertTrue(env["quarantined"])
+        self.assertFalse(env["validity"])
+        self.assertIn("SYNTHETIC_NUMERICAL_SIMULATION", env["failure_reasons"])
 
         summ = res["satellite_atomic_clock_summary"]
+        self.assertEqual(summ["claim_class"], "SIMULATION")
+        self.assertEqual(summ["quarantine_status"], "QUARANTINED_SIMULATION")
         self.assertIn("Maser", summ["most_stable_clock_type"])
         # ADEV at 300s for maser should be ~ 1e-14
         self.assertLess(summ["best_adev_tau_300s"], 5e-14)

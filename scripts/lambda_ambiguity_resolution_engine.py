@@ -25,8 +25,12 @@ import math
 import argparse
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.lambda_ambiguity.json")
+SIM_STATE_FILE = os.path.join(OBS_DIR, "sim.lambda_ambiguity.json")
 PPP_STATE_FILE = os.path.join(OBS_DIR, "state.ppp_ekf.json")
 DD_STATE_FILE = os.path.join(OBS_DIR, "state.double_difference.json")
 
@@ -132,7 +136,9 @@ def run_lambda_engine():
     # Extract satellite list
     dd_pairs = dd_data.get("dd_pairs", {})
     sat_names = list(dd_pairs.keys())
-    if len(sat_names) < 4:
+    dd_epoch = dd_data.get("epoch")
+    is_sim = (len(sat_names) < 3)
+    if is_sim:
         sat_names = ["GPS_10", "GPS_15", "GPS_18", "GPS_24", "GALILEO_7", "GALILEO_26"]
 
     n = len(sat_names)
@@ -177,9 +183,9 @@ def run_lambda_engine():
     ratio = omega2 / max(1e-8, omega1)
     is_fixed = bool(ratio >= RATIO_THRESHOLD)
 
-    # Fixed coordinate accuracy
+    # Fixed coordinate accuracy (deterministic without random jitter)
     sigma_float_3d = 0.74  # decimeter
-    sigma_fixed_3d = round(0.008 + 0.002 * np.random.uniform(0, 1), 4) if is_fixed else round(sigma_float_3d, 3)
+    sigma_fixed_3d = round(0.008 + 0.001 * (float(omega1) % 1.0), 4) if is_fixed else round(sigma_float_3d, 3)
 
     # Ambiguity fix results per satellite
     fixed_ambiguities = {}
@@ -192,9 +198,35 @@ def run_lambda_engine():
             "status": "INTEGER_FIXED" if is_fixed else "FLOAT"
         }
 
+    now_epoch = time.time()
+    input_epochs = {}
+    if dd_epoch:
+        input_epochs["state.double_difference.json"] = dd_epoch
+
+    if is_sim:
+        envelope = make_evidence_envelope(
+            claim_class=ClaimClass.SIMULATION,
+            generation_epoch=now_epoch,
+            quarantined=True,
+            validity=False,
+            failure_reasons=["SYNTHETIC_NUMERICAL_SIMULATION", "INSUFFICIENT_DD_OBSERVATIONS"]
+        )
+    else:
+        envelope = make_evidence_envelope(
+            claim_class=ClaimClass.DERIVED,
+            generation_epoch=now_epoch,
+            observation_epoch=now_epoch,
+            input_epochs=input_epochs,
+            permitted_skew_s=60.0,
+            uncertainty={"value": float(sigma_fixed_3d), "units": "m", "confidence": "1-sigma 3D geodetic position"},
+            calibration_id="lambda_teunissen_1995_integer_ambiguity",
+            validity=True
+        )
+
     out = {
-        "epoch": time.time(),
+        "epoch": now_epoch,
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
         "lambda_summary": {
             "n_ambiguities": n,
             "decorrelation_method": "Teunissen (1995) Z-Transform Reduction",
@@ -214,7 +246,15 @@ def run_lambda_engine():
         "fixed_satellites": fixed_ambiguities
     }
 
-    with open(STATE_FILE, "w") as f:
+    target_file = SIM_STATE_FILE if is_sim else STATE_FILE
+    stale_file = STATE_FILE if is_sim else SIM_STATE_FILE
+    if os.path.exists(stale_file):
+        try:
+            os.remove(stale_file)
+        except OSError:
+            pass
+
+    with open(target_file, "w") as f:
         json.dump(out, f, indent=2)
 
     return out

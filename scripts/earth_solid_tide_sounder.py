@@ -28,6 +28,9 @@ import math
 import argparse
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.solid_earth_tide.json")
 SOLAR_STATE_FILE = os.path.join(OBS_DIR, "state.solar.json")
@@ -137,10 +140,12 @@ def run_earth_tide_engine():
     sun_dist_m = 1.496e11 * 1.0079
     sun_el = 43.1
     sun_az = 123.8
+    solar_epoch = None
     if os.path.exists(SOLAR_STATE_FILE):
         try:
             with open(SOLAR_STATE_FILE) as f:
                 sd = json.load(f)
+                solar_epoch = sd.get("epoch")
                 se = sd.get("solar_ephemeris", {})
                 sun_el = se.get("solar_el_apparent_deg", sun_el)
                 sun_az = se.get("solar_az_deg", sun_az)
@@ -191,9 +196,26 @@ def run_earth_tide_engine():
     delta_north_m = dn_sun + dn_moon + otl_n
     total_3d_m = math.sqrt(delta_east_m**2 + delta_north_m**2 + delta_up_m**2)
 
+    now_epoch = time.time()
+    input_epochs = {}
+    if solar_epoch:
+        input_epochs["state.solar.json"] = solar_epoch
+
+    envelope = make_evidence_envelope(
+        claim_class=ClaimClass.MODEL,
+        generation_epoch=now_epoch,
+        observation_epoch=now_epoch,
+        input_epochs=input_epochs,
+        permitted_skew_s=60.0,
+        uncertainty={"value": 1.5, "units": "mm", "confidence": "1-sigma (IERS 2010 nominal)"},
+        calibration_id="iers_conventions_2010_elastic_body_tide",
+        validity=True
+    )
+
     out = {
-        "epoch": time.time(),
+        "epoch": now_epoch,
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
         "station_coordinates": {
             "lat_deg": STATION_LAT_DEG,
             "lon_deg": STATION_LON_DEG,

@@ -10,7 +10,7 @@
     --card-bg: rgba(18, 23, 34, 0.85);
     --border: rgba(255, 255, 255, 0.08);
     --text: #f1f5f9;
-    --text-dim: #94a3b8;
+    --text-dim: #a6b4c9;
     --cyan: #00f0ff;
     --blue: #38bdf8;
     --magenta: #f43f5e;
@@ -19,6 +19,17 @@
     --purple: #a855f7;
     --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -333,7 +344,9 @@
   <div class="card sky-card">
     <div class="card-label" style="width: 100%;">Polar Ionospheric Pierce Map (IPP)</div>
     <div class="canvas-wrap">
-      <canvas id="skyCanvas" width="880" height="880"></canvas>
+      <canvas id="skyCanvas" width="880" height="880" role="img" aria-label="Polar Ionospheric Pierce Map showing satellite azimuth, elevation, and 350-kilometer ionospheric pierce points">
+        <p class="sr-only">Polar Ionospheric Pierce Map displaying real-time satellite azimuth, elevation, and 350-kilometer ionospheric pierce points across GPS, Galileo, and BeiDou constellations.</p>
+      </canvas>
       <div id="tooltip" class="tooltip"></div>
     </div>
   </div>
@@ -341,7 +354,9 @@
   <div class="card chart-card">
     <div class="card-label">Real-Time Scintillation &amp; Plasma Drift Telemetry (60s Buffer)</div>
     <div class="chart-wrap">
-      <canvas id="stripCanvas" width="1200" height="760"></canvas>
+      <canvas id="stripCanvas" width="1200" height="760" role="img" aria-label="Real-Time Scintillation S4 and Plasma Drift Telemetry Stripchart over 60 seconds">
+        <p class="sr-only">Real-Time Scintillation S4 amplitude variance and plasma phase drift stripchart displaying 60-second rolling buffer.</p>
+      </canvas>
     </div>
   </div>
 </div>
@@ -717,16 +732,16 @@
     </div>
   </div>
 
-  <!-- Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer -->
+  <!-- Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer (QUARANTINED SIMULATION) -->
   <div class="card">
     <div class="card-label">
       <span>Satellite In-Orbit Atomic Clock Stability</span>
-      <span class="badge" id="satClockBadge" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">MASER-GRADE STABILITY</span>
+      <span class="badge" id="satClockBadge" style="background:rgba(239,68,68,0.15); color:var(--red, #f87171); border:1px solid rgba(239,68,68,0.3); padding:1px 6px; border-radius:4px; font-size:11px;">⚠️ QUARANTINED SIMULATION</span>
     </div>
-    <div class="card-val" id="satClockVal">1.01 &times; 10&minus;&sup1;&sup4; <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Galileo PHM)</span></div>
+    <div class="card-val" id="satClockVal">1.01 &times; 10&minus;&sup1;&sup4; <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Simulation Model)</span></div>
     <div class="card-sub">Prime Sat: <b id="satClockPrime" style="color:var(--green);">GALILEO_26 (PHM)</b> &bull; GPS RAFS Floor: <b id="satClockGpsVal" style="color:var(--amber);">2.58 &times; 10&minus;&sup1;&sup4;</b> &bull; Maser vs Rb: <b id="satClockRatio" style="color:var(--cyan);">2.55&times; Cleaner</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
-      IEEE Std 1139 Space Metrology: Tracks in-orbit Passive Hydrogen Masers vs Rubidium standards &bull; Space Clocks: <b id="satClockCount" style="color:var(--cyan);">12 Analyzed</b>.
+      Simulated Allan Deviation model quarantined from live physical receiver observations &bull; Space Clocks: <b id="satClockCount" style="color:var(--cyan);">12 Analyzed</b>.
     </div>
   </div>
 </div>
@@ -1516,12 +1531,13 @@
       }
     }
 
-    // Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer
-    if (st.satellite_atomic_clock_summary) {
-      var cks = st.satellite_atomic_clock_summary;
+    // Card 27: Satellite In-Orbit Atomic Clock Stability & ADEV Analyzer (Quarantined Simulation)
+    var simClockData = (st.simulations && st.simulations.satellite_clock_adev) ? st.simulations.satellite_clock_adev : (st.satellite_clock_adev || null);
+    var cks = (simClockData && simClockData.satellite_atomic_clock_summary) ? simClockData.satellite_atomic_clock_summary : st.satellite_atomic_clock_summary;
+    if (cks) {
       var ckv = document.getElementById("satClockVal");
       if (ckv && cks.best_adev_tau_300s !== undefined) {
-        ckv.innerHTML = cks.best_adev_tau_300s.toExponential(2) + ' <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (' + (cks.most_stable_satellite || "Space Clock") + ')</span>';
+        ckv.innerHTML = cks.best_adev_tau_300s.toExponential(2) + ' <span class="unit">&sigma;<sub>y</sub>(300s) Allan Dev (Simulation Model)</span>';
       }
       var cprime = document.getElementById("satClockPrime");
       if (cprime && cks.most_stable_satellite) {
@@ -1538,11 +1554,14 @@
       }
       var ccount = document.getElementById("satClockCount");
       if (ccount && cks.n_space_clocks_benchmarked !== undefined) {
-        ccount.textContent = cks.n_space_clocks_benchmarked + " Analyzed";
+        ccount.textContent = cks.n_space_clocks_benchmarked + " (Simulated)";
       }
       var cbadge = document.getElementById("satClockBadge");
       if (cbadge) {
-        cbadge.textContent = "MASER-GRADE STABILITY";
+        cbadge.textContent = "⚠️ QUARANTINED SIMULATION";
+        cbadge.style.background = "rgba(239,68,68,0.15)";
+        cbadge.style.color = "var(--red, #f87171)";
+        cbadge.style.borderColor = "rgba(239,68,68,0.3)";
       }
     }
 

@@ -54,5 +54,13 @@ class TestAGWTIDWavevector(unittest.TestCase):
         self.assertGreater(t_sum["horizontal_phase_speed_m_s"], 50.0)
         self.assertLess(t_sum["horizontal_phase_speed_m_s"], 1000.0)
 
+        # Evidence Envelope
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        self.assertEqual(env["claim_class"], "derived")
+        self.assertTrue(env["validity"])
+        self.assertFalse(env["quarantined"])
+        self.assertEqual(env["uncertainty"]["units"], "m/s")
+
 if __name__ == "__main__":
     unittest.main()

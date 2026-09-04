@@ -47,5 +47,13 @@ class TestSRPSounder(unittest.TestCase):
         self.assertGreater(srp["mean_orbital_acceleration_nm_s2"], 10.0)
         self.assertLess(srp["mean_orbital_acceleration_nm_s2"], 200.0)
 
+        # Evidence Envelope
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        self.assertEqual(env["claim_class"], "model")
+        self.assertTrue(env["validity"])
+        self.assertFalse(env["quarantined"])
+        self.assertEqual(env["uncertainty"]["units"], "nm/s^2")
+
 if __name__ == "__main__":
     unittest.main()

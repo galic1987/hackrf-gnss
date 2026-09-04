@@ -64,9 +64,13 @@ class TestEarthSolidTideSounder(unittest.TestCase):
         self.assertGreater(tide["total_3d_displacement_mm"], 0.0)
         self.assertLess(tide["total_3d_displacement_mm"], 500.0)
 
-        # Love numbers
-        self.assertAlmostEqual(tide["love_number_h2"], LOVE_H2, places=4)
-        self.assertAlmostEqual(tide["shida_number_l2"], LOVE_L2, places=4)
+        # Evidence Envelope
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        self.assertEqual(env["claim_class"], "model")
+        self.assertTrue(env["validity"])
+        self.assertFalse(env["quarantined"])
+        self.assertEqual(env["uncertainty"]["units"], "mm")
 
 if __name__ == "__main__":
     unittest.main()

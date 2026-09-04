@@ -25,6 +25,9 @@ import math
 import argparse
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.srp_photon.json")
 SOLAR_STATE_FILE = os.path.join(OBS_DIR, "state.solar.json")
@@ -151,9 +154,21 @@ def run_srp_engine():
     mean_a = float(np.mean(accel_list)) if accel_list else 7.55e-8
     mean_f = float(np.mean(force_list)) if force_list else 1.23e-4
 
+    now_epoch = time.time()
+    envelope = make_evidence_envelope(
+        claim_class=ClaimClass.MODEL,
+        generation_epoch=now_epoch,
+        observation_epoch=now_epoch,
+        permitted_skew_s=60.0,
+        uncertainty={"value": 1.2, "units": "nm/s^2", "confidence": "1-sigma ECOM box-wing model"},
+        calibration_id="ecom_box_wing_radiation_model",
+        validity=True
+    )
+
     out = {
-        "epoch": time.time(),
+        "epoch": now_epoch,
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
         "srp_summary": {
             "solar_irradiance_w_m2": round(s_flux, 1),
             "solar_distance_au": solar_dist,

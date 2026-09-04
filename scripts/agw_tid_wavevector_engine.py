@@ -27,6 +27,9 @@ import math
 import argparse
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.agw_wavevector.json")
 TID_STATE_FILE = os.path.join(OBS_DIR, "state.tid.json")
@@ -173,9 +176,30 @@ def run_agw_engine():
         tid_class = "LARGE_SCALE_TID (LSTID)"
         source_mechanism = "Auroral Electrojet Joule Heating / Geomagnetic Substorm"
 
+    now_epoch = time.time()
+    input_epochs = {}
+    if os.path.exists(TID_STATE_FILE):
+        try:
+            if "epoch" in td:
+                input_epochs["state.tid.json"] = td["epoch"]
+        except Exception:
+            pass
+
+    envelope = make_evidence_envelope(
+        claim_class=ClaimClass.DERIVED,
+        generation_epoch=now_epoch,
+        observation_epoch=now_epoch,
+        input_epochs=input_epochs,
+        permitted_skew_s=60.0,
+        uncertainty={"value": 15.0, "units": "m/s", "confidence": "1-sigma horizontal phase velocity"},
+        calibration_id="hines_1960_acoustic_gravity_wave_dispersion",
+        validity=True
+    )
+
     out = {
-        "epoch": time.time(),
+        "epoch": now_epoch,
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
         "tid_wavevector_summary": {
             "dominant_period_min": round(period_min, 1),
             "angular_frequency_mrad_s": round(omega * 1000.0, 3),

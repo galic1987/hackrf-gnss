@@ -1057,6 +1057,41 @@ fn merge_sync_state(dir: &std::path::Path) -> Option<String> {
     if clock_seen {
         out.insert("clock".to_string(), Value::Object(clock));
     }
+    // Quarantined Simulations Layer:
+    // Synthetic / numerical simulations write exclusively to sim.*.json and
+    // are strictly quarantined from the live evidence namespace. Merged into out["simulations"].
+    let mut sim_map = serde_json::Map::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut sim_files: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().and_then(|n| n.to_str())
+                .map(|n| n.starts_with("sim.") && n.ends_with(".json"))
+                .unwrap_or(false))
+            .collect();
+        sim_files.sort();
+        for sp in sim_files {
+            let age = std::fs::metadata(&sp).and_then(|m| m.modified()).ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs_f64());
+            let Ok(s) = std::fs::read_to_string(&sp) else { continue };
+            let Ok(mut v) = serde_json::from_str::<Value>(&s) else { continue };
+            let ttl = v.get("ttl_s").and_then(|t| t.as_f64()).unwrap_or(STATE_TTL_S);
+            if age.map_or(false, |a| a > ttl) {
+                continue;
+            }
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("ttl_s");
+            }
+            if let Some(fname) = sp.file_name().and_then(|n| n.to_str()) {
+                let key = fname.trim_start_matches("sim.").trim_end_matches(".json").to_string();
+                sim_map.insert(key, v);
+            }
+        }
+    }
+    if !sim_map.is_empty() {
+        out.insert("simulations".to_string(), Value::Object(sim_map));
+    }
     if let Some(e) = epoch {
         out.insert("epoch".to_string(), serde_json::json!(e));
     }
@@ -1771,7 +1806,6 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod status_tests {
     use super::*;
-    use std::io::Write as _;
 
     fn rec(cycle: u64, utc: &str, bursts: &[f64], gnss: bool, sweep: bool) -> String {
         let b: Vec<String> = bursts
@@ -1844,6 +1878,35 @@ mod status_tests {
         let merged = merge_sync_state(&dir).unwrap();
         assert!(merged.contains("Dead Band"),
                 "fresh legacy row dropped: {merged}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantined_simulations_are_segregated_from_live_evidence_namespace() {
+        let dir = std::env::temp_dir().join(format!("gnss_quarantine_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1. Live evidence: state.tick.json
+        std::fs::write(dir.join("state.tick.json"),
+                       r#"{"epoch":50,"clock":{"live_tick_hz":32e6}}"#).unwrap();
+
+        // 2. Synthetic simulation: sim.satellite_clock_adev.json
+        std::fs::write(dir.join("sim.satellite_clock_adev.json"),
+                       r#"{"epoch":50,"satellite_atomic_clock_summary":{"best_adev_tau_300s":1e-14}}"#).unwrap();
+
+        let merged_str = merge_sync_state(&dir).expect("merge should succeed");
+        let merged: serde_json::Value = serde_json::from_str(&merged_str).unwrap();
+
+        // Must NOT appear in root live namespace
+        assert!(merged.get("satellite_atomic_clock_summary").is_none(),
+                "simulation leaked into live evidence root: {merged_str}");
+
+        // MUST appear in quarantined simulations namespace
+        let sims = merged.get("simulations").expect("simulations namespace missing");
+        let sim_clock = sims.get("satellite_clock_adev").expect("quarantined simulation missing");
+        assert_eq!(sim_clock["satellite_atomic_clock_summary"]["best_adev_tau_300s"], 1e-14);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -59,5 +59,13 @@ class TestTropoRefractivitySounder(unittest.TestCase):
         ])
         self.assertGreater(ref["ground_radio_horizon_km"], 1.0)
 
+        # Evidence Envelope
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        self.assertEqual(env["claim_class"], "model")
+        self.assertTrue(env["validity"])
+        self.assertFalse(env["quarantined"])
+        self.assertEqual(env["uncertainty"]["units"], "N-units")
+
 if __name__ == "__main__":
     unittest.main()

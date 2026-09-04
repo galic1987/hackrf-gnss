@@ -25,8 +25,12 @@ import math
 import argparse
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.iq_imbalance.json")
+SIM_STATE_FILE = os.path.join(OBS_DIR, "sim.iq_imbalance.json")
 IQ_RAW_PATH = "/Volumes/Radiator 8TB/gnss/hackrf_gnss/wideband_l1_b1.iq"
 ALT_IQ_PATH = "/Volumes/Radiator 8TB/gnss/observations/_cap.iq"
 
@@ -132,9 +136,30 @@ class IQImbalanceSounder:
         else:
             health_tier = "ELEVATED_MIRROR_IMAGE"
 
+        now_epoch = time.time()
+        is_sim = (source_name == "SYNTHETIC_MAX2837_HARDWARE_MODEL")
+        if is_sim:
+            envelope = make_evidence_envelope(
+                claim_class=ClaimClass.SIMULATION,
+                generation_epoch=now_epoch,
+                quarantined=True,
+                validity=False,
+                failure_reasons=["SYNTHETIC_NUMERICAL_SIMULATION", "NO_LIVE_RAW_IQ_STREAM_FOUND"]
+            )
+        else:
+            envelope = make_evidence_envelope(
+                claim_class=ClaimClass.OBSERVED,
+                generation_epoch=now_epoch,
+                observation_epoch=now_epoch,
+                uncertainty={"value": 0.05, "units": "dB", "confidence": "1-sigma gain ratio"},
+                calibration_id="max2837_mixer_iq_nulling",
+                validity=True
+            )
+
         return {
-            "epoch": time.time(),
+            "epoch": now_epoch,
             "ttl_s": 30.0,
+            "evidence_envelope": envelope,
             "transceiver_front_end": "MAX2837 Direct-Conversion Zero-IF + MAX5864 Dual ADC",
             "iq_source": source_name,
             "samples_analyzed_per_batch": n,
@@ -163,7 +188,15 @@ class IQImbalanceSounder:
 def run_sounder():
     sounder = IQImbalanceSounder()
     res = sounder.analyze()
-    with open(STATE_FILE, "w") as f:
+    is_quarantined = res.get("evidence_envelope", {}).get("quarantined", False)
+    target_file = SIM_STATE_FILE if is_quarantined else STATE_FILE
+    stale_file = STATE_FILE if is_quarantined else SIM_STATE_FILE
+    if os.path.exists(stale_file):
+        try:
+            os.remove(stale_file)
+        except OSError:
+            pass
+    with open(target_file, "w") as f:
         json.dump(res, f, indent=2)
     return res
 

@@ -17,8 +17,8 @@
   --line: #173249;
   --line-soft: #102539;
   --text: #e9f3fb;
-  --muted: #8295a8;
-  --muted-2: #5f7589;
+  --muted: #9bb0c4;
+  --muted-2: #849bb0;
   --cyan: #2dd9ff;
   --cyan-soft: #8cecff;
   --green: #49dfa0;
@@ -46,11 +46,11 @@ a { color: inherit; }
 .topbar { position: sticky; top: 0; z-index: 50; min-height: 66px; display: grid; grid-template-columns: 220px repeat(6, minmax(88px, 1fr)) auto; align-items: stretch; background: rgba(3, 9, 20, .97); border-bottom: 1px solid var(--line); box-shadow: 0 12px 28px rgba(0, 0, 0, .22); }
 .brand { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 10px 18px 9px 22px; color: var(--text); text-decoration: none; border-right: 1px solid var(--line); }
 .brand strong { font-size: 14px; letter-spacing: .02em; }
-.brand span { margin-top: 2px; color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.brand span { margin-top: 2px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .status-cell { min-width: 0; padding: 10px 9px 8px; border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; }
-.status-cell .kicker { color: var(--muted-2); font-family: var(--mono); font-size: 9px; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
-.status-cell strong { min-width: 0; margin-top: 3px; color: var(--text); font-family: var(--mono); font-size: 10px; font-weight: 650; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.status-cell small { margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-cell .kicker { color: var(--muted-2); font-family: var(--mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
+.status-cell strong { min-width: 0; margin-top: 3px; color: var(--text); font-family: var(--mono); font-size: 12px; font-weight: 650; line-height: 1.2; word-break: break-word; }
+.status-cell small { margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-cell strong.good { color: var(--green); }
 .status-cell strong.warn { color: var(--amber); }
 .status-cell strong.bad { color: var(--red); }
@@ -62,8 +62,8 @@ a { color: inherit; }
 .action[aria-pressed="true"] { background: var(--amber); border-color: var(--amber); color: #160d00; }
 .workbench { display: grid; grid-template-columns: 205px minmax(560px, 1fr) 338px; grid-template-areas: "rail main inspector" "rail evidence evidence"; align-items: start; max-width: 1680px; margin: 0 auto; }
 .chapter-rail { grid-area: rail; align-self: stretch; min-width: 0; min-height: calc(100vh - 66px); padding: 17px 14px 22px 20px; background: var(--bg-deep); border-right: 1px solid var(--line); }
-.rail-eyebrow, .section-label { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.rail-title { margin: 6px 0 18px; color: #d6e4ef; font-size: 12px; font-weight: 600; line-height: 1.45; }
+.rail-eyebrow, .section-label { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.rail-title { margin: 6px 0 18px; color: #d6e4ef; font-size: 13px; font-weight: 600; line-height: 1.45; }
 .rail-rule { height: 1px; margin: 0 0 14px; background: var(--line-soft); }
 .chapter-list { list-style: none; margin: 9px 0 18px; padding: 0; }
 .chapter-list li { position: relative; }
@@ -72,110 +72,110 @@ a { color: inherit; }
 .chapter-button:hover, .chapter-button[aria-current="step"] { color: var(--text); }
 .chapter-button .num { color: #60778b; font-family: var(--mono); font-size: 18px; font-weight: 400; line-height: 1.1; }
 .chapter-button[aria-current="step"] .num { color: var(--cyan); }
-.chapter-button strong { display: block; font-size: 10px; font-weight: 650; letter-spacing: .02em; }
-.chapter-button small { display: block; margin-top: 2px; color: var(--muted-2); font-size: 9px; line-height: 1.4; }
+.chapter-button strong { display: block; font-size: 12px; font-weight: 650; letter-spacing: .02em; }
+.chapter-button small { display: block; margin-top: 2px; color: var(--muted-2); font-size: 11px; line-height: 1.4; }
 .debugger-mode { margin-top: 18px; padding: 14px 9px 12px 38px; border-top: 1px solid var(--line); position: relative; }
 .debugger-mode::before { content: ""; position: absolute; left: 6px; top: 18px; width: 12px; height: 12px; border: 1px solid var(--cyan); border-radius: 50%; box-shadow: 0 0 14px rgba(45, 217, 255, .55); }
 .debugger-mode::after { content: ""; position: absolute; left: 10px; top: 22px; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); }
-.debugger-mode strong { color: var(--cyan); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-.debugger-mode span { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.debugger-mode strong { color: var(--cyan); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.debugger-mode span { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
 .main-stage { grid-area: main; min-width: 0; border-right: 1px solid var(--line); }
 .hero-panel { position: relative; height: 124px; overflow: hidden; background: #020812; border-bottom: 1px solid var(--line); }
 .hero-panel img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; object-position: center; opacity: .82; }
 .hero-copy { position: relative; z-index: 2; width: min(660px, 72%); height: 100%; padding: 11px 24px; text-shadow: 0 2px 12px #000; }
-.hero-copy .eyebrow { color: var(--cyan); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+.hero-copy .eyebrow { color: var(--cyan); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
 .hero-copy h1 { margin: 3px 0 1px; font-size: clamp(22px, 2vw, 28px); font-weight: 720; letter-spacing: .15em; line-height: 1.05; }
-.hero-copy > p { margin: 3px 0 7px; color: #a9bdcd; font-size: 10px; white-space: nowrap; }
+.hero-copy > p { margin: 3px 0 7px; color: #a9bdcd; font-size: 11px; white-space: nowrap; }
 .signal-picker { position: absolute; left: 24px; bottom: 8px; display: grid; grid-template-columns: auto minmax(150px, 230px); gap: 9px; align-items: center; width: fit-content; max-width: 100%; }
-.signal-picker label { color: var(--muted); font-family: var(--mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
-.signal-picker select, .compare-select { min-height: 30px; min-width: 0; padding: 4px 30px 4px 10px; border: 1px solid #28506c; border-radius: 4px; background: #05111c; color: var(--text); font-family: var(--mono); font-size: 10px; }
-.hero-status { position: absolute; z-index: 3; right: 16px; bottom: 13px; max-width: 48%; padding: 7px 10px; background: rgba(2, 8, 18, .88); border: 1px solid #1a4059; border-radius: 4px; color: #a8bdcd; font-family: var(--mono); font-size: 9px; text-align: right; }
-.hero-status strong { display: block; color: var(--green); font-size: 10px; }
+.signal-picker label { color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.signal-picker select, .compare-select { min-height: 30px; min-width: 0; padding: 4px 30px 4px 10px; border: 1px solid #28506c; border-radius: 4px; background: #05111c; color: var(--text); font-family: var(--mono); font-size: 11px; }
+.hero-status { position: absolute; z-index: 3; right: 16px; bottom: 13px; max-width: 48%; padding: 7px 10px; background: rgba(2, 8, 18, .88); border: 1px solid #1a4059; border-radius: 4px; color: #a8bdcd; font-family: var(--mono); font-size: 11px; text-align: right; }
+.hero-status strong { display: block; color: var(--green); font-size: 11px; }
 .signal-chain { background: #04101a; }
 .stage-row { display: grid; grid-template-columns: 195px minmax(150px, 1fr) 140px; height: 46px; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--line-soft); }
 .stage-row[aria-current="step"] { background: var(--panel-3); }
 .stage-select { position: relative; display: grid; grid-template-columns: 31px 1fr; gap: 8px; align-items: center; width: 100%; min-width: 0; padding: 7px 10px 7px 13px; border: 0; border-right: 1px solid var(--line-soft); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .stage-select:hover { background: #0a1b29; }
-.stage-select .stage-index { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #42637b; border-radius: 50%; color: #a9bed0; font-family: var(--mono); font-size: 10px; }
+.stage-select .stage-index { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #42637b; border-radius: 50%; color: #a9bed0; font-family: var(--mono); font-size: 11px; }
 .stage-row[aria-current="step"] .stage-index { color: #001018; background: var(--cyan); border-color: var(--cyan); }
-.stage-select strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
-.stage-select small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.stage-select strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+.stage-select small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .spark-wrap { position: relative; min-width: 0; padding: 8px 8px; }
 .spark-wrap canvas { display: block; width: 100%; height: 38px; }
 .stage-reading { min-width: 0; padding: 8px 10px; border-left: 1px solid var(--line-soft); display: flex; flex-direction: column; justify-content: center; }
-.tag { display: inline-flex; width: fit-content; align-items: center; min-height: 17px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 3px; font-family: var(--mono); font-size: 8px; font-weight: 750; letter-spacing: .08em; line-height: 1; text-transform: uppercase; }
+.tag { display: inline-flex; width: fit-content; align-items: center; min-height: 17px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 3px; font-family: var(--mono); font-size: 10px; font-weight: 750; letter-spacing: .08em; line-height: 1; text-transform: uppercase; }
 .tag.observed { color: var(--cyan); }
 .tag.derived { color: var(--purple); }
 .tag.model { color: var(--blue); }
 .tag.experimental { color: var(--amber); }
 .tag.unavailable { color: var(--muted); }
-.stage-reading strong { min-width: 0; margin-top: 4px; overflow: hidden; color: #cddde9; font-family: var(--mono); font-size: 9px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.stage-reading strong { min-width: 0; margin-top: 4px; overflow: hidden; color: #cddde9; font-family: var(--mono); font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .carrier-panel { padding: 8px 12px 6px; background: var(--bg-deep); }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
-.panel-heading h2, .panel-heading h3 { margin: 0; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.panel-heading p { margin: 2px 0 0; color: var(--muted); font-size: 9px; }
-.cadence-note { color: var(--muted-2); font-family: var(--mono); font-size: 8px; text-align: right; }
+.panel-heading h2, .panel-heading h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.panel-heading p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+.cadence-note { color: var(--muted-2); font-family: var(--mono); font-size: 11px; text-align: right; }
 .carrier-canvas-wrap { position: relative; min-height: 82px; border: 1px solid var(--line); background: #020913; }
 #carrierCanvas { display: block; width: 100%; height: 82px; }
-.plot-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 5px; color: var(--muted); font-size: 8px; }
+.plot-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 5px; color: var(--muted); font-size: 11px; }
 .legend-key { display: inline-flex; align-items: center; gap: 5px; }
 .legend-key::before { content: ""; width: 14px; height: 2px; background: var(--cyan); }
 .legend-key.slip::before { background: var(--red); }
 .legend-key.gap::before { background: #657789; }
 .inspector { grid-area: inspector; min-width: 0; position: sticky; top: 66px; height: min(660px, calc(100vh - 66px)); overflow: auto; background: var(--panel); }
 .inspector-inner { padding: 19px 16px 20px; }
-.inspector h2 { margin: 0; font-size: 10px; letter-spacing: .11em; text-transform: uppercase; }
-.inspector-context { min-height: 30px; margin: 6px 0 12px; color: var(--muted); font-size: 10px; }
+.inspector h2 { margin: 0; font-size: 12px; letter-spacing: .11em; text-transform: uppercase; }
+.inspector-context { min-height: 30px; margin: 6px 0 12px; color: var(--muted); font-size: 12px; }
 .tablist { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; border-bottom: 1px solid var(--line); }
-.tab { min-height: 34px; padding: 4px 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 8px; letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
+.tab { min-height: 34px; padding: 4px 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
 .tab:hover { color: var(--text); }
 .tab[aria-selected="true"] { color: var(--cyan); border-bottom-color: var(--cyan); }
 .tab-panel { padding-top: 9px; }
 .metric-list { margin: 0; }
 .metric-row { display: grid; grid-template-columns: minmax(112px, 1fr) minmax(105px, auto); gap: 8px; align-items: start; padding: 4px 0; border-bottom: 1px solid rgba(23, 50, 73, .62); }
-.metric-row dt { min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 8px; line-height: 1.2; letter-spacing: .05em; text-transform: uppercase; }
-.metric-row dd { min-width: 0; margin: 0; color: #d8e6ef; font-family: var(--mono); font-size: 9px; line-height: 1.2; text-align: right; overflow-wrap: anywhere; }
+.metric-row dt { min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 11px; line-height: 1.2; letter-spacing: .05em; text-transform: uppercase; }
+.metric-row dd { min-width: 0; margin: 0; color: #d8e6ef; font-family: var(--mono); font-size: 12px; line-height: 1.2; text-align: right; overflow-wrap: anywhere; }
 .metric-row dd.warn { color: var(--amber); }
 .metric-row dd.good { color: var(--green); }
 .metric-row dd.bad { color: var(--red); }
-.metric-source { display: block; margin-top: 1px; color: var(--muted-2); font-size: 6px; line-height: 1.15; letter-spacing: 0; text-transform: none; }
-.stage-note { margin: 9px 0 0; padding: 8px; border-left: 2px solid var(--cyan); background: #061521; color: #a8bdcc; font-size: 8px; line-height: 1.35; }
+.metric-source { display: block; margin-top: 1px; color: var(--muted-2); font-size: 11px; line-height: 1.15; letter-spacing: 0; text-transform: none; }
+.stage-note { margin: 9px 0 0; padding: 8px; border-left: 2px solid var(--cyan); background: #061521; color: #a8bdcc; font-size: 11px; line-height: 1.35; }
 .caveats { margin-top: 10px; border: 1px solid #75521c; border-radius: 6px; background: #100f0a; }
-.caveats summary { min-height: 34px; display: flex; align-items: center; padding: 6px 9px; color: var(--amber); font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
-.caveats ul { margin: 0; padding: 0 10px 9px 23px; color: #d2aa65; font-size: 8px; line-height: 1.35; }
+.caveats summary { min-height: 34px; display: flex; align-items: center; padding: 6px 9px; color: #e2b774; font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.caveats ul { margin: 0; padding: 0 10px 9px 23px; color: #e8c484; font-size: 11px; line-height: 1.35; }
 .caveats li + li { margin-top: 3px; }
-.common-clock-note { margin-top: 9px; padding: 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 8px; line-height: 1.35; }
+.common-clock-note { margin-top: 9px; padding: 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 11px; line-height: 1.35; }
 .common-clock-note strong { color: var(--text); }
 .evidence-band { grid-area: evidence; display: grid; grid-template-columns: 1fr 1.15fr 1fr; min-width: 0; border-top: 1px solid var(--line); background: var(--bg-deep); }
 .evidence-panel { min-width: 0; min-height: 254px; padding: 11px 14px 10px; border-right: 1px solid var(--line); }
 .evidence-panel:last-child { border-right: 0; }
-.evidence-panel h2 { margin: 0 0 4px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
-.evidence-panel > p { margin: 0 0 10px; color: var(--muted); font-size: 8px; }
+.evidence-panel h2 { margin: 0 0 4px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+.evidence-panel > p { margin: 0 0 10px; color: var(--muted); font-size: 11px; }
 .budget-table, .ledger-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.budget-table th, .ledger-table th { padding: 4px 5px; border-bottom: 1px solid var(--line); color: var(--muted-2); font-family: var(--mono); font-size: 7px; font-weight: 650; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
-.budget-table td, .ledger-table td { padding: 4px 5px; border-bottom: 1px solid rgba(23, 50, 73, .6); color: #b8cad7; font-size: 8px; vertical-align: top; overflow-wrap: anywhere; }
+.budget-table th, .ledger-table th { padding: 4px 5px; border-bottom: 1px solid var(--line); color: var(--muted-2); font-family: var(--mono); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.budget-table td, .ledger-table td { padding: 4px 5px; border-bottom: 1px solid rgba(23, 50, 73, .6); color: #b8cad7; font-size: 11px; vertical-align: top; overflow-wrap: anywhere; }
 .budget-table th:nth-child(1) { width: 40%; }
 .budget-table th:nth-child(2) { width: 25%; }
 .budget-table td:nth-child(2), .ledger-table td:nth-child(1), .ledger-table td:nth-child(3) { font-family: var(--mono); }
 .ledger-table th:nth-child(1) { width: 24%; }
 .ledger-table th:nth-child(2) { width: 24%; }
 .ledger-table th:nth-child(3) { width: 18%; }
-.budget-summary { display: flex; align-items: flex-start; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--amber); font-family: var(--mono); font-size: 8px; }
+.budget-summary { display: flex; align-items: flex-start; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--amber); font-family: var(--mono); font-size: 11px; }
 .compare-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .compare-card { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
-.compare-card label, .compare-card .label { display: block; margin-bottom: 5px; color: var(--muted-2); font-family: var(--mono); font-size: 7px; letter-spacing: .06em; text-transform: uppercase; }
-.compare-card strong { display: block; color: #dce9f1; font-family: var(--mono); font-size: 9px; overflow-wrap: anywhere; }
-.compare-card small { display: block; margin-top: 4px; color: var(--muted); font-size: 8px; line-height: 1.35; }
-.compare-select { width: 100%; min-height: 32px; padding-left: 7px; font-size: 8px; }
-.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 7px; color: var(--muted); font-family: var(--mono); font-size: 8px; text-transform: uppercase; }
+.compare-card label, .compare-card .label { display: block; margin-bottom: 5px; color: var(--muted-2); font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.compare-card strong { display: block; color: #dce9f1; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.compare-card small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.compare-select { width: 100%; min-height: 32px; padding-left: 7px; font-size: 11px; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 7px; color: var(--muted); font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
 .switch-row input { width: 36px; height: 20px; accent-color: var(--cyan); }
 .compare-readout { margin-top: 7px; padding: 9px; border: 1px solid #4f3c1b; border-radius: 5px; background: #100f0a; }
-.compare-readout .label { color: var(--amber); font-family: var(--mono); font-size: 8px; text-transform: uppercase; }
-.compare-readout strong { display: block; margin-top: 4px; color: #f5c977; font-family: var(--mono); font-size: 11px; }
-.compare-readout p { margin: 4px 0 0; color: #a89168; font-size: 8px; }
-.toast { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 360px; padding: 11px 13px; border: 1px solid #2b617f; border-radius: 5px; background: #06131f; color: #d7e7f0; box-shadow: 0 12px 30px rgba(0,0,0,.45); font-size: 10px; }
+.compare-readout .label { color: var(--amber); font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
+.compare-readout strong { display: block; margin-top: 4px; color: #f5c977; font-family: var(--mono); font-size: 13px; }
+.compare-readout p { margin: 4px 0 0; color: #c5d6e3; font-size: 11px; }
+.toast { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 360px; padding: 11px 13px; border: 1px solid #2b617f; border-radius: 5px; background: #06131f; color: #d7e7f0; box-shadow: 0 12px 30px rgba(0,0,0,.45); font-size: 12px; }
 .toast[hidden] { display: none; }
-.site-footer { max-width: 1680px; margin: 0 auto; padding: 14px 18px 22px 223px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: 9px; }
+.site-footer { max-width: 1680px; margin: 0 auto; padding: 14px 18px 22px 223px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: 11px; }
 .site-footer nav { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 7px; }
 .site-footer a { color: var(--muted); text-decoration: none; }
 .site-footer a:hover { color: var(--cyan); }
@@ -291,7 +291,7 @@ a { color: inherit; }
       <section class="signal-chain" aria-label="Signal path stages" id="signalChain"></section>
       <section class="carrier-panel" aria-labelledby="carrierTitle">
         <div class="panel-heading"><div><h2 id="carrierTitle">GNSS local-replica carrier accumulator · browser session</h2><p id="carrierSubtitle">Waiting for a qualified locked channel.</p></div><span class="cadence-note">10 s summary cadence · latest-slip reports can be missed</span></div>
-        <div class="carrier-canvas-wrap"><canvas id="carrierCanvas" width="900" height="108" role="img" aria-label="No carrier history is available yet">Browser-session carrier history appears here after two current observations.</canvas></div>
+        <div class="carrier-canvas-wrap"><canvas id="carrierCanvas" width="900" height="108" role="img" aria-label="No carrier history is available yet">Browser-session carrier history appears here after two current observations.</canvas><div id="carrierSummaryTable" class="sr-only" aria-live="polite"></div></div>
         <div class="plot-legend" aria-hidden="true"><span class="legend-key">local replica phase Δcycles</span><span class="legend-key slip">sampled slip/reset</span><span class="legend-key gap">missing summary interval</span></div>
       </section>
     </main>
@@ -459,17 +459,18 @@ a { color: inherit; }
     for (var gx = 0; gx <= 4; gx += 1) { var xg = 10 * dpr + gx / 4 * (w - 20 * dpr); ctx.beginPath(); ctx.moveTo(xg, 8 * dpr); ctx.lineTo(xg, h - 18 * dpr); ctx.stroke(); }
     for (var gy = 0; gy <= 2; gy += 1) { var yg = 8 * dpr + gy / 2 * (h - 26 * dpr); ctx.beginPath(); ctx.moveTo(10 * dpr, yg); ctx.lineTo(w - 10 * dpr, yg); ctx.stroke(); }
     ctx.fillStyle = COLORS.muted; ctx.font = Math.round(8 * dpr) + "px monospace"; ["−60 s", "−45 s", "−30 s", "−15 s", "NOW"].forEach(function (label, i) { var x = 10 * dpr + i / 4 * (w - 20 * dpr); ctx.textAlign = i === 0 ? "left" : i === 4 ? "right" : "center"; ctx.fillText(label, x, h - 5 * dpr); });
-    var channel = selectedChannel(); var list = channel && APP.history[channel.key] ? APP.history[channel.key] : []; var points = list.filter(function (p) { return finite(p.t) && finite(p.carrier) && !p.reset; }); var now = Date.now() / 1000;
+    var channel = selectedChannel(); var list = channel && APP.history[channel.key] ? APP.history[channel.key] : []; var points = list.filter(function (p) { return finite(p.t) && finite(p.carrier); }); var now = Date.now() / 1000;
     if (points.length < 2) { ctx.textAlign = "center"; ctx.fillStyle = COLORS.text; ctx.font = Math.round(10 * dpr) + "px monospace"; ctx.fillText(points.length ? "One session observation collected · waiting for the next summary" : "Collecting browser-local carrier history · no archive substituted", w / 2, h / 2); canvas.setAttribute("aria-label", points.length ? "One browser-session carrier observation collected" : "No browser-session carrier history available"); setStatusText("carrierSubtitle", points.length + " qualified samples · history begins when this page is opened"); return; }
     var visible = points.filter(function (p) { return now - p.t <= HISTORY_S + 2; }); if (visible.length < 2) visible = points.slice(-2); var first = visible[0]; var last = visible[visible.length - 1]; var dtTotal = last.t - first.t || 1; var slope = (last.carrier - first.carrier) / dtTotal; var residuals = visible.map(function (p) { return p.carrier - first.carrier - slope * (p.t - first.t); }); var min = Math.min.apply(null, residuals); var max = Math.max.apply(null, residuals); var span = max - min || 1; var plotTop = 10 * dpr; var plotBottom = h - 20 * dpr; function px(t) { return 10 * dpr + ((t - (now - HISTORY_S)) / HISTORY_S) * (w - 20 * dpr); } function py(v) { return plotBottom - ((v - min) / span) * (plotBottom - plotTop); }
     for (var i = 1; i < visible.length; i += 1) if (visible[i].t - visible[i - 1].t > POLL_MS / 1000 * 1.8) { ctx.fillStyle = "rgba(101,119,137,.18)"; var gapX = px(visible[i - 1].t); ctx.fillRect(gapX, plotTop, Math.max(2 * dpr, px(visible[i].t) - gapX), plotBottom - plotTop); }
-    ctx.strokeStyle = COLORS.cyan; ctx.lineWidth = 1.4 * dpr; ctx.beginPath(); visible.forEach(function (p, i) { var x = px(p.t); var y = py(residuals[i]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+    ctx.strokeStyle = COLORS.cyan; ctx.lineWidth = 1.4 * dpr; ctx.beginPath(); var needsMove = true; visible.forEach(function (p, i) { var x = px(p.t); var y = py(residuals[i]); if (needsMove || i === 0 || p.reset || p.slip || (i > 0 && p.t - visible[i - 1].t > POLL_MS / 1000 * 1.8)) { ctx.moveTo(x, y); needsMove = false; } else ctx.lineTo(x, y); }); ctx.stroke();
     list.forEach(function (p) { if ((p.slip || p.reset) && now - p.t <= HISTORY_S) { var x = px(p.t); ctx.strokeStyle = COLORS.red; ctx.beginPath(); ctx.moveTo(x, plotTop); ctx.lineTo(x, plotBottom); ctx.stroke(); } });
     if (APP.replay.active && finite(APP.replay.cursor)) { var cursorX = 10 * dpr + APP.replay.cursor * (w - 20 * dpr); ctx.strokeStyle = COLORS.amber; ctx.beginPath(); ctx.moveTo(cursorX, plotTop); ctx.lineTo(cursorX, plotBottom); ctx.stroke(); }
     var p2p = max - min; setStatusText("carrierSubtitle", visible.length + " qualified samples · linear trend removed for display · peak-to-peak " + p2p.toFixed(4) + " cycles"); canvas.setAttribute("aria-label", "Browser-session local-replica carrier residual for " + signalLabel(channel) + ", " + visible.length + " samples, peak-to-peak " + p2p.toFixed(4) + " cycles. This is not calibrated carrier range.");
+    var tableEl = byId("carrierSummaryTable"); if (tableEl) { tableEl.innerHTML = "<table><caption>Carrier Phase Tracking History for " + signalLabel(channel) + "</caption><thead><tr><th scope='col'>Time</th><th scope='col'>Carrier (cycles)</th><th scope='col'>Residual (cycles)</th><th scope='col'>Status</th></tr></thead><tbody>" + visible.slice(-5).map(function (p, i) { var rIdx = visible.length - 5 + i; return "<tr><td>" + (now - p.t).toFixed(1) + "s ago</td><td>" + p.carrier.toFixed(4) + "</td><td>" + residuals[rIdx].toFixed(4) + "</td><td>" + (p.slip ? "Cycle Slip" : p.reset ? "Reset" : "Locked") + "</td></tr>"; }).join("") + "</tbody></table>"; }
   }
   function metric(label, value, source, tone) { return { label: label, value: value, source: source, tone: tone || "" }; }
-  function observedMetrics(channel) { if (!channel) return [metric("Receiver channel", "Unavailable", "tracker.sats[]")]; var arrivalFresh = freshArrival(channel); var sampleFresh = freshObserved(channel); var arrival = currentArrivalAge(channel); var hidden = sampleFresh ? null : "WITHHELD · sample backlog " + formatDuration(channel.pipelineLag); return [metric("Constellation / PRN", signalLabel(channel), "/api/sync → tracker.sats[]"), metric("Summary output age", formatDuration(arrival), "tracker.sats[]._rx · processor output time", arrivalFresh ? "good" : "bad"), metric("Sample-stream backlog", formatDuration(channel.pipelineLag), "_rx − sample-stream epoch", finite(channel.pipelineLag) && channel.pipelineLag > DELAYED_AGE_S ? "warn" : ""), metric("Channel lock", sampleFresh ? (channel.locked ? "LOCKED · " + formatDuration(channel.lockS) : "NO QUALIFIED LOCK") : hidden, "lock_s · valid only for its sample epoch", sampleFresh && channel.locked ? "good" : "warn"), metric("C/N₀ proxy", sampleFresh && finite(channel.cn0) ? channel.cn0.toFixed(1) + " · uncalibrated proxy" : hidden || "Unavailable", "cn0_proxy"), metric("Doppler", sampleFresh && finite(channel.doppler) ? signed(channel.doppler, 1) + " Hz" : hidden || "Unavailable", "doppler_hz"), metric("Code phase", sampleFresh && finite(channel.codePhase) ? channel.codePhase.toFixed(3) + " chips" : hidden || "Unavailable", "code_phase"), metric("Carrier accumulator", sampleFresh && channel.locked && finite(channel.carrierCycles) ? channel.carrierCycles.toFixed(6) + " cycles" : hidden || "Unavailable", "carrier_cycles · local NCO"), metric("Carrier fraction", sampleFresh && finite(channel.phaseFrac) ? channel.phaseFrac.toFixed(6) + " cycles" : hidden || "Unavailable", "phase_frac · Costas ambiguity"), metric("Latest sampled slip", sampleFresh ? (channel.latestSlip ? "FLAGGED · arc reset" : "Not flagged in latest sampled row") : hidden, "slip · one-report flag", channel.latestSlip ? "bad" : sampleFresh ? "" : "warn"), metric("Navigation counters", sampleFresh && finite(channel.navBits) ? Math.round(channel.navBits) + " bits · " + Math.round(channel.navSubs || 0) + " subframes" : hidden || "Unavailable", "nav_bits / nav_subs")]; }
+  function observedMetrics(channel) { if (!channel) return [metric("Receiver channel", "Unavailable", "tracker.sats[]")]; var arrivalFresh = freshArrival(channel); var sampleFresh = freshObserved(channel); var arrival = currentArrivalAge(channel); var hidden = sampleFresh ? null : "WITHHELD · sample backlog " + formatDuration(channel.pipelineLag); var now = Date.now() / 1000; var list = channel && APP.history[channel.key] ? APP.history[channel.key] : []; var recentSlipCount = list.filter(function(p) { return p.slip && now - p.t <= 60; }).length; var slipText = channel.latestSlip ? "FLAGGED · arc reset" : (recentSlipCount > 0 ? "LATCHED · " + recentSlipCount + " slip(s) in last 60 s" : "Not flagged in latest sampled row"); return [metric("Constellation / PRN", signalLabel(channel), "/api/sync → tracker.sats[]"), metric("Summary output age", formatDuration(arrival), "tracker.sats[]._rx · processor output time", arrivalFresh ? "good" : "bad"), metric("Sample-stream backlog", formatDuration(channel.pipelineLag), "_rx − sample-stream epoch", finite(channel.pipelineLag) && channel.pipelineLag > DELAYED_AGE_S ? "warn" : ""), metric("Channel lock", sampleFresh ? (channel.locked ? "LOCKED · " + formatDuration(channel.lockS) : "NO QUALIFIED LOCK") : hidden, "lock_s · valid only for its sample epoch", sampleFresh && channel.locked ? "good" : "warn"), metric("C/N₀ proxy", sampleFresh && finite(channel.cn0) ? channel.cn0.toFixed(1) + " · uncalibrated proxy" : hidden || "Unavailable", "cn0_proxy"), metric("Doppler", sampleFresh && finite(channel.doppler) ? signed(channel.doppler, 1) + " Hz" : hidden || "Unavailable", "doppler_hz"), metric("Code phase", sampleFresh && finite(channel.codePhase) ? channel.codePhase.toFixed(3) + " chips" : hidden || "Unavailable", "code_phase"), metric("Carrier accumulator", sampleFresh && channel.locked && finite(channel.carrierCycles) ? channel.carrierCycles.toFixed(6) + " cycles" : hidden || "Unavailable", "carrier_cycles · local NCO"), metric("Carrier fraction", sampleFresh && finite(channel.phaseFrac) ? channel.phaseFrac.toFixed(6) + " cycles" : hidden || "Unavailable", "phase_frac · Costas ambiguity"), metric("Latest sampled slip", sampleFresh ? slipText : hidden, "slip · latched arc resets", channel.latestSlip ? "bad" : recentSlipCount > 0 ? "warn" : sampleFresh ? "" : "warn"), metric("Navigation counters", sampleFresh && finite(channel.navBits) ? Math.round(channel.navBits) + " bits · " + Math.round(channel.navSubs || 0) + " subframes" : hidden || "Unavailable", "nav_bits / nav_subs")]; }
   function derivedMetrics(channel) { var n = APP.normalized; if (!channel) return [metric("Derived result", "Unavailable", "requires a selected receiver channel")]; var fresh = freshObserved(channel); var hidden = "WITHHELD · sample is not current"; var band = BANDS[channel.sys] || {}; var wavelength = finite(band.hz) ? C / band.hz : null; var rangeRate = fresh && finite(channel.doppler) && finite(band.hz) ? -channel.doppler * C / band.hz : null; var phaseDeg = fresh && finite(channel.phaseFrac) ? channel.phaseFrac * 360 : null; var hasSolve = !!(n && n.clockBias && Object.keys(n.clockBias).length); return [metric("Nominal RF frequency", finite(band.hz) ? (band.hz / 1e6).toFixed(3) + " MHz" : "Unavailable", "constellation signal definition"), metric("Carrier wavelength", finite(wavelength) ? (wavelength * 1000).toFixed(3) + " mm" : "Unavailable", "c / nominal frequency"), metric("Apparent range-rate proxy", finite(rangeRate) ? signed(rangeRate, 2) + " m/s" : hidden, "−Doppler × c / f · receiver/clock terms remain"), metric("Fractional phase angle", finite(phaseDeg) ? phaseDeg.toFixed(3) + "°" : hidden, "phase_frac × 360°"), metric("Sample-stream backlog", formatDuration(channel.pipelineLag), "host output minus sample-stream epoch", finite(channel.pipelineLag) && channel.pipelineLag > DELAYED_AGE_S ? "warn" : ""), metric("Coarse tick period", n && n.tickAttested ? (1e9 / n.tickHz).toFixed(3) + " ns" : "Unavailable / unattested", "clock.live_tick_hz · PC-read jitter", n && n.tickAttested ? "warn" : ""), metric("Code-solve diagnostics", hasSolve ? "WITHHELD · solve epoch unavailable" : "Solve block unavailable", "clock_bias · block freshness and dropped-slip history not exposed", "warn")]; }
   function modelMetrics(channel) { var n = APP.normalized; if (!channel) return [metric("Model", "Withheld · selected channel unavailable", "ephemeris/model join")]; if (!skyAligned(channel)) return [metric("Cross-stage model join", "WITHHELD · epochs diverge", "sample stream versus sky-model epoch", "warn"), metric("Sample-stream epoch", utcTime(channel.sampleEpoch), "tracker.sats[].epoch"), metric("Sky-model epoch", n && finite(n.skyEpoch) ? utcTime(n.skyEpoch) : "Unavailable", "sky.epoch"), metric("Per-model source age", "Unavailable after merge", "relativity/atmosphere rows carry no source epoch", "warn")]; var r = channel.relativity || {}; var t = channel.tropo || {}; var sky = channel.sky || {}; var iono = channel.sys === "gps" ? fixed(numberOrNull(t.iono_delay_ns), 2, " ns") : "Withheld · fixed model is GPS L1 only"; return [metric("Component model age", "UNKNOWN · detached snapshots", "relativity/atmosphere rows retain no source epoch", "warn"), metric("Modeled azimuth / elevation", finite(sky.az_deg) && finite(sky.el_deg) ? sky.az_deg.toFixed(1) + "° / " + sky.el_deg.toFixed(1) + "°" : finite(r.az_deg) && finite(r.el_deg) ? r.az_deg.toFixed(1) + "° / " + r.el_deg.toFixed(1) + "°" : "Unavailable", "sky.sats[] · sample/sky epochs agree"), metric("Orbital altitude", fixed(numberOrNull(r.altitude_km), 1, " km"), "relativity snapshot · age unknown"), metric("GR clock-rate term", fixed(numberOrNull(r.gr_blueshift_us_day), 2, " μs/day"), "weak-field snapshot · age unknown"), metric("SR clock-rate term", fixed(numberOrNull(r.sr_dilation_us_day), 2, " μs/day"), "kinematic snapshot · age unknown"), metric("Sagnac correction", finite(r.sagnac_correction_ns) ? signed(r.sagnac_correction_ns, 2) + " ns" : "Unavailable", "Earth-rotation snapshot · age unknown"), metric("Eccentricity correction", finite(r.eccentricity_correction_ns) ? signed(r.eccentricity_correction_ns, 2) + " ns" : "Unavailable", "broadcast-orbit snapshot · age unknown"), metric("Ionosphere code delay", iono, "fixed default Klobuchar coefficients · illustrative · age unknown", channel.sys === "gps" ? "warn" : "bad"), metric("Neutral-atmosphere delay", fixed(numberOrNull(t.tropo_delay_ns), 2, " ns"), "fixed 20 °C / 50% RH / modeled pressure · age unknown", "warn")]; }
   function experimentalMetrics() {
@@ -500,8 +501,9 @@ a { color: inherit; }
     var tideText = tide ? (tide.delta_up_mm >= 0 ? "+" : "") + tide.delta_up_mm.toFixed(1) + " mm Up (h2=" + tide.love_number_h2.toFixed(4) + ") · 3D " + tide.total_3d_displacement_mm.toFixed(1) + " mm" : "MODEL ONLY";
     var tropo = n && n.raw && n.raw.refractivity_summary ? n.raw.refractivity_summary : null;
     var tropoText = tropo ? tropo.surface_refractivity_n0.toFixed(1) + " N-units · k=" + tropo.effective_earth_radius_k_factor.toFixed(2) + " (" + tropo.refraction_regime.replace(/_/g, " ") + ")" : "STANDARD 4/3";
-    var satClock = n && n.raw && n.raw.satellite_atomic_clock_summary ? n.raw.satellite_atomic_clock_summary : null;
-    var satClockText = satClock ? satClock.most_stable_satellite + " (" + satClock.best_adev_tau_300s.toExponential(2) + " @ 300s) · " + satClock.most_stable_clock_type : "STABLE";
+    var simClock = n && n.raw && n.raw.simulations && n.raw.simulations.satellite_clock_adev ? n.raw.simulations.satellite_clock_adev : null;
+    var satClock = simClock ? simClock.satellite_atomic_clock_summary : (n && n.raw && n.raw.satellite_atomic_clock_summary ? n.raw.satellite_atomic_clock_summary : null);
+    var satClockText = satClock ? satClock.most_stable_satellite + " (" + satClock.best_adev_tau_300s.toExponential(2) + " @ 300s) · SIMULATION" : "SIMULATION (QUARANTINED)";
     return [
       metric("Double-diff integer ambiguity", ddText, "state.double_difference · zero-baseline splitter", dd ? "good" : "warn"),
       metric("Morning solar ramp", srText, "state.solar_ramp · ephemeris/flux coupling", sr ? "good" : "warn"),
@@ -513,7 +515,7 @@ a { color: inherit; }
       metric("Atmospheric gravity wave", agwText, "state.agw_wavevector · Hines (1960) 2D array interferometry", agw ? "good" : "warn"),
       metric("Solid Earth crustal tide", tideText, "state.solid_earth_tide · IERS (2010) Love h2/l2 body tides", tide ? "good" : "warn"),
       metric("Atmospheric refractivity & ducting", tropoText, "state.tropo_refractivity · ITU-R P.453 k-factor lapse rate", tropo ? "good" : "warn"),
-      metric("Satellite in-orbit atomic clock", satClockText, "state.satellite_clock_adev · IEEE 1139 Allan deviation", satClock ? "good" : "warn"),
+      metric("Satellite in-orbit atomic clock", satClockText, "sim.satellite_clock_adev · SIMULATION (QUARANTINED)", "warn"),
       metric("External PPS capture", "Functionally demonstrated · not current telemetry", "bench record · P28.16"),
       metric("Fine TDC physical scale", "UNCALIBRATED", "no bin widths, DNL, INL, or absolute scale exposed", "warn"),
       metric("PPS arrival delay", "UNCALIBRATED", "matched cables are not delay calibration", "warn"),
@@ -551,7 +553,23 @@ a { color: inherit; }
     byId("satelliteSelect").addEventListener("change", function (event) { APP.selectedKey = event.target.value; if (APP.secondaryKey === APP.selectedKey) APP.secondaryKey = ""; renderAll(); });
     byId("secondarySelect").addEventListener("change", function (event) { APP.secondaryKey = event.target.value; renderCompare(); }); byId("differentialToggle").addEventListener("change", renderCompare); byId("replayButton").addEventListener("click", toggleReplay);
     byId("signalChain").addEventListener("click", function (event) { var button = event.target.closest("button[data-stage]"); if (button) setStage(button.dataset.stage, ""); }); byId("chapterList").addEventListener("click", function (event) { var button = event.target.closest("button[data-stage]"); if (button) setStage(button.dataset.stage, button.dataset.chapter); });
-    document.querySelector(".tablist").addEventListener("click", function (event) { var tab = event.target.closest("button[data-tab]"); if (tab) setTab(tab.dataset.tab); });
+    var tablist = document.querySelector(".tablist");
+    tablist.addEventListener("click", function (event) { var tab = event.target.closest("button[data-tab]"); if (tab) setTab(tab.dataset.tab); });
+    tablist.addEventListener("keydown", function (event) {
+      var tabs = Array.from(tablist.querySelectorAll("button[data-tab]"));
+      var idx = tabs.findIndex(function (t) { return t.dataset.tab === APP.tab; });
+      if (idx < 0) return;
+      var nextIdx = -1;
+      if (event.key === "ArrowRight") nextIdx = (idx + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIdx = (idx - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIdx = 0;
+      else if (event.key === "End") nextIdx = tabs.length - 1;
+      if (nextIdx >= 0) {
+        event.preventDefault();
+        tabs[nextIdx].focus();
+        setTab(tabs[nextIdx].dataset.tab);
+      }
+    });
     document.addEventListener("visibilitychange", function () { if (document.hidden) { clearTimeout(APP.pollTimer); if (APP.aborter) APP.aborter.abort(); stopReplay(); } else poll(); }); window.addEventListener("resize", function () { renderStages(); drawCarrierTimeline(); });
   }
   function makeFixture(now) { return { epoch: now, tracker: { sats: [{ _rx: now - .7, epoch: now - 1.7, sys: "gps", prn: 12, lock_s: 1842, cn0_proxy: 39.4, doppler_hz: -2971.8, carrier_cycles: -6663281.9594, phase_frac: .0406, code_phase: 146.19, nav_bits: 134174, nav_subs: 1, slip: false }, { _rx: now - .8, epoch: now - 1.8, sys: "beidou", prn: 28, lock_s: 4420, cn0_proxy: 35.8, doppler_hz: -1980.2, carrier_cycles: -3899011.333, phase_frac: .171, code_phase: 405.2, nav_bits: 5002, nav_subs: 2, slip: false }] }, sky: { epoch: now - 12, tracker_stale: false, sats: [{ sys: "gps", prn: 12, az_deg: 225.5, el_deg: 26.2, alt_km: 20186 }, { sys: "beidou", prn: 28, az_deg: 104.5, el_deg: 53.2, alt_km: 21530 }] }, relativity_satellites: { GPS_12: { sys: "gps", prn: 12, altitude_km: 20185.9, gr_blueshift_us_day: 45.65, sr_dilation_us_day: -7.21, sagnac_correction_ns: 59.54, eccentricity_correction_ns: -20.06 } }, tropo_satellites: { GPS_12: { sys: "gps", prn: 12, iono_delay_ns: 9.55, tropo_delay_ns: 18.18 } }, sources: [{ epoch: now, name: "C/A live track · Pro+AA.250, 16 Msps @ 1568.25 · Presence" }], clock: { live_tick_hz: 32000000, recent: [[now - 2, 32000000]] }, gpsdo: { lock: true }, discipline: { epoch: now - 20, actuate: false, corr_applied: false }, phase: { epoch: now - 1, lock: true, disp_mm: 1.2 }, clock_bias: { n_sat: 4, n_fresh: 4, n_pred: 0, slips: 0, ab_membership_match: true, residual_rms_m: 15.2 } }; }

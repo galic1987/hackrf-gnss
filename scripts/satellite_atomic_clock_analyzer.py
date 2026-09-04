@@ -27,8 +27,12 @@ import math
 import argparse
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
-STATE_FILE = os.path.join(OBS_DIR, "state.satellite_clock_adev.json")
+SIM_STATE_FILE = os.path.join(OBS_DIR, "sim.satellite_clock_adev.json")
+LEGACY_STATE_FILE = os.path.join(OBS_DIR, "state.satellite_clock_adev.json")
 REL_STATE_FILE = os.path.join(OBS_DIR, "state.relativity.json")
 SKY_STATE_FILE = os.path.join(OBS_DIR, "state.sky.json")
 CLOCK_BIAS_FILE = os.path.join(OBS_DIR, "state.clock_bias.json")
@@ -153,22 +157,45 @@ def run_clock_adev_engine():
             "stability_tier": "MASER_GRADE_ULTRA_STABLE" if "Hydrogen" in spec["clock_type"] else "RUBIDIUM_STANDARD"
         }
 
+    envelope = make_evidence_envelope(
+        ClaimClass.SIMULATION,
+        uncertainty={"value": float(f"{min_adev_300s:.3e}"), "units": "adev_fractional_freq", "confidence": "numerical_simulation"},
+        failure_reasons=[
+            "SYNTHETIC_NUMERICAL_SIMULATION",
+            "NO_DIRECT_RECEIVER_CLOCK_MEASUREMENT",
+            "QUARANTINED_FROM_LIVE_EVIDENCE_NAMESPACE"
+        ],
+        validity=False,
+        quarantined=True
+    )
+
     out = {
         "epoch": time.time(),
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
+        "quarantined_simulation_notice": "QUARANTINED FROM LIVE EVIDENCE NAMESPACE: This dataset is a synthetic numerical simulation benchmarked to IEEE Std 1139-2008 and is not a direct receiver observation.",
         "satellite_atomic_clock_summary": {
+            "claim_class": "SIMULATION",
+            "quarantine_status": "QUARANTINED_SIMULATION",
             "most_stable_satellite": best_sat,
             "most_stable_clock_type": sat_clocks.get(best_sat, {}).get("atomic_oscillator", "Passive Hydrogen Maser"),
             "best_adev_tau_300s": float(f"{min_adev_300s:.3e}"),
             "best_fractional_stability_1s": "1 part in 10^14",
             "n_space_clocks_benchmarked": len(sat_clocks),
-            "metrology_standard": "IEEE Std 1139-2008 / Overlapping Allan Deviation"
+            "metrology_standard": "IEEE Std 1139-2008 / Overlapping Allan Deviation (SIMULATION)"
         },
         "space_clocks": sat_clocks
     }
 
-    with open(STATE_FILE, "w") as f:
+    with open(SIM_STATE_FILE, "w") as f:
         json.dump(out, f, indent=2)
+
+    # Physically purge legacy file from live state namespace if present
+    if os.path.exists(LEGACY_STATE_FILE):
+        try:
+            os.remove(LEGACY_STATE_FILE)
+        except Exception:
+            pass
 
     return out
 

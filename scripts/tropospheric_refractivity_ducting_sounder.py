@@ -25,6 +25,9 @@ import time
 import math
 import argparse
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from evidence_envelope import ClaimClass, make_evidence_envelope
+
 OBS_DIR = "/Volumes/Radiator 8TB/gnss/observations"
 STATE_FILE = os.path.join(OBS_DIR, "state.tropo_refractivity.json")
 TROPO_STATE_FILE = os.path.join(OBS_DIR, "state.tropo.json")
@@ -50,11 +53,14 @@ def run_refractivity_engine():
     t0_c = 20.0
     td_c = 9.3
     zwd_m = 0.115
+    tropo_epoch = None
+    meteo_epoch = None
 
     if os.path.exists(TROPO_STATE_FILE):
         try:
             with open(TROPO_STATE_FILE) as f:
                 tr = json.load(f)
+                tropo_epoch = tr.get("epoch")
                 p0_hpa = tr.get("surface_p0_hpa", p0_hpa)
                 t0_c = tr.get("surface_t0_c", t0_c)
                 zwd_m = tr.get("zwd_m", zwd_m)
@@ -65,6 +71,7 @@ def run_refractivity_engine():
         try:
             with open(METEO_STATE_FILE) as f:
                 md = json.load(f)
+                meteo_epoch = md.get("epoch")
                 td_c = md.get("surface_weather", {}).get("dew_point_td_c", td_c)
         except Exception:
             pass
@@ -108,9 +115,28 @@ def run_refractivity_engine():
     ant_height_m = 2.0
     d_horizon_km = math.sqrt(2.0 * k_factor * R_EARTH_KM * (ant_height_m / 1000.0))
 
+    now_epoch = time.time()
+    input_epochs = {}
+    if tropo_epoch:
+        input_epochs["state.tropo.json"] = tropo_epoch
+    if meteo_epoch:
+        input_epochs["state.meteorology.json"] = meteo_epoch
+
+    envelope = make_evidence_envelope(
+        claim_class=ClaimClass.MODEL,
+        generation_epoch=now_epoch,
+        observation_epoch=now_epoch,
+        input_epochs=input_epochs,
+        permitted_skew_s=60.0,
+        uncertainty={"value": 2.5, "units": "N-units", "confidence": "1-sigma (ITU-R P.453 nominal)"},
+        calibration_id="itu_r_p453_surface_refractivity",
+        validity=True
+    )
+
     out = {
-        "epoch": time.time(),
+        "epoch": now_epoch,
         "ttl_s": 30.0,
+        "evidence_envelope": envelope,
         "refractivity_summary": {
             "surface_refractivity_n0": round(n0, 2),
             "dry_refractivity_n_dry": round(n_dry, 2),

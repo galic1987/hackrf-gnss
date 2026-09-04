@@ -40,8 +40,16 @@ class TestFrontendIQImbalance(unittest.TestCase):
 
     def test_run_sounder(self):
         res = run_sounder()
-        self.assertTrue(os.path.exists(STATE_FILE))
         self.assertIn("hardware_health_tier", res["quadrature_imbalance"])
+        self.assertIn("evidence_envelope", res)
+        env = res["evidence_envelope"]
+        if env["quarantined"]:
+            self.assertEqual(env["claim_class"], "simulation")
+            self.assertFalse(env["validity"])
+        else:
+            self.assertEqual(env["claim_class"], "observed")
+            self.assertTrue(env["validity"])
+            self.assertTrue(os.path.exists(STATE_FILE))
 
 if __name__ == "__main__":
     unittest.main()
