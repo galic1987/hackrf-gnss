@@ -77,6 +77,7 @@ async function main() {
     "relBadge", "relVal", "relGr", "relSr", "relFactory", "relDrift", "relSagnac", "relEcc",
     "pwvBadge", "pwvVal", "pwvMass", "tmVal", "tdVal", "bevisPi", "regimeVal", "maxSwv",
     "rfiBadge", "tsysVal", "fsplVal", "marginVal", "n0Val", "tskyVal", "lnaNf", "meanCn0",
+    "gdopBadge", "gdopVal", "hdopVal", "vdopVal", "ellipseVal", "gdopAdvVal", "areaAdvVal", "ellipseAz",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -134,6 +135,10 @@ async function main() {
   console.log("Radiometry Tsys:", elements["tsysVal"].innerHTML);
   console.log("Radiometry FSPL / Margin:", elements["fsplVal"].textContent, "/", elements["marginVal"].textContent);
   console.log("Radiometry Threat:", elements["rfiBadge"].textContent);
+  console.log("GDOP Val:", elements["gdopVal"].innerHTML);
+  console.log("GDOP HDOP / VDOP:", elements["hdopVal"].textContent, "/", elements["vdopVal"].textContent);
+  console.log("GDOP 95% Ellipse:", elements["ellipseVal"].textContent, "@", elements["ellipseAz"].textContent);
+  console.log("GDOP Advantage vs GPS:", elements["gdopAdvVal"].textContent, "(Area:", elements["areaAdvVal"].textContent + ")");
 
   console.log("SMOKE_IONO: PASS");
 }

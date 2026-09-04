@@ -480,6 +480,19 @@
       Antenna T<sub>sky</sub>: <span id="tskyVal">79.4 K</span> &bull; LNA NF: <span id="lnaNf">1.2 dB</span> &bull; C/N<sub>0</sub> mean: <b id="meanCn0">38.5 dB-Hz</b>.
     </div>
   </div>
+
+  <!-- Card 9: Multi-Constellation GDOP & Error Ellipsoid Metrology -->
+  <div class="card">
+    <div class="card-label">
+      <span>Multi-Constellation GDOP &amp; Error Ellipse</span>
+      <span class="badge" id="gdopBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">3D MULTI-GNSS FIX</span>
+    </div>
+    <div class="card-val" id="gdopVal">0.92 <span class="unit">GDOP</span></div>
+    <div class="card-sub">HDOP: <b id="hdopVal">0.42</b> &bull; VDOP: <b id="vdopVal">0.71</b> &bull; 95% Ellipse: <b id="ellipseVal" style="color:var(--cyan);">1.6m &times; 1.3m</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Multi-GNSS vs GPS: <b id="gdopAdvVal" style="color:var(--green);">-48.6% GDOP</b> &bull; Area: <b id="areaAdvVal" style="color:var(--green);">-75.1%</b> &bull; Az: <span id="ellipseAz">161&deg;</span>.
+    </div>
+  </div>
 </div>
 
 <script>
@@ -737,6 +750,38 @@
       if (rfb && rsum.rfi_threat_level) {
         rfb.textContent = "RF " + rsum.rfi_threat_level;
         rfb.style.color = rsum.rfi_threat_level === "QUIET" ? "var(--green)" : (rsum.rfi_threat_level === "ELEVATED_NOISE" ? "var(--amber)" : "var(--magenta)");
+      }
+    }
+
+    // Multi-Constellation GDOP & Horizontal Error Ellipsoid
+    if (st.gdop_summary) {
+      var gsum = st.gdop_summary;
+      var gv = document.getElementById("gdopVal");
+      if (gv && gsum.primary_gdop !== undefined) gv.innerHTML = gsum.primary_gdop.toFixed(2) + ' <span class="unit">GDOP</span>';
+      var hv = document.getElementById("hdopVal");
+      if (hv && gsum.primary_hdop !== undefined) hv.textContent = gsum.primary_hdop.toFixed(2);
+      var vv = document.getElementById("vdopVal");
+      if (vv && gsum.primary_vdop !== undefined) vv.textContent = gsum.primary_vdop.toFixed(2);
+      var ev = document.getElementById("ellipseVal");
+      if (ev && gsum.semi_major_a_m !== undefined && gsum.semi_minor_b_m !== undefined) {
+        ev.textContent = gsum.semi_major_a_m.toFixed(1) + "m × " + gsum.semi_minor_b_m.toFixed(1) + "m";
+      }
+      var gav = document.getElementById("gdopAdvVal");
+      if (gav && gsum.gdop_reduction_vs_gps_pct !== undefined) {
+        gav.textContent = "-" + gsum.gdop_reduction_vs_gps_pct.toFixed(1) + "% GDOP";
+      }
+      var aav = document.getElementById("areaAdvVal");
+      if (aav && gsum.area_reduction_vs_gps_pct !== undefined) {
+        aav.textContent = "-" + gsum.area_reduction_vs_gps_pct.toFixed(1) + "%";
+      }
+      var azv = document.getElementById("ellipseAz");
+      if (azv && gsum.azimuth_theta_deg !== undefined) {
+        azv.textContent = gsum.azimuth_theta_deg.toFixed(0) + "°";
+      }
+      var gdb = document.getElementById("gdopBadge");
+      if (gdb && gsum.fix_status) {
+        gdb.textContent = gsum.fix_status.replace(/_/g, " ");
+        gdb.style.color = gsum.fix_status.indexOf("3D") !== -1 ? "var(--blue)" : (gsum.fix_status.indexOf("VISIBLE") !== -1 ? "var(--cyan)" : "var(--amber)");
       }
     }
 
