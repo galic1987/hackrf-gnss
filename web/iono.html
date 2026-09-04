@@ -534,6 +534,19 @@
       Ground Sunrise: <b id="groundSunriseVal">06:40 EDT</b> &bull; Nearest Sat: <b id="nearestSatVal">GPS_19 (63&deg;)</b> &bull; Solar RF: <span id="solarRfStatus" style="color:var(--cyan);">Coupling Imminent</span>.
     </div>
   </div>
+
+  <!-- Card 13: GNSS-R Bistatic Radar & Chronometric Levelling -->
+  <div class="card">
+    <div class="card-label">
+      <span>GNSS-R Radar &amp; Chronometric Levelling</span>
+      <span class="badge" id="gnssrBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">BISTATIC RADAR</span>
+    </div>
+    <div class="card-val" id="gnssrVal">1.842 <span class="unit">m h<sub>ant</sub> (&plusmn;4.2mm)</span></div>
+    <div class="card-sub">Soil Moisture: <b id="soilMoistVal" style="color:var(--cyan);">15.8% VSM</b> &bull; Dielectric &epsilon;': <b id="dielectricVal">8.5</b> &bull; Grav Shift: <b id="gravShiftVal" style="color:var(--purple);">+2.38 fs/s</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      FFZ Prime Sat: <b id="ffzPrimeSat">GPS_13 (22&deg;)</b> &bull; Coverage: <b id="ffzAreaVal">21.2 m&sup2;</b> &bull; Chrono Drift: <b id="chronoDriftVal">+0.206 ns/d</b>.
+    </div>
+  </div>
 </div>
 
 <script>
@@ -931,6 +944,44 @@
         var rfActive = st.solar_radiometry_correlation.solar_rf_coupling_active;
         srf.textContent = rfActive ? "ACTIVE (Above Horizon)" : "Coupling Imminent";
         srf.style.color = rfActive ? "var(--green)" : "var(--cyan)";
+      }
+    }
+
+    // Card 13: GNSS-R Bistatic Radar & Chronometric Levelling
+    if (st.gnssr_summary && st.chronometric_levelling) {
+      var g = st.gnssr_summary;
+      var c = st.chronometric_levelling;
+      var gv = document.getElementById("gnssrVal");
+      if (gv && g.antenna_reflector_height_m !== undefined) {
+        gv.innerHTML = g.antenna_reflector_height_m.toFixed(3) + ' <span class="unit">m h<sub>ant</sub> (&plusmn;' + g.height_solution_uncertainty_mm.toFixed(1) + 'mm)</span>';
+      }
+      var sm = document.getElementById("soilMoistVal");
+      if (sm && g.volumetric_soil_moisture_pct !== undefined) {
+        sm.textContent = g.volumetric_soil_moisture_pct.toFixed(1) + "% VSM";
+      }
+      var dv = document.getElementById("dielectricVal");
+      if (dv && g.effective_dielectric_constant !== undefined) {
+        dv.textContent = g.effective_dielectric_constant.toFixed(1);
+      }
+      var gs = document.getElementById("gravShiftVal");
+      if (gs && c.chronometric_rate_fs_per_s !== undefined) {
+        gs.textContent = (c.chronometric_rate_fs_per_s >= 0 ? "+" : "") + c.chronometric_rate_fs_per_s.toFixed(2) + " fs/s";
+      }
+      var cd = document.getElementById("chronoDriftVal");
+      if (cd && c.chronometric_drift_ns_per_day !== undefined) {
+        cd.textContent = "+" + c.chronometric_drift_ns_per_day.toFixed(3) + " ns/d";
+      }
+      var fps = document.getElementById("ffzPrimeSat");
+      if (fps && g.prime_candidate_satellite) {
+        fps.textContent = g.prime_candidate_satellite;
+      }
+      var fa = document.getElementById("ffzAreaVal");
+      if (fa && g.total_fresnel_coverage_m2 !== undefined) {
+        fa.textContent = g.total_fresnel_coverage_m2.toFixed(1) + " m²";
+      }
+      var gb = document.getElementById("gnssrBadge");
+      if (gb && g.ground_surface_regime) {
+        gb.textContent = g.ground_surface_regime.replace(/_/g, " ");
       }
     }
 

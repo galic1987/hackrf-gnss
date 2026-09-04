@@ -31,7 +31,8 @@ async function main() {
     multipathCanvas: 0,
     ellipseCanvas: 0,
     hardwareCanvas: 0,
-    solarCascadeCanvas: 0
+    solarCascadeCanvas: 0,
+    gnssRCanvas: 0
   };
   // Ch 7 census / header elements that updateFromSync must render without NaN/undefined
   const CENSUS_IDS = [

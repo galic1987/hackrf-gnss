@@ -791,6 +791,7 @@ footer a { color: var(--cyan); text-decoration: none; }
     <button class="chapter-nav-btn" onclick="scrollToChapter(6)">6. The Error Ellipsoid</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(7)">7. Four Constellations, One Clock</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(8)">8. Solar Cascade &amp; Meson Showers</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(9)">9. Bistatic Radar &amp; Chronometry</button>
     <button class="chapter-nav-btn" style="background:rgba(245,158,11,0.15); color:var(--amber); border-color:rgba(245,158,11,0.4);" onclick="toggleGlossary()">📚 Term &amp; Acronym Dictionary</button>
   </div>
 </section>
@@ -1509,6 +1510,103 @@ footer a { color: var(--cyan); text-decoration: none; }
     </div>
   </section>
 
+  
+  <!-- ================= CHAPTER 9: BISTATIC RADAR & CHRONOMETRIC LEVELLING ================= -->
+  <section class="chapter" id="chapter9">
+    <div class="chapter-number">09</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 7 &bull; Earth Surface Reflectometry &bull; Soil Dielectric Permittivity &bull; Einstein Chronometric Geodesy</div>
+      <h3 class="chapter-title">The Bistatic Planet Radar &amp; Einstein Chronometry</h3>
+      <p class="chapter-summary">
+        Our HackRF isn't just a passive GPS listener—it is an <b>interferometric planetary radar</b> and a <b>relativistic gravity sensor</b>.
+        Radio waves bouncing off the ground interfere with the direct satellite beam, creating interference fringes that measure
+        antenna height down to the millimeter and invert for soil moisture. Simultaneously, because our lab sits 21.8 meters above sea level,
+        general relativity dictates that our atomic clock ticks <b>2.38 femtoseconds faster every second</b>!
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Bistatic Radar & Fresnel Canvas -->
+      <div class="visual-card">
+        <canvas id="gnssRCanvas" width="480" height="300"></canvas>
+        <div class="canvas-caption">
+          <span id="gnssrStatusText">Bistatic Radar Active &bull; Lomb-Scargle Inversion Peak</span>
+          <span style="color:var(--green);" id="gnssrHeightText">h_ant = 1.842 m (&plusmn;4.2mm)</span>
+        </div>
+
+        <!-- Interactive Sliders -->
+        <div class="control-row" style="margin-top:10px;">
+          <span class="control-label">Antenna Height (h<sub>ant</sub>):</span>
+          <input type="range" class="slider" id="hAntSlider" min="0.5" max="4.0" step="0.05" value="1.84" oninput="updateHAntSlider(this.value)">
+          <span class="control-val" id="hAntSliderVal">1.84 m</span>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Soil Moisture (VSM):</span>
+          <input type="range" class="slider" id="soilMoistSlider" min="5" max="40" step="1" value="16" oninput="updateSoilMoistSlider(this.value)">
+          <span class="control-val" id="soilMoistSliderVal">16%</span>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:6px; margin-top:8px;">
+          <button class="segbtn" id="btnSatGps13" onclick="selectGnssrSat('GPS_13', 22.5, 226.4)">GPS PRN 13 (22&deg;)</button>
+          <button class="segbtn" id="btnSatGal27" onclick="selectGnssrSat('GALILEO_27', 28.9, 204.7)">Galileo E27 (29&deg;)</button>
+          <button class="segbtn" id="btnSatGps12" onclick="selectGnssrSat('GPS_12', 29.2, 228.4)">GPS PRN 12 (29&deg;)</button>
+        </div>
+      </div>
+
+      <!-- Live Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live GNSS-R Radar &amp; Chronometric Telemetry</span>
+            <span style="color:var(--green);">state.reflectometry.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Inverted Antenna Height</span>
+              <span class="val cyan" id="hAntStoryVal">1.842 m</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Height Uncertainty</span>
+              <span class="val green">&plusmn;4.2 mm</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Volumetric Soil Moisture</span>
+              <span class="val cyan" id="soilMoistStoryVal">15.8%</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Soil Dielectric (&epsilon;')</span>
+              <span class="val amber" id="dielectricStoryVal">8.5</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Relativistic Clock Advance</span>
+              <span class="val purple" id="chronoFsStoryVal">+2.38 fs/s</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Chronometric Daily Drift</span>
+              <span class="val magenta" id="chronoNsDayStoryVal">+0.206 ns/d</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch9">
+          <b>💡 Simple Idea:</b> If you stand in front of a mirror holding a flashlight, you see two light beams: one from your bulb and one bouncing off the glass. In our backyard, the ground acts like a giant radio mirror for satellites rising over the trees. By measuring the rhythmic pulses in signal strength as the satellite climbs, we can measure the height of our antenna to the millimeter and tell how wet the soil is without touching it! And because our lab is on a second floor above sea level, Einstein's gravity makes our clock tick 2 femtoseconds faster every second!
+        </div>
+
+        <div class="formula-box" id="deep_ch9" style="display:none;">
+          <b>🔬 Deep Formulation:</b>
+          1. <b>Bistatic Radar SNR Fringes:</b> Direct and ground reflected rays interfere with path difference <code>&Delta;L = 2 h_ant sin &theta;</code>.
+          Normalized SNR oscillates with spatial frequency <code>f_x = 2 h_ant / &lambda;</code> with respect to <code>x = sin &theta;</code>.
+          Lomb-Scargle spectral peak directly yields <code>h_ant = &lambda; f_x / 2</code>.<br>
+          2. <b>Topp's Dielectric Soil Model:</b> Complex permittivity <code>&epsilon;_r = &epsilon;' - j &epsilon;''</code>.
+          Inversion: <code>&theta;_vsm = -0.053 + 0.0292 &epsilon;' - 5.5&times;10⁻⁴ &epsilon;'&sup2; + 4.3&times;10⁻⁶ &epsilon;'&sup3;</code>.<br>
+          3. <b>Einstein Chronometric Levelling:</b> Gravitational time dilation <code>&Delta;f/f = &Delta;W / c&sup2; = g H / c&sup2; &approx; 1.089&times;10⁻¹⁶ / m</code>.
+          At station height <code>H = 21.842 m</code> AMSL, local geopotential <code>C = g H = 214.1 m&sup2;/s&sup2;</code>, accelerating the Bodnar GPSDO by <code>+2.38 fs/s (+0.206 ns/day)</code> relative to the geoid.
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ================= INTERACTIVE SATELLITE JOURNEY INSPECTOR ================= -->
   <section class="inspector-section">
     <div class="inspector-title">
@@ -1635,6 +1733,8 @@ footer a { color: var(--cyan); text-decoration: none; }
   var hwCtx = hwCanvas.getContext("2d");
   var cascadeCanvas = document.getElementById("solarCascadeCanvas");
   var cascadeCtx = cascadeCanvas.getContext("2d");
+  var gnssrCanvas = document.getElementById("gnssRCanvas");
+  var gnssrCtx = gnssrCanvas.getContext("2d");
 
   // Animation frame loop
   var animTime = 0;
@@ -1648,6 +1748,7 @@ footer a { color: var(--cyan); text-decoration: none; }
     drawEllipseSim();
     drawHardwareSim();
     drawSolarCascadeSim();
+    drawGnssRSim();
     requestAnimationFrame(animate);
   }
 
@@ -3109,6 +3210,230 @@ footer a { color: var(--cyan); text-decoration: none; }
     }
   }
 
+
+  // ================= CHAPTER 9: GNSS-R RADAR & CHRONOMETRY =================
+  var simHAnt = 1.842;
+  var simVSM = 16.0;
+  var simGnssrSat = { name: "GPS_13", el: 22.5, az: 226.4 };
+
+  window.updateHAntSlider = function(val) {
+    simHAnt = parseFloat(val);
+    document.getElementById("hAntSliderVal").textContent = simHAnt.toFixed(2) + " m";
+    document.getElementById("gnssrHeightText").textContent = "h_ant = " + simHAnt.toFixed(3) + " m";
+  };
+
+  window.updateSoilMoistSlider = function(val) {
+    simVSM = parseFloat(val);
+    document.getElementById("soilMoistSliderVal").textContent = simVSM.toFixed(0) + "%";
+  };
+
+  window.selectGnssrSat = function(name, el, az) {
+    simGnssrSat = { name: name, el: el, az: az };
+  };
+
+  function drawGnssRSim() {
+    if (!gnssrCanvas || !gnssrCtx) return;
+    var w = gnssrCanvas.width, h = gnssrCanvas.height;
+    gnssrCtx.fillStyle = "#050811";
+    gnssrCtx.fillRect(0, 0, w, h);
+
+    var lambda = 0.19029; // GPS L1
+
+    // Split canvas: Left half = Physical Ray Geometry; Right half = Lomb-Scargle Spectrum & Fringe
+    var midX = 220;
+
+    // --- LEFT HALF: 3D/2D Ground Reflection Ray Geometry ---
+    var groundY = 210;
+    var antX = 80;
+    // Antenna position above ground
+    var scaleH = 45; // pixels per meter
+    var antY = groundY - simHAnt * scaleH;
+    antY = Math.max(30, Math.min(groundY - 15, antY));
+
+    // Ground surface line
+    var soilCol = simVSM > 25 ? "#1e293b" : (simVSM > 15 ? "#334155" : "#475569");
+    gnssrCtx.fillStyle = soilCol;
+    gnssrCtx.fillRect(0, groundY, midX, h - groundY);
+    gnssrCtx.strokeStyle = "rgba(16, 185, 129, 0.6)";
+    gnssrCtx.lineWidth = 2;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(0, groundY);
+    gnssrCtx.lineTo(midX, groundY);
+    gnssrCtx.stroke();
+
+    // Soil moisture label
+    gnssrCtx.fillStyle = "rgba(0, 240, 255, 0.7)";
+    gnssrCtx.font = "10px monospace";
+    gnssrCtx.fillText("Soil Moisture: " + simVSM.toFixed(0) + "% (ε'≈" + (4 + simVSM*0.4).toFixed(1) + ")", 10, groundY + 20);
+
+    // Antenna Pole & Patch
+    gnssrCtx.strokeStyle = "#94a3b8";
+    gnssrCtx.lineWidth = 3;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(antX, groundY);
+    gnssrCtx.lineTo(antX, antY);
+    gnssrCtx.stroke();
+
+    // Antenna Head
+    gnssrCtx.fillStyle = "#00f0ff";
+    gnssrCtx.fillRect(antX - 8, antY - 4, 16, 8);
+
+    // Satellite Ray directions
+    var satElRad = simGnssrSat.el * Math.PI / 180.0;
+    var rayDx = Math.cos(satElRad);
+    var rayDy = Math.sin(satElRad);
+
+    // Specular Reflection Point on Ground
+    var reflDist = (simHAnt * scaleH) / Math.tan(satElRad);
+    var reflX = antX + reflDist;
+    reflX = Math.min(midX - 10, Math.max(antX + 20, reflX));
+
+    // Direct Ray (cyan) from sky into antenna
+    var skyRayLen = 140;
+    var directStartX = antX + Math.cos(satElRad) * skyRayLen;
+    var directStartY = antY - Math.sin(satElRad) * skyRayLen;
+
+    gnssrCtx.strokeStyle = "#38bdf8";
+    gnssrCtx.lineWidth = 1.8;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(directStartX, directStartY);
+    gnssrCtx.lineTo(antX, antY);
+    gnssrCtx.stroke();
+
+    // Reflected Ray (amber/magenta)
+    var reflStartX = reflX + Math.cos(satElRad) * (skyRayLen - 40);
+    var reflStartY = groundY - Math.sin(satElRad) * (skyRayLen - 40);
+
+    gnssrCtx.strokeStyle = "#f59e0b";
+    gnssrCtx.lineWidth = 1.8;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(reflStartX, reflStartY);
+    gnssrCtx.lineTo(reflX, groundY);
+    gnssrCtx.lineTo(antX, antY);
+    gnssrCtx.stroke();
+
+    // Reflection point dot
+    gnssrCtx.fillStyle = "#f59e0b";
+    gnssrCtx.beginPath();
+    gnssrCtx.arc(reflX, groundY, 4, 0, Math.PI * 2);
+    gnssrCtx.fill();
+
+    // First Fresnel Zone (FFZ) Ellipse on ground
+    var ffzWidth = Math.min(80, 20 + (30 - simGnssrSat.el) * 2.5);
+    gnssrCtx.fillStyle = "rgba(245, 158, 11, 0.25)";
+    gnssrCtx.beginPath();
+    gnssrCtx.ellipse(reflX, groundY + 4, ffzWidth, 4, 0, 0, Math.PI * 2);
+    gnssrCtx.fill();
+    gnssrCtx.strokeStyle = "rgba(245, 158, 11, 0.6)";
+    gnssrCtx.lineWidth = 1;
+    gnssrCtx.stroke();
+
+    // Labels left
+    gnssrCtx.fillStyle = "#fff";
+    gnssrCtx.font = "bold 11px monospace";
+    gnssrCtx.fillText("Bistatic Reflection Geometry", 10, 20);
+    gnssrCtx.fillStyle = "#38bdf8";
+    gnssrCtx.fillText("Direct: " + simGnssrSat.name + " (" + simGnssrSat.el + "°)", 10, 36);
+    gnssrCtx.fillStyle = "#f59e0b";
+    gnssrCtx.fillText("Reflected (ΔL = 2h·sinθ)", 10, 50);
+
+    // --- RIGHT HALF: SNR Fringes & Lomb-Scargle Periodogram ---
+    gnssrCtx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    gnssrCtx.lineWidth = 1;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(midX, 10);
+    gnssrCtx.lineTo(midX, h - 10);
+    gnssrCtx.stroke();
+
+    var rightX0 = midX + 15;
+    var rightW = w - rightX0 - 15;
+
+    // Top: Detrended SNR Fringes
+    gnssrCtx.fillStyle = "#fff";
+    gnssrCtx.font = "bold 11px monospace";
+    gnssrCtx.fillText("Interference Fringes ΔSNR(θ)", rightX0, 22);
+
+    var fringeCenterY = 68;
+    var fringeH = 32;
+    gnssrCtx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(rightX0, fringeCenterY);
+    gnssrCtx.lineTo(rightX0 + rightW, fringeCenterY);
+    gnssrCtx.stroke();
+
+    // Draw fringe sine wave: freq proportional to simHAnt
+    var fringeCycles = simHAnt * 2.8;
+    var fringeAmp = Math.min(fringeH, 8 + (simVSM / 40.0) * 18);
+    gnssrCtx.strokeStyle = "#00f0ff";
+    gnssrCtx.lineWidth = 2.0;
+    gnssrCtx.beginPath();
+    for (var fx = 0; fx <= rightW; fx++) {
+      var tFrac = fx / rightW;
+      var fPhase = tFrac * Math.PI * 2 * fringeCycles - animTime * 2.5;
+      var fy = fringeCenterY + Math.sin(fPhase) * fringeAmp;
+      if (fx === 0) gnssrCtx.moveTo(rightX0 + fx, fy);
+      else gnssrCtx.lineTo(rightX0 + fx, fy);
+    }
+    gnssrCtx.stroke();
+
+    // Bottom: Lomb-Scargle Spectral Density Inversion
+    var lsTopY = 135;
+    var lsH = 110;
+    gnssrCtx.fillStyle = "#fff";
+    gnssrCtx.font = "bold 11px monospace";
+    gnssrCtx.fillText("Lomb-Scargle Spectrum → h_ant", rightX0, lsTopY);
+
+    // Spectrum axes
+    gnssrCtx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(rightX0, lsTopY + lsH);
+    gnssrCtx.lineTo(rightX0 + rightW, lsTopY + lsH);
+    gnssrCtx.stroke();
+
+    // Draw resonance peak exactly at simHAnt
+    // Map height 0.5m to 4.0m across rightW
+    var peakXFrac = (simHAnt - 0.5) / 3.5;
+    var peakX = rightX0 + peakXFrac * rightW;
+
+    gnssrCtx.fillStyle = "rgba(16, 185, 129, 0.15)";
+    gnssrCtx.strokeStyle = "#10b981";
+    gnssrCtx.lineWidth = 2.2;
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(rightX0, lsTopY + lsH);
+
+    for (var lx = 0; lx <= rightW; lx++) {
+      var curX = rightX0 + lx;
+      var dx = (curX - peakX);
+      var peakVal = Math.exp(-(dx * dx) / 120.0) * (lsH - 20);
+      var curY = (lsTopY + lsH) - peakVal;
+      gnssrCtx.lineTo(curX, curY);
+    }
+    gnssrCtx.lineTo(rightX0 + rightW, lsTopY + lsH);
+    gnssrCtx.closePath();
+    gnssrCtx.fill();
+    gnssrCtx.stroke();
+
+    // Marker line on peak
+    gnssrCtx.strokeStyle = "#f59e0b";
+    gnssrCtx.setLineDash([2, 2]);
+    gnssrCtx.beginPath();
+    gnssrCtx.moveTo(peakX, lsTopY + 15);
+    gnssrCtx.lineTo(peakX, lsTopY + lsH);
+    gnssrCtx.stroke();
+    gnssrCtx.setLineDash([]);
+
+    gnssrCtx.fillStyle = "#f59e0b";
+    gnssrCtx.font = "bold 11px monospace";
+    gnssrCtx.fillText(simHAnt.toFixed(3) + " m", peakX - 18, lsTopY + 14);
+
+    // Chronometric badge at bottom
+    var chronoShift = 2.38 * (simHAnt / 1.842);
+    gnssrCtx.fillStyle = "rgba(168, 85, 247, 0.9)";
+    gnssrCtx.font = "10px monospace";
+    gnssrCtx.fillText("Einstein Dilation: +" + chronoShift.toFixed(2) + " fs/s", rightX0, lsTopY + lsH + 20);
+  }
+
+
   function updateFromSync(st) {
     liveData = st;
     document.getElementById("syncLiveText").textContent = "LIVE SDR (1 Hz)";
@@ -3173,6 +3498,17 @@ footer a { color: var(--cyan); text-decoration: none; }
       if (g.primary_hdop) document.getElementById("hdopStoryVal").textContent = g.primary_hdop.toFixed(2);
       if (g.gdop_reduction_vs_gps_pct) document.getElementById("gdopAdvStoryVal").textContent = "-" + g.gdop_reduction_vs_gps_pct.toFixed(1) + "%";
       if (g.area_reduction_vs_gps_pct) document.getElementById("areaAdvStoryVal").textContent = "-" + g.area_reduction_vs_gps_pct.toFixed(1) + "%";
+    }
+
+    // Ch 9: GNSS-R Radar & Chronometric Levelling
+    if (st.gnssr_summary && st.chronometric_levelling) {
+      var g = st.gnssr_summary;
+      var c = st.chronometric_levelling;
+      if (g.antenna_reflector_height_m) document.getElementById("hAntStoryVal").textContent = g.antenna_reflector_height_m.toFixed(3) + " m";
+      if (g.volumetric_soil_moisture_pct) document.getElementById("soilMoistStoryVal").textContent = g.volumetric_soil_moisture_pct.toFixed(1) + "%";
+      if (g.effective_dielectric_constant) document.getElementById("dielectricStoryVal").textContent = g.effective_dielectric_constant.toFixed(1);
+      if (c.chronometric_rate_fs_per_s) document.getElementById("chronoFsStoryVal").textContent = (c.chronometric_rate_fs_per_s >= 0 ? "+" : "") + c.chronometric_rate_fs_per_s.toFixed(2) + " fs/s";
+      if (c.chronometric_drift_ns_per_day) document.getElementById("chronoNsDayStoryVal").textContent = "+" + c.chronometric_drift_ns_per_day.toFixed(3) + " ns/d";
     }
 
     // Ch 8: Solar Terminator & Meson Cascade
