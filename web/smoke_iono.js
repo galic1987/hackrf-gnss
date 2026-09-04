@@ -78,6 +78,7 @@ async function main() {
     "pwvBadge", "pwvVal", "pwvMass", "tmVal", "tdVal", "bevisPi", "regimeVal", "maxSwv",
     "rfiBadge", "tsysVal", "fsplVal", "marginVal", "n0Val", "tskyVal", "lnaNf", "meanCn0",
     "gdopBadge", "gdopVal", "hdopVal", "vdopVal", "ellipseVal", "gdopAdvVal", "areaAdvVal", "ellipseAz",
+    "ccdBadge", "ccdVal", "hatchBiasVal", "cmcNoiseVal", "vpVal", "vgVal",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -139,6 +140,10 @@ async function main() {
   console.log("GDOP HDOP / VDOP:", elements["hdopVal"].textContent, "/", elements["vdopVal"].textContent);
   console.log("GDOP 95% Ellipse:", elements["ellipseVal"].textContent, "@", elements["ellipseAz"].textContent);
   console.log("GDOP Advantage vs GPS:", elements["gdopAdvVal"].textContent, "(Area:", elements["areaAdvVal"].textContent + ")");
+  console.log("CCD Val:", elements["ccdVal"].innerHTML);
+  console.log("CCD Hatch Bias / Noise:", elements["hatchBiasVal"].textContent, "/", elements["cmcNoiseVal"].textContent);
+  console.log("CCD Plasma v_p / v_g:", elements["vpVal"].textContent, "/", elements["vgVal"].textContent);
+  console.log("CCD Status:", elements["ccdBadge"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }

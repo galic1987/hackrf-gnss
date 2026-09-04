@@ -493,6 +493,19 @@
       Multi-GNSS vs GPS: <b id="gdopAdvVal" style="color:var(--green);">-48.6% GDOP</b> &bull; Area: <b id="areaAdvVal" style="color:var(--green);">-75.1%</b> &bull; Az: <span id="ellipseAz">161&deg;</span>.
     </div>
   </div>
+
+  <!-- Card 10: Hatch Code-Carrier Divergence & Plasma Electrodynamics -->
+  <div class="card">
+    <div class="card-label">
+      <span>Code-Carrier Divergence (v<sub>p</sub> &gt; c vs v<sub>g</sub> &lt; c)</span>
+      <span class="badge" id="ccdBadge" style="background:rgba(236,72,153,0.15); color:var(--magenta); border:1px solid rgba(236,72,153,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">DIVERGENCE QUIET</span>
+    </div>
+    <div class="card-val" id="ccdVal">+0.12 <span class="unit">mm/s &Idot;</span></div>
+    <div class="card-sub">Hatch Bias: <b id="hatchBiasVal">+0.024 m</b> &bull; CMC Noise: <b id="cmcNoiseVal">&plusmn;0.35 m</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Superluminal: <b id="vpVal" style="color:var(--cyan);">+1,968 m/s</b> &Delta;v<sub>p</sub> &bull; Subluminal: <b id="vgVal" style="color:var(--amber);">&minus;1,968 m/s</b> &Delta;v<sub>g</sub> (v<sub>p</sub>v<sub>g</sub>=c&sup2;).
+    </div>
+  </div>
 </div>
 
 <script>
@@ -782,6 +795,36 @@
       if (gdb && gsum.fix_status) {
         gdb.textContent = gsum.fix_status.replace(/_/g, " ");
         gdb.style.color = gsum.fix_status.indexOf("3D") !== -1 ? "var(--blue)" : (gsum.fix_status.indexOf("VISIBLE") !== -1 ? "var(--cyan)" : "var(--amber)");
+      }
+    }
+
+    // Hatch Code-Carrier Divergence & Plasma Electrodynamics
+    if (st.ccd_summary) {
+      var csum = st.ccd_summary;
+      var cv = document.getElementById("ccdVal");
+      if (cv && csum.mean_iono_drift_mm_s !== undefined) {
+        cv.innerHTML = (csum.mean_iono_drift_mm_s >= 0 ? "+" : "") + csum.mean_iono_drift_mm_s.toFixed(2) + ' <span class="unit">mm/s &Idot;</span>';
+      }
+      var hb = document.getElementById("hatchBiasVal");
+      if (hb && csum.max_hatch_bias_m !== undefined) {
+        hb.textContent = (csum.max_hatch_bias_m >= 0 ? "+" : "") + csum.max_hatch_bias_m.toFixed(3) + " m";
+      }
+      var cn = document.getElementById("cmcNoiseVal");
+      if (cn && csum.mean_cmc_noise_m !== undefined) {
+        cn.textContent = "±" + csum.mean_cmc_noise_m.toFixed(2) + " m";
+      }
+      var vpv = document.getElementById("vpVal");
+      if (vpv && csum.mean_superluminal_vp_excess_m_s !== undefined) {
+        vpv.textContent = "+" + csum.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
+      }
+      var vgv = document.getElementById("vgVal");
+      if (vgv && csum.mean_superluminal_vp_excess_m_s !== undefined) {
+        vgv.textContent = "-" + csum.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
+      }
+      var ccb = document.getElementById("ccdBadge");
+      if (ccb && csum.hatch_status) {
+        ccb.textContent = csum.hatch_status.replace(/_/g, " ");
+        ccb.style.color = csum.hatch_status === "DIVERGENCE_QUIET" ? "var(--green)" : (csum.hatch_status === "MODERATE_GRADIENT" ? "var(--amber)" : "var(--magenta)");
       }
     }
 
