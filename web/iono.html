@@ -547,6 +547,19 @@
       FFZ Prime Sat: <b id="ffzPrimeSat">GPS_13 (22&deg;)</b> &bull; Coverage: <b id="ffzAreaVal">21.2 m&sup2;</b> &bull; Chrono Drift: <b id="chronoDriftVal">+0.206 ns/d</b>.
     </div>
   </div>
+
+  <!-- Card 14: Carrier Single-Difference Clock-Free Metrology -->
+  <div class="card">
+    <div class="card-label">
+      <span>Carrier Single-Difference Metrology</span>
+      <span class="badge" id="sdBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">CLOCK-FREE</span>
+    </div>
+    <div class="card-val" id="sdVal">0.000 <span class="unit">ps &Delta;t<sub>rx</sub> (100% Canceled)</span></div>
+    <div class="card-sub">Pivot Reference: <b id="sdPivotSat" style="color:var(--green);">GPS_5 (62.2&deg;)</b> &bull; Pairs: <b id="sdPairsCount">6</b> &bull; Noise Floor: <b id="sdNoiseVal" style="color:var(--cyan);">3.63 mm</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Invariant: &Delta;&Phi;<sup>ik</sup> = &Delta;&rho;<sup>ik</sup> - c&Delta;dt<sup>ik</sup> - &Delta;I<sup>ik</sup> + &Delta;T<sup>ik</sup> + &lambda;&Delta;N<sup>ik</sup> (Cancels Receiver Clock Ticks).
+    </div>
+  </div>
 </div>
 
 <script>
@@ -982,6 +995,23 @@
       var gb = document.getElementById("gnssrBadge");
       if (gb && g.ground_surface_regime) {
         gb.textContent = g.ground_surface_regime.replace(/_/g, " ");
+      }
+    }
+
+    // Card 14: Carrier Single-Difference Clock-Free Metrology
+    if (st.single_difference_summary) {
+      var sd = st.single_difference_summary;
+      var piv = document.getElementById("sdPivotSat");
+      if (piv && sd.pivot_satellite) {
+        piv.textContent = sd.pivot_satellite + " (" + (sd.pivot_elevation_deg ? sd.pivot_elevation_deg.toFixed(1) : "--") + "°)";
+      }
+      var pc = document.getElementById("sdPairsCount");
+      if (pc && sd.n_differenced_pairs !== undefined) {
+        pc.textContent = sd.n_differenced_pairs;
+      }
+      var nv = document.getElementById("sdNoiseVal");
+      if (nv && sd.mean_sd_phase_noise_mm !== undefined) {
+        nv.textContent = sd.mean_sd_phase_noise_mm.toFixed(2) + " mm";
       }
     }
 
