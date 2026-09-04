@@ -398,6 +398,269 @@ footer {
   font-size: 13px;
 }
 footer a { color: var(--cyan); text-decoration: none; }
+
+/* Interactive Technical Term Tooltips */
+.term {
+  border-bottom: 1.5px dotted var(--cyan);
+  color: #fff;
+  cursor: help;
+  position: relative;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.term:hover {
+  color: var(--cyan);
+  border-bottom-color: #fff;
+  background: rgba(0, 240, 255, 0.12);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+#termTooltip {
+  position: fixed;
+  display: none;
+  z-index: 2000;
+  max-width: 320px;
+  background: rgba(13, 21, 36, 0.98);
+  border: 1px solid var(--cyan);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.8), 0 0 20px rgba(0, 240, 255, 0.25);
+  backdrop-filter: blur(16px);
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 12px;
+  pointer-events: none;
+  line-height: 1.5;
+}
+#termTooltip .tt-title {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--cyan);
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+#termTooltip .tt-cat {
+  font-size: 9px;
+  text-transform: uppercase;
+  background: rgba(0, 240, 255, 0.15);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #fff;
+}
+#termTooltip .tt-eli5 {
+  color: #e2e8f0;
+  margin-bottom: 6px;
+}
+#termTooltip .tt-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Universal Glossary Slide-over Drawer */
+.glossary-drawer {
+  position: fixed;
+  top: 0;
+  right: -500px;
+  width: 480px;
+  max-width: 95vw;
+  height: 100vh;
+  background: rgba(8, 12, 22, 0.98);
+  border-left: 1px solid var(--border-bright);
+  box-shadow: -15px 0 50px rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(24px);
+  z-index: 2500;
+  transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+.glossary-drawer.open {
+  right: 0;
+}
+.glossary-header {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(13, 21, 36, 0.9);
+}
+.glossary-header h3 {
+  font-size: 16px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.glossary-close-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.glossary-close-btn:hover {
+  background: rgba(244, 63, 94, 0.2);
+  border-color: var(--magenta);
+  color: var(--magenta);
+}
+.glossary-search-box {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(10, 16, 28, 0.5);
+}
+.glossary-input {
+  width: 100%;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+.glossary-input:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+}
+.glossary-cats {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.cat-pill {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.cat-pill.active, .cat-pill:hover {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--cyan);
+  border-color: rgba(0, 240, 255, 0.4);
+}
+.glossary-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.glossary-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  transition: border-color 0.2s;
+}
+.glossary-card:hover {
+  border-color: rgba(0, 240, 255, 0.4);
+}
+.glossary-card .card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.glossary-card .term-key {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--cyan);
+}
+.glossary-card .term-name {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.glossary-card .term-desc {
+  font-size: 12px;
+  color: #cbd5e1;
+  margin: 6px 0;
+  line-height: 1.5;
+}
+.glossary-card .term-footer {
+  font-size: 10px;
+  color: var(--text-dim);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Chapter 8 Layer Tabs & Particle Controls */
+.layer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.layer-tab {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.layer-tab.active, .layer-tab:hover {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+.sim-controls-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+.particle-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(168, 85, 247, 0.15);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.particle-btn:hover {
+  background: rgba(168, 85, 247, 0.3);
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.3);
+}
+.particle-btn.amber {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+.particle-btn.amber:hover {
+  background: rgba(245, 158, 11, 0.3);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.3);
+}
+
 </style>
 </head>
 <body>
@@ -420,6 +683,9 @@ footer a { color: var(--cyan); text-decoration: none; }
   </nav>
 
   <div class="controls">
+    <button class="toggle-btn" id="dictBtn" onclick="toggleGlossary()">
+      <span>📚</span> <span>Dictionary &amp; Acronyms</span>
+    </button>
     <button class="toggle-btn active" id="eli5Toggle" onclick="toggleEli5()">
       <span>💡</span> <span id="eli5Text">Mode: Explain Like I'm 5</span>
     </button>
@@ -447,6 +713,8 @@ footer a { color: var(--cyan); text-decoration: none; }
     <button class="chapter-nav-btn" onclick="scrollToChapter(5)">5. Sidereal Ground Multipath</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(6)">6. The Error Ellipsoid</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(7)">7. Inside HackRF Silicon</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(8)">8. Solar Cascade &amp; Meson Showers</button>
+    <button class="chapter-nav-btn" style="background:rgba(245,158,11,0.15); color:var(--amber); border-color:rgba(245,158,11,0.4);" onclick="toggleGlossary()">📚 Term &amp; Acronym Dictionary</button>
   </div>
 </section>
 
@@ -923,6 +1191,118 @@ footer a { color: var(--cyan); text-decoration: none; }
     </div>
   </section>
 
+  
+  <!-- ================= CHAPTER 8: SOLAR CASCADE & MESON SHOWERS ================= -->
+  <section class="chapter" id="chapter8">
+    <div class="chapter-number">08</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 0 &bull; Atmospheric Shells &bull; Solar Terminator &bull; Relativistic Meson Showers</div>
+      <h3 class="chapter-title">The Solar Cascade &amp; The Meson Shower: How the Sun Strikes Earth's Spheres</h3>
+      <p class="chapter-summary">
+        Before a <span class="term" data-term="GNSS">GNSS</span> photon ever enters the receiver, Earth's concentric atmospheric shells
+        undergo continuous bombardment by solar radiation and relativistic cosmic rays.
+        Earth's spherical curvature causes the rising Sun to illuminate the <span class="term" data-term="F2_LAYER">F2-layer ionosphere</span> (350 km)
+        <b>74 minutes before ground sunrise</b>. Simultaneously, primary cosmic ray protons smash into atmospheric nuclei at 20 km,
+        creating <b><span class="term" data-term="MESON">mesons</span> (<span class="term" data-term="PION">pions</span>)</b> that decay into relativistic
+        <b><span class="term" data-term="MUON">muons</span></b> raining through our SDR lab.
+      </p>
+    </div>
+
+    <!-- Atmospheric Shell Selector Tabs -->
+    <div class="layer-tabs">
+      <div class="layer-tab active" onclick="selectAtmLayer('f2')">F2 Ionosphere (350 km)</div>
+      <div class="layer-tab" onclick="selectAtmLayer('e')">E-Layer (110 km)</div>
+      <div class="layer-tab" onclick="selectAtmLayer('d')">D-Layer (70 km)</div>
+      <div class="layer-tab" onclick="selectAtmLayer('meson')">Stratospheric Meson Layer (20 km)</div>
+      <div class="layer-tab" onclick="selectAtmLayer('tropo')">Troposphere (10 km)</div>
+      <div class="layer-tab" onclick="selectAtmLayer('ground')">Ground &amp; HackRF (0 km)</div>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Atmospheric Shell & Meson Canvas -->
+      <div class="visual-card">
+        <canvas id="solarCascadeCanvas" width="480" height="320"></canvas>
+        <div class="canvas-caption">
+          <span id="cascadeStatus">☀️ Civil Dawn Active &bull; F2 Shell Sunlit &bull; Meson Showers Falling</span>
+          <span style="color:var(--amber);" id="cascadeLayerInfo">Layer: F2 (350 km)</span>
+        </div>
+
+        <!-- Interactive Simulation Controls -->
+        <div class="control-row" style="margin-top:12px;">
+          <span class="control-label">Sun Elevation (&theta;<sub>&odot;</sub>):</span>
+          <input type="range" class="slider" id="solarCascadeSlider" min="-25" max="40" step="0.5" value="-5.6" oninput="updateSolarCascadeSlider(this.value)">
+          <span class="control-val" id="solarCascadeSliderVal">-5.6&deg;</span>
+          <button class="segbtn" style="font-size:10px; padding:3px 8px; margin-left:6px;" onclick="syncToLiveSun()">Live Sun</button>
+        </div>
+
+        <div class="sim-controls-grid">
+          <button class="particle-btn" onclick="triggerCosmicRayCascade()">
+            <span>⚡</span> Fire Cosmic Ray (Meson Shower)
+          </button>
+          <button class="particle-btn amber" onclick="triggerForbushCME()">
+            <span>☀️</span> Simulate Solar CME (Forbush Decrease)
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Telemetry & Physics Breakdown -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live Solar Terminator &amp; Atmospheric Metrology</span>
+            <span style="color:var(--green);">state.solar.json &bull; state.radiometry.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Dawn Phase</span>
+              <span class="val amber" id="dawnPhaseStoryVal">CIVIL DAWN</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Overhead Earth Shadow Ht</span>
+              <span class="val cyan" id="shadowHtStoryVal">30.9 km</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">F2 Shell (350 km) State</span>
+              <span class="val green" id="f2StatusStoryVal">SUNLIT (EUV)</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Ground Sunrise Countdown</span>
+              <span class="val" id="sunriseCountdownStoryVal">06:40 EDT</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Solar RF Coupling</span>
+              <span class="val cyan" id="solarRfStoryVal">Coupling Imminent</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Meson/Muon Sea-Level Rate</span>
+              <span class="val magenta" id="muonRateStoryVal">~1.0 &mu;/cm&sup2;/min</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Explanatory Box for Layer Selected -->
+        <div class="eli5-box" id="layerExplainerBox">
+          <b>Layer Inspection (F2 Peak, 350 km):</b> Extreme Ultraviolet (<span class="term" data-term="EUV">EUV</span>) solar photons (&lambda; &lt; 102.7 nm) strike neutral oxygen atoms, stripping electrons to create the main ionospheric plasma shell. Because Earth curves beneath it, this layer sees the rising Sun 74 minutes before our ground antenna, driving the morning <span class="term" data-term="TEC">TEC</span> surge.
+        </div>
+
+        <div class="eli5-box" id="eli5_ch8">
+          <b>💡 Simple Idea:</b> Think of Earth's atmosphere like a tall skyscraper with many floors. When dawn arrives, sunlight hits the top penthouse roof (<span class="term" data-term="F2_LAYER">F2-layer</span>) first while the ground floor where we live is still in total darkness! Meanwhile, particles from exploding distant stars (<span class="term" data-term="COSMIC_RAY">cosmic rays</span>) slam into the middle floors (20 km), shattering air atoms into short-lived particles called <b><span class="term" data-term="MESON">mesons</span></b>. These turn into <b><span class="term" data-term="MUON">muons</span></b> that shoot through our rooms right now at 99.8% the speed of light!
+        </div>
+
+        <div class="formula-box" id="deep_ch8" style="display:none;">
+          <b>🔬 Deep Formulation:</b>
+          1. <b>Horizon Dip &amp; Early Dawn Geometry:</b> At shell altitude <code>h</code>, horizon dip is <code>&theta;_dip = arccos(R_E / (R_E + h)) = 18.57&deg;</code> at 350 km, advancing sunrise by <code>&Delta;t = &theta;_dip / 15&deg;/hr = 1.24 hrs (74 min)</code>.
+          Overhead shadow height: <code>h_shadow = R_E * (sec(-&theta;_sun) - 1) = 30.9 km</code> during Civil Dawn (&minus;5.6&deg;).<br>
+          2. <b>Meson &amp; Muon Hadronic Cascade:</b> Primary relativistic proton <code>p + N &rarr; &pi;&plusmn;, &pi;0 + X</code>.
+          Charged pion decay: <code>&pi;&plusmn; &rarr; &mu;&plusmn; + &nu;_&mu;</code> (proper lifetime <code>&tau; = 26.0 ns</code>).
+          Muon decay: <code>&mu;&plusmn; &rarr; e&plusmn; + &nu;_e + &nu;_&mu;</code> (proper lifetime <code>&tau; = 2.197 &mu;s</code>).
+          Special Relativity time dilation factor <code>&gamma; = 1/&radic;(1 - v&sup2;/c&sup2;) &approx; 20&ndash;30</code> extends the muon laboratory path length to <code>d = &gamma; v &tau; &approx; 13&ndash;20 km</code>, reaching ground level.<br>
+          3. <b>Forbush Decrease:</b> Passing Coronal Mass Ejection (<span class="term" data-term="CME">CME</span>) magnetic cloud induces Lorentz deflection <code>F = q(v &times; B_CME)</code>, suppressing galactic cosmic rays and reducing secondary meson production by 5&ndash;20%.
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ================= INTERACTIVE SATELLITE JOURNEY INSPECTOR ================= -->
   <section class="inspector-section">
     <div class="inspector-title">
@@ -981,6 +1361,43 @@ footer a { color: var(--cyan); text-decoration: none; }
 
 </div>
 
+
+<!-- Universal Floating Tooltip Container -->
+<div id="termTooltip">
+  <div class="tt-title">
+    <span id="ttTitleText">Term</span>
+    <span class="tt-cat" id="ttCatText">CATEGORY</span>
+  </div>
+  <div class="tt-eli5" id="ttEli5Text">Definition goes here...</div>
+  <div class="tt-meta">
+    <div><b>Units:</b> <span id="ttUnitsText">--</span></div>
+    <div><b>HackRF Relevance:</b> <span id="ttRelText">--</span></div>
+  </div>
+</div>
+
+<!-- Universal Searchable Slide-over Glossary Drawer -->
+<div class="glossary-drawer" id="glossaryDrawer">
+  <div class="glossary-header">
+    <h3><span>📚</span> Space-Time &amp; Metrology Dictionary</h3>
+    <button class="glossary-close-btn" onclick="toggleGlossary()">✕ Close</button>
+  </div>
+  <div class="glossary-search-box">
+    <input type="text" class="glossary-input" id="glossarySearchInput" placeholder="Search any term, acronym, particle, or unit..." oninput="filterGlossary(this.value)">
+  </div>
+  <div class="glossary-cats" id="glossaryCatPills">
+    <div class="cat-pill active" onclick="setGlossaryCategory('ALL')">All Terms (<span id="countAll">0</span>)</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('PARTICLES')">Mesons &amp; Particles</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('SOLAR')">Sun &amp; Space Weather</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('SHELLS')">Atmospheric Shells</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('IONO')">Ionosphere &amp; Geodesy</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('TROPO')">Troposphere &amp; Rain</div>
+    <div class="cat-pill" onclick="setGlossaryCategory('TIMING')">Hardware &amp; Clocks</div>
+  </div>
+  <div class="glossary-body" id="glossaryBody">
+    <!-- Populated by JavaScript -->
+  </div>
+</div>
+
 <footer>
   <p>
     <b>The Cosmic Clock &amp; Space-Time Observatory</b> &bull; Built with Dual HackRF One / Pro &bull;
@@ -1010,6 +1427,8 @@ footer a { color: var(--cyan); text-decoration: none; }
   var ellCtx = ellCanvas.getContext("2d");
   var hwCanvas = document.getElementById("hardwareCanvas");
   var hwCtx = hwCanvas.getContext("2d");
+  var cascadeCanvas = document.getElementById("solarCascadeCanvas");
+  var cascadeCtx = cascadeCanvas.getContext("2d");
 
   // Animation frame loop
   var animTime = 0;
@@ -1022,6 +1441,7 @@ footer a { color: var(--cyan); text-decoration: none; }
     drawMultipathSim();
     drawEllipseSim();
     drawHardwareSim();
+    drawSolarCascadeSim();
     requestAnimationFrame(animate);
   }
 
@@ -1467,6 +1887,884 @@ footer a { color: var(--cyan); text-decoration: none; }
       });
   }
 
+
+  // ================= CHAPTER 8: SOLAR CASCADE & MESON ENGINE =================
+  var solarCascadeSunEl = -5.6; // Live default matching civil dawn
+  var activeAtmLayer = "f2";
+  var cosmicParticles = [];
+  var cmeShockwave = null;
+  var detectorGlow = 0.0;
+
+  // Particle Classes
+  function spawnCosmicRay(forced) {
+    if (!forced && Math.random() > 0.04) return;
+    var startX = 60 + Math.random() * 360;
+    var vx = (Math.random() - 0.5) * 1.5;
+    var vy = 4.0 + Math.random() * 2.5;
+    cosmicParticles.push({
+      type: "proton",
+      x: startX,
+      y: 10,
+      vx: vx,
+      vy: vy,
+      life: 1.0,
+      decayed: false
+    });
+  }
+
+  window.triggerCosmicRayCascade = function() {
+    for (var i = 0; i < 3; i++) {
+      spawnCosmicRay(true);
+    }
+  };
+
+  window.triggerForbushCME = function() {
+    cmeShockwave = {
+      x: 0,
+      radius: 20,
+      alpha: 1.0,
+      active: true
+    };
+    var stText = document.getElementById("cascadeStatus");
+    if (stText) {
+      stText.innerHTML = "☀️ <span style='color:var(--amber); font-weight:700;'>CME SHOCKWAVE ACTIVE &bull; Forbush Decrease: -14.2% Mesons</span>";
+    }
+    setTimeout(function() {
+      if (stText) stText.innerHTML = "☀️ Civil Dawn Active &bull; F2 Shell Sunlit &bull; Meson Showers Falling";
+    }, 6000);
+  };
+
+  window.updateSolarCascadeSlider = function(val) {
+    solarCascadeSunEl = parseFloat(val);
+    document.getElementById("solarCascadeSliderVal").textContent = (solarCascadeSunEl >= 0 ? "+" : "") + solarCascadeSunEl.toFixed(1) + "°";
+    updateCascadeStatusText();
+  };
+
+  window.syncToLiveSun = function() {
+    if (liveData && liveData.solar_ephemeris && liveData.solar_ephemeris.solar_el_apparent_deg !== undefined) {
+      solarCascadeSunEl = liveData.solar_ephemeris.solar_el_apparent_deg;
+      var sl = document.getElementById("solarCascadeSlider");
+      if (sl) sl.value = solarCascadeSunEl;
+      var sv = document.getElementById("solarCascadeSliderVal");
+      if (sv) sv.textContent = (solarCascadeSunEl >= 0 ? "+" : "") + solarCascadeSunEl.toFixed(1) + "°";
+      updateCascadeStatusText();
+    }
+  };
+
+  function updateCascadeStatusText() {
+    var desc = "DEEP NIGHT";
+    if (solarCascadeSunEl >= 5.0) desc = "FULL DAYLIGHT";
+    else if (solarCascadeSunEl >= 0.0) desc = "GROUND SUNRISE";
+    else if (solarCascadeSunEl >= -6.0) desc = "CIVIL DAWN";
+    else if (solarCascadeSunEl >= -12.0) desc = "NAUTICAL DAWN";
+    else if (solarCascadeSunEl >= -18.6) desc = "IONOSPHERIC SUNRISE (F2 LIT)";
+    else desc = "DEEP NIGHT";
+
+    var stText = document.getElementById("cascadeStatus");
+    if (stText && (!cmeShockwave || !cmeShockwave.active)) {
+      stText.textContent = "☀️ " + desc + " (" + (solarCascadeSunEl >= 0 ? "+" : "") + solarCascadeSunEl.toFixed(1) + "°) • Mesons Active";
+    }
+  }
+
+  var LAYER_INFO = {
+    f2: {
+      name: "F2 Ionosphere (350 km)",
+      desc: "Extreme Ultraviolet (EUV, λ < 102.7 nm) solar photons ionize atomic oxygen (O + hν → O⁺ + e⁻). Peak plasma density NmF2 ~ 10¹² m⁻³. Curvature dip is 18.57°, advancing dawn by 74 minutes ahead of the ground! Primary source of GNSS path delay."
+    },
+    e: {
+      name: "E-Layer (110 km)",
+      desc: "Solar soft X-rays (1–10 nm) ionize molecular oxygen. Contains dense metallic ion clouds (Fe⁺, Mg⁺) from burned-up micrometeoroids, forming Sporadic-E (Es) mirror layers that reflect VHF signals."
+    },
+    d: {
+      name: "D-Layer (70 km)",
+      desc: "Solar Lyman-alpha (121.6 nm) ionizes nitric oxide (NO). Exists strictly in daytime; electron recombination causes it to vanish completely at night. Strongly absorbs HF/VHF radio waves, causing the classic dawn fade."
+    },
+    meson: {
+      name: "Stratospheric Meson Layer (20 km)",
+      desc: "Relativistic cosmic ray protons smash into air nuclei, creating pions (π⁺, π⁻, π⁰) — which are MESONS! Pions decay into muons (μ) within 26 ns. Relativistic time dilation allows muons to survive and rain down to sea level."
+    },
+    tropo: {
+      name: "Troposphere (10 km)",
+      desc: "Contains 75% of atmospheric mass and 99% of water vapor. All weather occurs here. Causes non-dispersive refractivity delay (~2.3 m ZHD + 0.15 m ZWD). Morning sunrise evaporates dew, modulating precipitable water vapor (PWV)."
+    },
+    ground: {
+      name: "Ground & HackRF (0 km)",
+      desc: "Our Leo Bodnar GPSDO Split Star and HackRF Pro/One receivers. Direct sunlight elevates antenna sky temperature T_sys by 10–50 K. Muons pass through silicon at ~1 muon/cm²/min."
+    }
+  };
+
+  window.selectAtmLayer = function(lId) {
+    activeAtmLayer = lId;
+    var tabs = document.querySelectorAll(".layer-tab");
+    tabs.forEach(function(t) { t.classList.remove("active"); });
+    if (event && event.target) event.target.classList.add("active");
+
+    var info = LAYER_INFO[lId];
+    if (info) {
+      document.getElementById("cascadeLayerInfo").textContent = "Layer: " + info.name;
+      document.getElementById("layerExplainerBox").innerHTML = "<b>Layer Inspection (" + info.name + "):</b> " + info.desc;
+    }
+  };
+
+  // Main Chapter 8 Canvas Simulation Loop
+  function drawSolarCascadeSim() {
+    if (!cascadeCanvas || !cascadeCtx) return;
+    var w = cascadeCanvas.width, h = cascadeCanvas.height;
+    cascadeCtx.fillStyle = "#04060b";
+    cascadeCtx.fillRect(0, 0, w, h);
+
+    // Earth geometry: large circle centered below canvas
+    var earthCX = w / 2;
+    var earthCY = h + 240;
+    var rEarth = 300;
+
+    // Atmospheric layer radii
+    var rTropo = rEarth + 14;
+    var rMeson = rEarth + 28;
+    var rDLayer = rEarth + 46;
+    var rELayer = rEarth + 64;
+    var rF2Layer = rEarth + 100;
+    var rExo = rEarth + 130;
+
+    // Sun angle in radians
+    var sunRad = solarCascadeSunEl * Math.PI / 180.0;
+    var sunDirX = Math.cos(sunRad);
+    var sunDirY = -Math.sin(sunRad);
+
+    // Compute Earth's shadow line: angle perpendicular to sun
+    var shadowAngle = Math.atan2(sunDirY, sunDirX) + Math.PI;
+
+    // Draw Space Background stars
+    cascadeCtx.fillStyle = "rgba(255, 255, 255, 0.4)";
+    for (var s = 0; s < 25; s++) {
+      var sx = (s * 37 + Math.sin(s + animTime * 0.1) * 20) % w;
+      var sy = (s * 19) % 110;
+      cascadeCtx.fillRect(sx, sy, 1.2, 1.2);
+    }
+
+    // Draw Concentric Atmospheric Shells
+    var layers = [
+      { r: rExo, col: "rgba(168, 85, 247, 0.05)", name: "Exo" },
+      { r: rF2Layer, col: "rgba(0, 240, 255, 0.12)", name: "F2" },
+      { r: rELayer, col: "rgba(16, 185, 129, 0.12)", name: "E" },
+      { r: rDLayer, col: "rgba(245, 158, 11, 0.12)", name: "D" },
+      { r: rMeson, col: "rgba(244, 63, 94, 0.18)", name: "Meson (20km)" },
+      { r: rTropo, col: "rgba(56, 189, 248, 0.22)", name: "Tropo" }
+    ];
+
+    for (var i = 0; i < layers.length; i++) {
+      var lay = layers[i];
+      cascadeCtx.beginPath();
+      cascadeCtx.arc(earthCX, earthCY, lay.r, Math.PI * 1.15, Math.PI * 1.85);
+      cascadeCtx.strokeStyle = lay.col;
+      cascadeCtx.lineWidth = (i === 4) ? 4 : 2; // Accent meson layer
+      cascadeCtx.stroke();
+    }
+
+    // Draw Sunlight Rays sweeping across
+    cascadeCtx.save();
+    cascadeCtx.strokeStyle = "rgba(251, 191, 36, 0.15)";
+    cascadeCtx.lineWidth = 1;
+    for (var ry = 20; ry < h; ry += 35) {
+      var rayX0 = 0;
+      var rayY0 = ry;
+      var rayX1 = w;
+      var rayY1 = ry + Math.tan(-sunRad) * w;
+      cascadeCtx.beginPath();
+      cascadeCtx.moveTo(rayX0, rayY0);
+      cascadeCtx.lineTo(rayX1, rayY1);
+      cascadeCtx.stroke();
+    }
+    cascadeCtx.restore();
+
+    // Draw Earth Shadow Wedge (Umbra)
+    cascadeCtx.save();
+    cascadeCtx.fillStyle = "rgba(4, 7, 14, 0.72)";
+    cascadeCtx.beginPath();
+    cascadeCtx.moveTo(earthCX, earthCY - rEarth);
+    // Shadow boundary slopes down opposite to sun
+    var shSlope = Math.tan(-sunRad);
+    cascadeCtx.lineTo(0, (earthCY - rEarth) - earthCX * shSlope);
+    cascadeCtx.lineTo(0, h);
+    cascadeCtx.lineTo(w, h);
+    cascadeCtx.lineTo(w, (earthCY - rEarth) + (w - earthCX) * shSlope);
+    cascadeCtx.closePath();
+    cascadeCtx.fill();
+    cascadeCtx.restore();
+
+    // Highlight active layer arc
+    var activeR = rF2Layer;
+    var activeCol = "var(--cyan)";
+    if (activeAtmLayer === "e") { activeR = rELayer; activeCol = "var(--green)"; }
+    else if (activeAtmLayer === "d") { activeR = rDLayer; activeCol = "var(--amber)"; }
+    else if (activeAtmLayer === "meson") { activeR = rMeson; activeCol = "var(--magenta)"; }
+    else if (activeAtmLayer === "tropo") { activeR = rTropo; activeCol = "var(--blue)"; }
+    else if (activeAtmLayer === "ground") { activeR = rEarth; activeCol = "#fff"; }
+
+    cascadeCtx.beginPath();
+    cascadeCtx.arc(earthCX, earthCY, activeR, Math.PI * 1.25, Math.PI * 1.75);
+    cascadeCtx.strokeStyle = activeCol;
+    cascadeCtx.lineWidth = 3;
+    cascadeCtx.shadowColor = activeCol;
+    cascadeCtx.shadowBlur = 10;
+    cascadeCtx.stroke();
+    cascadeCtx.shadowBlur = 0;
+
+    // Draw Earth Surface
+    var earthGrad = cascadeCtx.createRadialGradient(earthCX, earthCY, 10, earthCX, earthCY, rEarth);
+    earthGrad.addColorStop(0, "#0e1e32");
+    earthGrad.addColorStop(0.85, "#162b46");
+    earthGrad.addColorStop(1, "#1e3a5f");
+    cascadeCtx.fillStyle = earthGrad;
+    cascadeCtx.beginPath();
+    cascadeCtx.arc(earthCX, earthCY, rEarth, 0, Math.PI * 2);
+    cascadeCtx.fill();
+    cascadeCtx.strokeStyle = "rgba(0, 240, 255, 0.4)";
+    cascadeCtx.lineWidth = 2;
+    cascadeCtx.stroke();
+
+    // Draw HackRF Ground Station Antenna on top of Earth
+    var antX = earthCX;
+    var antY = earthCY - rEarth;
+    cascadeCtx.fillStyle = detectorGlow > 0.1 ? "#10b981" : "#00f0ff";
+    cascadeCtx.fillRect(antX - 4, antY - 10, 8, 10);
+    cascadeCtx.beginPath();
+    cascadeCtx.arc(antX, antY - 10, 5, 0, Math.PI * 2);
+    cascadeCtx.fill();
+    if (detectorGlow > 0.1) {
+      cascadeCtx.strokeStyle = "rgba(16, 185, 129, " + detectorGlow + ")";
+      cascadeCtx.lineWidth = 2;
+      cascadeCtx.beginPath();
+      cascadeCtx.arc(antX, antY - 10, 16, 0, Math.PI * 2);
+      cascadeCtx.stroke();
+      detectorGlow -= 0.04;
+    }
+
+    // Draw Sun Icon in direction of sun
+    var sunDist = 220;
+    var sunPlotX = earthCX + Math.cos(-sunRad + Math.PI/2) * sunDist;
+    var sunPlotY = (earthCY - rEarth) - Math.sin(sunRad) * 140;
+    sunPlotX = Math.max(25, Math.min(w - 25, sunPlotX));
+    sunPlotY = Math.max(25, Math.min(h - 40, sunPlotY));
+
+    var sGlow = cascadeCtx.createRadialGradient(sunPlotX, sunPlotY, 2, sunPlotX, sunPlotY, 24);
+    sGlow.addColorStop(0, "rgba(251, 191, 36, 0.95)");
+    sGlow.addColorStop(0.5, "rgba(245, 158, 11, 0.4)");
+    sGlow.addColorStop(1, "transparent");
+    cascadeCtx.fillStyle = sGlow;
+    cascadeCtx.beginPath();
+    cascadeCtx.arc(sunPlotX, sunPlotY, 24, 0, Math.PI * 2);
+    cascadeCtx.fill();
+
+    cascadeCtx.fillStyle = "#f59e0b";
+    cascadeCtx.beginPath();
+    cascadeCtx.arc(sunPlotX, sunPlotY, 7, 0, Math.PI * 2);
+    cascadeCtx.fill();
+    cascadeCtx.fillStyle = "#fff";
+    cascadeCtx.font = "bold 10px monospace";
+    cascadeCtx.fillText("SUN (" + (solarCascadeSunEl >= 0 ? "+" : "") + solarCascadeSunEl.toFixed(1) + "°)", sunPlotX - 25, sunPlotY - 12);
+
+    // CME Shockwave Ripple Simulation
+    if (cmeShockwave && cmeShockwave.active) {
+      cmeShockwave.radius += 3.5;
+      cmeShockwave.alpha -= 0.008;
+      cascadeCtx.strokeStyle = "rgba(245, 158, 11, " + Math.max(0, cmeShockwave.alpha) + ")";
+      cascadeCtx.lineWidth = 4;
+      cascadeCtx.beginPath();
+      cascadeCtx.arc(sunPlotX, sunPlotY, cmeShockwave.radius, 0, Math.PI * 2);
+      cascadeCtx.stroke();
+      if (cmeShockwave.alpha <= 0 || cmeShockwave.radius > 450) {
+        cmeShockwave.active = false;
+      }
+    }
+
+    // Auto spawn ambient cosmic rays
+    spawnCosmicRay(false);
+
+    // Particle Simulation Update & Draw
+    var alive = [];
+    for (var pIdx = 0; pIdx < cosmicParticles.length; pIdx++) {
+      var p = cosmicParticles[pIdx];
+
+      // If CME active, deflect protons (Forbush decrease deflection)
+      if (cmeShockwave && cmeShockwave.active && p.type === "proton") {
+        p.vx += 0.4; // Magnetic Lorentz deflection away from atmosphere
+      }
+
+      p.x += p.vx;
+      p.y += p.vy;
+
+      // Check distance from Earth center
+      var dEarth = Math.hypot(p.x - earthCX, p.y - earthCY);
+
+      // Proton reaches meson production layer (~20 km -> rMeson)
+      if (p.type === "proton" && !p.decayed && dEarth <= rMeson) {
+        p.decayed = true;
+
+        // Hadronic Spallation flash!
+        cascadeCtx.fillStyle = "rgba(255, 255, 255, 0.9)";
+        cascadeCtx.beginPath();
+        cascadeCtx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+        cascadeCtx.fill();
+
+        // Spawn Pions (Mesons) π+ and π-
+        for (var pi = 0; pi < 3; pi++) {
+          alive.push({
+            type: "pion",
+            x: p.x,
+            y: p.y,
+            vx: p.vx * 0.6 + (Math.random() - 0.5) * 1.5,
+            vy: p.vy * 0.7 + Math.random() * 1.0,
+            ticks: 0
+          });
+        }
+        // Spawn Neutral Pion π0 -> 2 Gamma photons
+        alive.push({
+          type: "gamma",
+          x: p.x,
+          y: p.y,
+          vx: p.vx * 0.4 - 1.2,
+          vy: p.vy * 0.8,
+          ticks: 0
+        });
+        alive.push({
+          type: "gamma",
+          x: p.x,
+          y: p.y,
+          vx: p.vx * 0.4 + 1.2,
+          vy: p.vy * 0.8,
+          ticks: 0
+        });
+        continue;
+      }
+
+      // Pion decays into Muon + Neutrino after ~12 frames (representing τ = 26 ns)
+      if (p.type === "pion") {
+        p.ticks++;
+        if (p.ticks >= 12) {
+          // Decay into Muon (fast relativistic)
+          alive.push({
+            type: "muon",
+            x: p.x,
+            y: p.y,
+            vx: p.vx * 0.85,
+            vy: p.vy * 1.15 + 1.0,
+            life: 1.0
+          });
+          // Neutrino escapes
+          alive.push({
+            type: "neutrino",
+            x: p.x,
+            y: p.y,
+            vx: p.vx * 1.5 + (Math.random() - 0.5) * 2,
+            vy: p.vy * 1.2,
+            life: 0.7
+          });
+          continue;
+        }
+      }
+
+      // Check if Muon strikes Earth surface (HackRF antenna detection)
+      if (p.type === "muon" && dEarth <= rEarth + 2) {
+        detectorGlow = 1.0;
+        continue;
+      }
+
+      // Keep particles inside canvas
+      if (p.y < h + 20 && p.x > -20 && p.x < w + 20) {
+        alive.push(p);
+
+        // Draw particle based on type
+        if (p.type === "proton") {
+          cascadeCtx.strokeStyle = "#f43f5e";
+          cascadeCtx.lineWidth = 2.0;
+          cascadeCtx.beginPath();
+          cascadeCtx.moveTo(p.x, p.y);
+          cascadeCtx.lineTo(p.x - p.vx * 2, p.y - p.vy * 2);
+          cascadeCtx.stroke();
+        } else if (p.type === "pion") {
+          cascadeCtx.fillStyle = "#d946ef"; // Magenta pion/meson
+          cascadeCtx.beginPath();
+          cascadeCtx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+          cascadeCtx.fill();
+        } else if (p.type === "muon") {
+          cascadeCtx.strokeStyle = "#00f0ff"; // Cyan relativistic muon
+          cascadeCtx.lineWidth = 1.8;
+          cascadeCtx.beginPath();
+          cascadeCtx.moveTo(p.x, p.y);
+          cascadeCtx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3);
+          cascadeCtx.stroke();
+        } else if (p.type === "gamma") {
+          cascadeCtx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+          cascadeCtx.setLineDash([2, 2]);
+          cascadeCtx.lineWidth = 1.0;
+          cascadeCtx.beginPath();
+          cascadeCtx.moveTo(p.x, p.y);
+          cascadeCtx.lineTo(p.x - p.vx * 2, p.y - p.vy * 2);
+          cascadeCtx.stroke();
+          cascadeCtx.setLineDash([]);
+        } else if (p.type === "neutrino") {
+          cascadeCtx.fillStyle = "rgba(148, 163, 184, 0.4)";
+          cascadeCtx.fillRect(p.x, p.y, 1.2, 1.2);
+        }
+      }
+    }
+    cosmicParticles = alive;
+  }
+
+  // ================= UNIVERSAL DICTIONARY & ACRONYM ENGINE =================
+  var DICTIONARY = {
+    MESON: {
+      key: "MESON",
+      name: "Meson (Hadronic Subatomic Particle)",
+      cat: "PARTICLES",
+      eli5: "A tiny particle made of one quark and one antiquark bound by the strong nuclear force. Produced in the atmosphere at 15–25 km when cosmic rays smash into air atoms. Pions (π) are the most common mesons and quickly decay into muons.",
+      units: "Mass ~139.6 MeV/c²",
+      relevance: "Meson cascades create the muons raining down through our receiver and produce coherent radio pulses (Askaryan radiation) in VHF/UHF bands."
+    },
+    PION: {
+      key: "PION",
+      name: "Pi Meson (Pion, π±, π⁰)",
+      cat: "PARTICLES",
+      eli5: "The lightest meson. Charged pions (π±) live only 26 nanoseconds before decaying into muons and neutrinos. Neutral pions (π⁰) decay instantly into high-energy gamma ray photon pairs.",
+      units: "Proper lifetime τ = 26.0 ns",
+      relevance: "The critical middle step between deep space cosmic rays and ground-level muon detection."
+    },
+    MUON: {
+      key: "MUON",
+      name: "Muon (μ±, Heavy Lepton)",
+      cat: "PARTICLES",
+      eli5: "A heavy cousin of the electron (207 times more massive). Because muons travel near the speed of light (0.998c), Einstein's relativistic time dilation stretches their 2.2 μs lifetime, allowing them to reach the ground at ~1 muon/cm²/minute!",
+      units: "Lifetime τ = 2.197 μs; Mass 105.7 MeV/c²",
+      relevance: "Direct experimental verification of relativistic time dilation, governed by the exact same Lorentz factors that adjust our GPS satellite clocks."
+    },
+    EAS: {
+      key: "EAS",
+      name: "Extensive Air Shower",
+      cat: "PARTICLES",
+      eli5: "A gigantic cascade of billions of subatomic particles (mesons, muons, electrons, photons) triggered when an energetic cosmic ray proton strikes the upper atmosphere.",
+      units: "Primary Energy 10¹⁴ to 10²⁰ eV",
+      relevance: "Air showers produce nanosecond radio pulses detectable by wideband SDR receivers via geomagnetic synchrotron emission."
+    },
+    FORBUSH: {
+      key: "FORBUSH",
+      name: "Forbush Decrease",
+      cat: "SOLAR",
+      eli5: "A sudden 5% to 20% drop in cosmic rays and atmospheric meson/muon production caused when a magnetized solar coronal mass ejection (CME) sweeps past Earth and shields the atmosphere.",
+      units: "Percentage drop (% ΔI_CR)",
+      relevance: "Proves that solar magnetic storms directly alter high-altitude particle physics and trigger ionospheric storms."
+    },
+    GLE: {
+      key: "GLE",
+      name: "Ground Level Enhancement",
+      cat: "SOLAR",
+      eli5: "A rare, intense spike in ground-level radiation when a massive solar flare accelerates relativistic protons (>1 GeV) directly into the atmosphere, creating secondary meson showers.",
+      units: "Particle flux ratio ΔΦ/Φ₀",
+      relevance: "Severe space weather event that causes polar cap absorption and GNSS carrier tracking loss."
+    },
+    EUV: {
+      key: "EUV",
+      name: "Extreme Ultraviolet Radiation",
+      cat: "SOLAR",
+      eli5: "High-energy solar light (wavelengths 10–121 nm). Completely absorbed by atomic oxygen at 350 km altitude, stripping electrons to create the main F2 ionospheric plasma.",
+      units: "Wavelength λ < 102.7 nm; Photon energy > 12.1 eV",
+      relevance: "Drives 90% of diurnal Total Electron Content (TEC) and the dawn ionization ramp."
+    },
+    LYMAN_ALPHA: {
+      key: "LYMAN_ALPHA",
+      name: "Solar Lyman-Alpha Emission (Ly-α)",
+      cat: "SOLAR",
+      eli5: "The bright spectral line of neutral hydrogen at 121.567 nm. Penetrates down to 70–90 km where it ionizes nitric oxide (NO) to create the daytime D-layer.",
+      units: "Wavelength 121.567 nm",
+      relevance: "Responsible for creating the D-layer that causes daytime radio signal absorption (dawn fade)."
+    },
+    CME: {
+      key: "CME",
+      name: "Coronal Mass Ejection",
+      cat: "SOLAR",
+      eli5: "A billion-ton bubble of magnetized solar plasma erupted from the Sun's corona at speeds up to 3,000 km/s.",
+      units: "Speed (km/s), Magnetic Field (nT)",
+      relevance: "Triggers geomagnetic storms, ionospheric scintillation, and Forbush decreases."
+    },
+    SFU: {
+      key: "SFU",
+      name: "Solar Flux Unit",
+      cat: "SOLAR",
+      eli5: "Standard unit measuring solar radio energy. 1 SFU = 10⁻²² Watts per square meter per Hertz.",
+      units: "10⁻²² W/(m²·Hz)",
+      relevance: "The quiet Sun emits ~120 SFU at GPS frequencies. When the Sun rises, this flux elevates our HackRF noise floor."
+    },
+    F10_7: {
+      key: "F10_7",
+      name: "F10.7 Solar Flux Index",
+      cat: "SOLAR",
+      eli5: "Solar radio emission at 10.7 cm wavelength (2.8 GHz). Used globally as a proxy for sunspot numbers and solar EUV activity.",
+      units: "Solar Flux Units (SFU)",
+      relevance: "Drives the broadcast Klobuchar ionospheric delay model used by GPS receivers."
+    },
+    F2_LAYER: {
+      key: "F2_LAYER",
+      name: "Ionospheric F2 Peak Layer",
+      cat: "SHELLS",
+      eli5: "The densest plasma layer of Earth's atmosphere, peaking around 350 km altitude. Because the air is so thin, free electrons take days to recombine, so it persists all night.",
+      units: "Altitude 150–400 km; NmF2 ~ 10¹² e⁻/m³",
+      relevance: "Causes 1 to 20 meters of signal delay on GPS and BeiDou carriers."
+    },
+    E_LAYER: {
+      key: "E_LAYER",
+      name: "Ionospheric E-Region",
+      cat: "SHELLS",
+      eli5: "Middle ionosphere (90–150 km) ionized by soft X-rays. Contains metallic ion clouds (Fe⁺, Mg⁺) left by disintegrated meteors, forming Sporadic-E reflective mirrors.",
+      units: "Altitude 90–150 km",
+      relevance: "Contributes to high-frequency scintillation and anomalous VHF propagation."
+    },
+    D_LAYER: {
+      key: "D_LAYER",
+      name: "Ionospheric D-Region",
+      cat: "SHELLS",
+      eli5: "Lowest ionospheric layer (60–90 km). Exists only in daylight; at sunset, electrons recombine with molecules and it vanishes within minutes.",
+      units: "Altitude 60–90 km",
+      relevance: "Causes daytime signal attenuation and morning absorption."
+    },
+    TROPOSPHERE: {
+      key: "TROPOSPHERE",
+      name: "Troposphere",
+      cat: "SHELLS",
+      eli5: "The lowest 0 to 12 km of atmosphere containing 75% of air mass and all weather. Non-dispersive (slows down all radio frequencies equally).",
+      units: "Altitude 0–12 km",
+      relevance: "Adds ~2.4 meters of neutral path delay to satellite signals."
+    },
+    TEC: {
+      key: "TEC",
+      name: "Total Electron Content",
+      cat: "IONO",
+      eli5: "The total number of free electrons in a 1-square-meter tube stretching from the ground antenna all the way to the satellite.",
+      units: "Electrons / m²",
+      relevance: "Direct cause of ionospheric delay: Delay = 40.3 / f² * TEC."
+    },
+    TECU: {
+      key: "TECU",
+      name: "Total Electron Content Unit",
+      cat: "IONO",
+      eli5: "Standard geodetic unit equal to 10¹⁶ electrons per square meter.",
+      units: "1 TECU = 10¹⁶ e⁻/m² ≈ 16.24 cm delay at GPS L1",
+      relevance: "Used by all space geodesy software to quantify ionospheric refraction."
+    },
+    STEC: {
+      key: "STEC",
+      name: "Slant Total Electron Content",
+      cat: "IONO",
+      eli5: "The electron content along the actual angled line-of-sight ray. Equals vertical TEC multiplied by the obliquity mapping factor.",
+      units: "TECU",
+      relevance: "Low-elevation satellites pass through more atmosphere, so STEC is up to 3× higher than vertical TEC."
+    },
+    IPP: {
+      key: "IPP",
+      name: "Ionospheric Pierce Point",
+      cat: "IONO",
+      eli5: "The exact 3D coordinates where the satellite-to-receiver radio ray pierces the peak ionosphere at 350 km altitude.",
+      units: "Latitude, Longitude, Altitude (350 km)",
+      relevance: "All space weather maps and geomagnetic ray bending are calculated at the IPP location."
+    },
+    HOI: {
+      key: "HOI",
+      name: "Higher-Order Ionospheric Refraction",
+      cat: "IONO",
+      eli5: "2nd-order (I₂ ∝ 1/f³ · B₀ cos θ_B) and 3rd-order (I₃ ∝ 1/f⁴) delays caused by Earth's geomagnetic field interacting with circular polarization.",
+      units: "Millimeters (mm) / picoseconds (ps)",
+      relevance: "Adds +1.20 mm of delay and causes BeiDou B1I to experience +2.8% more delay than GPS L1."
+    },
+    FARADAY: {
+      key: "FARADAY",
+      name: "Faraday Polarization Rotation",
+      cat: "IONO",
+      eli5: "The twisting of a radio wave's polarization angle as it passes through magnetized plasma.",
+      units: "Degrees (°); ~2.3° at L-band",
+      relevance: "Satellites transmit circular polarization (RHCP) to ensure Faraday rotation does not wipe out signal reception."
+    },
+    CCD: {
+      key: "CCD",
+      name: "Code-Carrier Divergence",
+      cat: "IONO",
+      eli5: "Because plasma phase velocity is superluminal (vp > c) while group velocity is subluminal (vg < c), the carrier phase advances while code pseudorange lags.",
+      units: "Millimeters per second (mm/s)",
+      relevance: "Monitored by our Hatch filter sounder to prevent filter divergence during space storms."
+    },
+    ZTD: {
+      key: "ZTD",
+      name: "Zenith Total Delay",
+      cat: "TROPO",
+      eli5: "The total excess travel distance a radio wave experiences going straight down through the atmosphere (sum of dry air + water vapor).",
+      units: "Meters (m); ~2.3 to 2.5 m",
+      relevance: "Estimated in precision point positioning to achieve millimeter crustal geodesy."
+    },
+    ZHD: {
+      key: "ZHD",
+      name: "Zenith Hydrostatic Delay",
+      cat: "TROPO",
+      eli5: "The dry air component of tropospheric delay (~90% of the total). Calculated directly from surface atmospheric pressure.",
+      units: "Meters (m); ZHD ≈ 0.0022768 * P₀",
+      relevance: "Known to sub-millimeter accuracy from our station's barometric pressure sensor."
+    },
+    ZWD: {
+      key: "ZWD",
+      name: "Zenith Wet Delay",
+      cat: "TROPO",
+      eli5: "The water vapor component of tropospheric delay (~10% of total). Varies rapidly with humidity and storm fronts.",
+      units: "Meters (m); ~0.05 to 0.35 m",
+      relevance: "Inverted to calculate total Precipitable Water Vapor (PWV) above the station."
+    },
+    PWV: {
+      key: "PWV",
+      name: "Precipitable Water Vapor",
+      cat: "TROPO",
+      eli5: "The total liquid water column that would form if all atmospheric vapor above our station was condensed onto the ground.",
+      units: "Millimeters (mm) or kg/m²; 1 mm = 1 kg/m²",
+      relevance: "Turns our HackRF GNSS receiver into an automated meteorology weather station."
+    },
+    GPSDO: {
+      key: "GPSDO",
+      name: "GPS Disciplined Oscillator",
+      cat: "TIMING",
+      eli5: "A precision quartz or rubidium clock whose long-term frequency is continuously locked to the atomic clock consensus of the GPS constellation.",
+      units: "Frequency stability Δf/f ~ 10⁻¹²",
+      relevance: "Our Leo Bodnar GPSDO provides the 10 MHz reference to HackRF, eliminating local TCXO drift."
+    },
+    SDR: {
+      key: "SDR",
+      name: "Software Defined Radio",
+      cat: "TIMING",
+      eli5: "A radio where mixers, filters, and detectors are executed in software and FPGA code rather than fixed hardware chips.",
+      units: "Sampling rate (8 to 20 Msps)",
+      relevance: "Our HackRF Pro and One capture raw radio I/Q samples to track carrier phase directly."
+    },
+    TDC: {
+      key: "TDC",
+      name: "Time-to-Digital Converter",
+      cat: "TIMING",
+      eli5: "A digital stopwatch circuit inside the FPGA that measures the exact time an external pulse arrives with picosecond resolution.",
+      units: "Picoseconds (ps)",
+      relevance: "Measures the phase of the external 1PPS Bodnar tick relative to the ADC sampling clock."
+    },
+    TDEV: {
+      key: "TDEV",
+      name: "Time Deviation (NIST SP 1065)",
+      cat: "TIMING",
+      eli5: "Standard statistical metric used by time metrologists to quantify clock jitter and wander across different averaging times.",
+      units: "Nanoseconds (ns)",
+      relevance: "Our Leg 1 verification proved TDEV < 0.244 ns across a 1-hour window."
+    },
+    ADEV: {
+      key: "ADEV",
+      name: "Allan Deviation (σ_y)",
+      cat: "TIMING",
+      eli5: "Mathematical metric of oscillator fractional frequency stability that ignores linear frequency drift.",
+      units: "Dimensionless ratio (e.g. 5 × 10⁻¹⁰)",
+      relevance: "Evaluates the phase noise and long-term lock of our radio reference."
+    },
+    ISB: {
+      key: "ISB",
+      name: "Inter-System Bias",
+      cat: "TIMING",
+      eli5: "The nanosecond hardware delay difference between processing GPS, BeiDou, and Galileo in the same radio.",
+      units: "Nanoseconds (ns); ~+10.19 ns",
+      relevance: "Must be calibrated to combine satellites from different nations into a single position fix."
+    },
+    TSYS: {
+      key: "TSYS",
+      name: "System Noise Temperature (T_sys)",
+      cat: "TIMING",
+      eli5: "The total equivalent thermal noise of the antenna sky view, cable loss, and receiver amplifier.",
+      units: "Kelvin (K); ~300 to 450 K",
+      relevance: "Jumps when the Sun rises into the antenna beam."
+    },
+    N0: {
+      key: "N0",
+      name: "Noise Spectral Density",
+      cat: "TIMING",
+      eli5: "Noise power per 1 Hz of bandwidth. N₀ = k_B * T_sys.",
+      units: "dBm/Hz; typical ~ -174 dBm/Hz",
+      relevance: "Sets the physical detection floor for GNSS acquisition."
+    },
+    CN0: {
+      key: "CN0",
+      name: "Carrier-to-Noise Density (C/N₀)",
+      cat: "TIMING",
+      eli5: "The ratio of received satellite carrier power to the background noise floor.",
+      units: "dB-Hz; typical 35 to 50 dB-Hz",
+      relevance: "Primary signal strength metric displayed for every tracked satellite."
+    },
+    GDOP: {
+      key: "GDOP",
+      name: "Geometric Dilution of Precision",
+      cat: "TIMING",
+      eli5: "A geometric multiplier showing how satellite arrangement amplifies ranging measurement errors into position error.",
+      units: "Dimensionless scalar (lower is better)",
+      relevance: "Multi-GNSS fusion collapses our GDOP by 50% compared to GPS alone."
+    },
+    GR: {
+      key: "GR",
+      name: "General Relativity (Einstein 1915)",
+      cat: "TIMING",
+      eli5: "Gravity curves space-time. Clocks higher in orbit tick faster (+45.7 μs/day) because gravity is weaker.",
+      units: "Microseconds per day (μs/d)",
+      relevance: "Pre-compensated in satellite atomic clocks before launch."
+    },
+    SR: {
+      key: "SR",
+      name: "Special Relativity (Einstein 1905)",
+      cat: "TIMING",
+      eli5: "Moving clocks tick slower. Satellite orbital velocity (3.87 km/s) slows clocks down by -7.1 μs/day.",
+      units: "Microseconds per day (μs/d)",
+      relevance: "Combines with GR to produce a net +38.6 μs/day offset."
+    },
+    SAGNAC: {
+      key: "SAGNAC",
+      name: "Sagnac Effect",
+      cat: "TIMING",
+      eli5: "Relativistic phase shift caused by Earth rotating during the 67 milliseconds light takes to travel from orbit to ground.",
+      units: "Nanoseconds (ns); up to ±100 ns",
+      relevance: "Corrected in every GPS navigation position solution."
+    },
+    MULTIPATH: {
+      key: "MULTIPATH",
+      name: "Multipath Interference",
+      cat: "TROPO",
+      eli5: "Errors caused when radio signals bounce off nearby walls, roofs, or the ground before entering the antenna.",
+      units: "Decibels (dB MPI)",
+      relevance: "Creates cyclical ripples in carrier phase measurements."
+    },
+    SIDEREAL: {
+      key: "SIDEREAL",
+      name: "Sidereal Day (23h 56m 4s)",
+      cat: "TIMING",
+      eli5: "One Earth rotation relative to the distant stars (4 minutes shorter than a 24-hour solar day).",
+      units: "86,164.09 seconds",
+      relevance: "GPS satellite orbits repeat every sidereal day, allowing yesterday's multipath to cancel today's!"
+    }
+  };
+
+  // Populate Glossary Drawer HTML
+  function populateGlossary(filterCat, searchQ) {
+    var body = document.getElementById("glossaryBody");
+    if (!body) return;
+    var keys = Object.keys(DICTIONARY);
+    var count = 0;
+    var html = "";
+
+    searchQ = (searchQ || "").toLowerCase().trim();
+
+    keys.sort().forEach(function(k) {
+      var item = DICTIONARY[k];
+      if (filterCat && filterCat !== "ALL" && item.cat !== filterCat) return;
+      if (searchQ) {
+        var match = item.key.toLowerCase().includes(searchQ) ||
+                    item.name.toLowerCase().includes(searchQ) ||
+                    item.eli5.toLowerCase().includes(searchQ) ||
+                    item.relevance.toLowerCase().includes(searchQ);
+        if (!match) return;
+      }
+      count++;
+      html += '<div class="glossary-card">' +
+        '<div class="card-head">' +
+          '<span class="term-key">' + item.key + '</span>' +
+          '<span class="cat-pill" style="margin:0;">' + item.cat + '</span>' +
+        '</div>' +
+        '<div class="term-name">' + item.name + '</div>' +
+        '<div class="term-desc">' + item.eli5 + '</div>' +
+        '<div class="term-footer">' +
+          '<span><b>Units:</b> ' + item.units + '</span>' +
+          '<span><b>HackRF:</b> ' + item.relevance.substring(0, 45) + '...</span>' +
+        '</div>' +
+      '</div>';
+    });
+
+    body.innerHTML = html || '<div style="color:var(--text-dim); text-align:center; padding:30px;">No matching terms found.</div>';
+    var allBadge = document.getElementById("countAll");
+    if (allBadge) allBadge.textContent = keys.length;
+  }
+
+  window.toggleGlossary = function() {
+    var drawer = document.getElementById("glossaryDrawer");
+    if (!drawer) return;
+    drawer.classList.toggle("open");
+    if (drawer.classList.contains("open")) {
+      populateGlossary("ALL", "");
+      var inp = document.getElementById("glossarySearchInput");
+      if (inp) { inp.value = ""; inp.focus(); }
+    }
+  };
+
+  window.filterGlossary = function(q) {
+    populateGlossary("ALL", q);
+  };
+
+  window.setGlossaryCategory = function(cat) {
+    var pills = document.querySelectorAll(".glossary-cats .cat-pill");
+    pills.forEach(function(p) { p.classList.remove("active"); });
+    if (event && event.target) event.target.classList.add("active");
+    populateGlossary(cat, document.getElementById("glossarySearchInput").value);
+  };
+
+  // Tooltip Engine on Hover
+  function setupTooltips() {
+    var tooltip = document.getElementById("termTooltip");
+    if (!tooltip) return;
+
+    document.addEventListener("mouseover", function(e) {
+      var target = e.target.closest(".term");
+      if (!target) return;
+      var termKey = target.getAttribute("data-term");
+      var item = DICTIONARY[termKey];
+      if (!item) return;
+
+      document.getElementById("ttTitleText").textContent = item.name;
+      document.getElementById("ttCatText").textContent = item.cat;
+      document.getElementById("ttEli5Text").textContent = item.eli5;
+      document.getElementById("ttUnitsText").textContent = item.units;
+      document.getElementById("ttRelText").textContent = item.relevance;
+
+      tooltip.style.display = "block";
+    });
+
+    document.addEventListener("mousemove", function(e) {
+      if (tooltip.style.display === "block") {
+        var x = e.clientX + 14;
+        var y = e.clientY + 14;
+        if (x + 320 > window.innerWidth) x = e.clientX - 330;
+        if (y + 200 > window.innerHeight) y = e.clientY - 210;
+        tooltip.style.left = x + "px";
+        tooltip.style.top = y + "px";
+      }
+    });
+
+    document.addEventListener("mouseout", function(e) {
+      var target = e.target.closest(".term");
+      if (target) {
+        tooltip.style.display = "none";
+      }
+    });
+
+    document.addEventListener("click", function(e) {
+      var target = e.target.closest(".term");
+      if (target) {
+        var termKey = target.getAttribute("data-term");
+        window.toggleGlossary();
+        setTimeout(function() {
+          var inp = document.getElementById("glossarySearchInput");
+          if (inp) {
+            inp.value = termKey;
+            populateGlossary("ALL", termKey);
+          }
+        }, 150);
+      }
+    });
+  }
+
+  // Setup tooltips when DOM ready
+  setupTooltips();
+
+
   function updateFromSync(st) {
     liveData = st;
     document.getElementById("syncLiveText").textContent = "LIVE SDR (1 Hz)";
@@ -1520,6 +2818,39 @@ footer a { color: var(--cyan); text-decoration: none; }
       if (g.primary_hdop) document.getElementById("hdopStoryVal").textContent = g.primary_hdop.toFixed(2);
       if (g.gdop_reduction_vs_gps_pct) document.getElementById("gdopAdvStoryVal").textContent = "-" + g.gdop_reduction_vs_gps_pct.toFixed(1) + "%";
       if (g.area_reduction_vs_gps_pct) document.getElementById("areaAdvStoryVal").textContent = "-" + g.area_reduction_vs_gps_pct.toFixed(1) + "%";
+    }
+
+    // Ch 8: Solar Terminator & Meson Cascade
+    if (st.solar_ephemeris && st.dawn_state) {
+      var se = st.solar_ephemeris;
+      var ds = st.dawn_state;
+      if (ds.code) document.getElementById("dawnPhaseStoryVal").textContent = ds.code.replace(/_/g, " ");
+      if (ds.overhead_shadow_height_km !== undefined) {
+        document.getElementById("shadowHtStoryVal").textContent = ds.overhead_shadow_height_km <= 0 ? "0 km (Day)" : ds.overhead_shadow_height_km.toFixed(1) + " km";
+      }
+      if (ds.f2_layer_illuminated !== undefined) {
+        var f2el = document.getElementById("f2StatusStoryVal");
+        f2el.textContent = ds.f2_layer_illuminated ? "SUNLIT (EUV)" : "SHADOW";
+        f2el.style.color = ds.f2_layer_illuminated ? "var(--green)" : "var(--magenta)";
+      }
+      if (st.twilight_milestones && st.twilight_milestones.ground_sunrise_edt) {
+        document.getElementById("sunriseCountdownStoryVal").textContent = st.twilight_milestones.ground_sunrise_edt + " EDT";
+      }
+      if (st.solar_radiometry_correlation) {
+        var srf = document.getElementById("solarRfStoryVal");
+        srf.textContent = st.solar_radiometry_correlation.solar_rf_coupling_active ? "ACTIVE (Above Horizon)" : "Coupling Imminent";
+        srf.style.color = st.solar_radiometry_correlation.solar_rf_coupling_active ? "var(--green)" : "var(--cyan)";
+      }
+      // Sync slider if not user dragged
+      if (se.solar_el_apparent_deg !== undefined) {
+        solarCascadeSunEl = se.solar_el_apparent_deg;
+        var sld = document.getElementById("solarCascadeSlider");
+        if (sld && document.activeElement !== sld) {
+          sld.value = solarCascadeSunEl;
+          document.getElementById("solarCascadeSliderVal").textContent = (solarCascadeSunEl >= 0 ? "+" : "") + solarCascadeSunEl.toFixed(1) + "°";
+          updateCascadeStatusText();
+        }
+      }
     }
 
     // Ch 7: Hardware & Radiometry

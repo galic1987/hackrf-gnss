@@ -30,7 +30,8 @@ async function main() {
     tropoCanvas: 0,
     multipathCanvas: 0,
     ellipseCanvas: 0,
-    hardwareCanvas: 0
+    hardwareCanvas: 0,
+    solarCascadeCanvas: 0
   };
   const nanViolations = [];
 
