@@ -88,6 +88,9 @@ async function main() {
     "pppVal", "pppBadge", "pppEnuVal", "pppZwdVal", "pppClkVal",
     "noonVal", "noonBadge", "noonElVal", "noonAirmassVal", "noonChapVal", "noonLagVal",
     "iqVal", "iqBadge", "iqSkewVal", "iqDcVal", "iqEvmVal",
+    "lambdaVal", "lambdaBadge", "lambdaRatioVal", "lambdaCountVal", "lambdaResVal",
+    "srpVal", "srpBadge", "srpPressVal", "srpDriftVal", "srpStateVal",
+    "agwVal", "agwBadge", "agwAzVal", "agwPeriodVal", "agwModeVal",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -165,6 +168,9 @@ async function main() {
   if (elements["pppVal"]) console.log("PPP Val:", elements["pppVal"].innerHTML, "| Tier:", elements["pppBadge"] ? elements["pppBadge"].textContent : "--", "| ENU:", elements["pppEnuVal"] ? elements["pppEnuVal"].textContent : "--");
   if (elements["noonVal"]) console.log("Solar Noon Val:", elements["noonVal"].innerHTML, "| Milestone:", elements["noonBadge"] ? elements["noonBadge"].textContent : "--", "| Chapman:", elements["noonChapVal"] ? elements["noonChapVal"].textContent : "--");
   if (elements["iqVal"]) console.log("Frontend IQ Val:", elements["iqVal"].innerHTML, "| IRR:", elements["iqBadge"] ? elements["iqBadge"].textContent : "--", "| Skew:", elements["iqSkewVal"] ? elements["iqSkewVal"].textContent : "--");
+  if (elements["lambdaVal"]) console.log("LAMBDA Val:", elements["lambdaVal"].innerHTML, "| Badge:", elements["lambdaBadge"] ? elements["lambdaBadge"].textContent : "--", "| Ratio:", elements["lambdaRatioVal"] ? elements["lambdaRatioVal"].textContent : "--");
+  if (elements["srpVal"]) console.log("SRP Val:", elements["srpVal"].innerHTML, "| Pressure:", elements["srpPressVal"] ? elements["srpPressVal"].textContent : "--", "| Drift:", elements["srpDriftVal"] ? elements["srpDriftVal"].textContent : "--");
+  if (elements["agwVal"]) console.log("AGW Val:", elements["agwVal"].innerHTML, "| Azimuth:", elements["agwAzVal"] ? elements["agwAzVal"].textContent : "--", "| Period:", elements["agwPeriodVal"] ? elements["agwPeriodVal"].textContent : "--");
 
   console.log("SMOKE_IONO: PASS");
 }

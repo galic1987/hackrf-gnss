@@ -31,10 +31,13 @@ DAEMONS=(
     "ppp_sequential_ekf_engine.py --interval 2.0"
     "solar_noon_photochemistry_engine.py --interval 2.0"
     "frontend_iq_imbalance_sounder.py --interval 2.0"
+    "lambda_ambiguity_resolution_engine.py --interval 2.0"
+    "solar_radiation_pressure_sounder.py --interval 2.0"
+    "agw_tid_wavevector_engine.py --interval 2.0"
 )
 
 start_all() {
-    echo "=== Starting All 24 GNSS Metrology Daemons ==="
+    echo "=== Starting All 27 GNSS Metrology Daemons ==="
     cd "$WORKDIR" || exit 1
     for d in "${DAEMONS[@]}"; do
         script=$(echo "$d" | awk '{print $1}')
