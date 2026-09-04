@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Cosmic Clock &amp; Space-Time Observatory · HackRF GNSS</title>
+<style>
+:root {
+  --bg-dark: #070b12;
+  --bg-card: #0d1524;
+  --bg-card-hover: #131f36;
+  --border: #1e293b;
+  --border-bright: #334155;
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
+  --cyan: #00f0ff;
+  --blue: #38bdf8;
+  --green: #10b981;
+  --amber: #f59e0b;
+  --magenta: #f43f5e;
+  --purple: #a855f7;
+  --glow-cyan: 0 0 20px rgba(0, 240, 255, 0.25);
+  --glow-purple: 0 0 20px rgba(168, 85, 247, 0.25);
+  --glow-green: 0 0 20px rgba(16, 185, 129, 0.25);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg-dark);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* Header & Nav */
+header {
+  background: rgba(13, 21, 36, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  padding: 12px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--cyan), var(--purple));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; color: #000; font-size: 16px;
+}
+.brand-text h1 { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
+.brand-text p { font-size: 11px; color: var(--text-dim); }
+
+nav.nav-links { display: flex; gap: 8px; align-items: center; }
+nav.nav-links a {
+  color: var(--text-dim); text-decoration: none; font-size: 12px; font-weight: 500;
+  padding: 6px 12px; border-radius: 6px; border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+nav.nav-links a:hover, nav.nav-links a.active {
+  color: var(--cyan); background: rgba(0, 240, 255, 0.08); border-color: rgba(0, 240, 255, 0.3);
+}
+
+.controls { display: flex; gap: 10px; align-items: center; }
+.toggle-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+.toggle-btn.active {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--cyan);
+  border-color: rgba(0, 240, 255, 0.5);
+  box-shadow: var(--glow-cyan);
+}
+.badge-live {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pulse-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Hero Story Banner */
+.hero {
+  padding: 50px 24px 30px;
+  max-width: 1200px;
+  margin: 0 auto;
+  text-align: center;
+}
+.hero-tag {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--purple);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  margin-bottom: 16px;
+}
+.hero h2 {
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #ffffff 40%, var(--cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero p.lead {
+  font-size: 16px;
+  color: var(--text-dim);
+  max-width: 820px;
+  margin: 0 auto 30px;
+}
+
+/* Chapter Progress Navigator */
+.chapter-nav {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 1050px;
+  margin: 0 auto 40px;
+  padding: 0 16px;
+}
+.chapter-nav-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chapter-nav-btn:hover { border-color: var(--cyan); color: var(--text-main); }
+.chapter-nav-btn.active {
+  background: rgba(0, 240, 255, 0.12);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+/* Chapter Container */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px 60px; }
+.chapter {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 36px;
+  margin-bottom: 40px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s ease;
+}
+.chapter:hover { border-color: var(--border-bright); }
+.chapter-number {
+  position: absolute;
+  top: 20px;
+  right: 28px;
+  font-size: 48px;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.03);
+  user-select: none;
+}
+.chapter-header { margin-bottom: 24px; }
+.chapter-subtitle {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  margin-bottom: 6px;
+}
+.chapter-title { font-size: 26px; font-weight: 800; color: #fff; margin-bottom: 12px; }
+.chapter-summary { font-size: 15px; color: var(--text-dim); max-width: 900px; line-height: 1.7; }
+
+/* Grid Layout inside Chapter */
+.chapter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  align-items: center;
+}
+@media (max-width: 860px) {
+  .chapter-grid { grid-template-columns: 1fr; }
+}
+
+/* Interactive Canvas Card */
+.visual-card {
+  background: #060910;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  position: relative;
+}
+.visual-card canvas {
+  width: 100%;
+  max-width: 500px;
+  height: 280px;
+  display: block;
+  margin: 0 auto;
+  border-radius: 8px;
+}
+.visual-card .canvas-caption {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Telemetry & Physics Breakdown Card */
+.telemetry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.data-box {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.data-box-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+}
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.data-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.data-item .lbl { font-size: 11px; color: var(--text-dim); }
+.data-item .val { font-size: 18px; font-weight: 800; font-family: monospace; color: #fff; }
+.data-item .val.cyan { color: var(--cyan); }
+.data-item .val.green { color: var(--green); }
+.data-item .val.magenta { color: var(--magenta); }
+.data-item .val.amber { color: var(--amber); }
+
+/* Deep Physics Formula Box */
+.formula-box {
+  background: rgba(0, 240, 255, 0.03);
+  border-left: 3px solid var(--cyan);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.6;
+}
+.formula-box code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--cyan);
+  background: rgba(0, 240, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ELI5 Callout */
+.eli5-box {
+  background: rgba(245, 158, 11, 0.05);
+  border-left: 3px solid var(--amber);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  color: #fde68a;
+  line-height: 1.6;
+}
+
+/* Interactive Sliders / Controls inside Chapters */
+.interactive-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.interactive-ctrl input[type="range"] {
+  flex: 1;
+  accent-color: var(--cyan);
+  cursor: pointer;
+}
+
+/* Interactive Satellite Inspector Modal */
+.inspector-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  margin-top: 20px;
+}
+.inspector-title {
+  font-size: 20px; font-weight: 800; margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+}
+.sat-chips-bar {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; margin: 16px 0;
+}
+.sat-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+.sat-chip:hover, .sat-chip.active {
+  border-color: var(--cyan);
+  background: rgba(0, 240, 255, 0.12);
+  color: var(--cyan);
+}
+.sat-journey-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.journey-step {
+  background: #080c14;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  position: relative;
+}
+.journey-step .step-num {
+  font-size: 10px; font-weight: 800; color: var(--cyan); text-transform: uppercase; letter-spacing: 1px;
+}
+.journey-step .step-title {
+  font-size: 14px; font-weight: 700; color: #fff; margin: 4px 0 8px;
+}
+.journey-step .step-val {
+  font-size: 18px; font-weight: 800; font-family: monospace; color: var(--cyan);
+}
+.journey-step .step-sub {
+  font-size: 11px; color: var(--text-dim); margin-top: 4px;
+}
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 40px 24px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+footer a { color: var(--cyan); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-icon">⚡</div>
+    <div class="brand-text">
+      <h1>The Cosmic Clock &amp; Space-Time Observatory</h1>
+      <p>Dual HackRF One / Pro &bull; Bodnar GPSDO 10 MHz &bull; Radiator Lab</p>
+    </div>
+  </div>
+
+  <nav class="nav-links">
+    <a href="/story" class="active">Interactive Story</a>
+    <a href="/iono">Space Weather Lab</a>
+    <a href="/sync">Nanosecond Clock</a>
+    <a href="/globe">3D Globe</a>
+    <a href="/report">Daily Report</a>
+  </nav>
+
+  <div class="controls">
+    <button class="toggle-btn active" id="eli5Toggle" onclick="toggleEli5()">
+      <span>💡</span> <span id="eli5Text">Mode: Explain Like I'm 5</span>
+    </button>
+    <div class="badge-live">
+      <div class="pulse-dot"></div>
+      <span id="syncLiveText">LIVE SDR (1 Hz)</span>
+    </div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-tag">Real Physical Data &bull; Live From Deep Space</div>
+  <h2>The Journey of a Photon: Space to Silicon</h2>
+  <p class="lead">
+    How an electromagnetic wave traverses 20,200 kilometers of curved space-time, superluminal ionospheric plasma,
+    the Earth's magnetic dipole, and turbulent weather—before being captured by a software-defined radio and disciplined to nanoseconds.
+  </p>
+
+  <!-- Interactive Chapter Navigator -->
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn active" onclick="scrollToChapter(1)">1. Relativistic Clocks</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(2)">2. Superluminal Plasma</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(3)">3. Earth's Magnetic Shield</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(4)">4. Troposphere &amp; Rain</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(5)">5. Sidereal Ground Multipath</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(6)">6. The Error Ellipsoid</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(7)">7. Inside HackRF Silicon</button>
+  </div>
+</section>
+
+<div class="container">
+
+  <!-- ================= CHAPTER 1: RELATIVISTIC TIME ================= -->
+  <section class="chapter" id="chapter1">
+    <div class="chapter-number">01</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 1 &bull; 20,200 km Orbit &bull; General &amp; Special Relativity</div>
+      <h3 class="chapter-title">The Atomic Clock in the Sky: Einstein's Time Warp</h3>
+      <p class="chapter-summary">
+        In the vacuum of Medium Earth Orbit, time does not tick at the same rate as on Earth.
+        We are peering into two opposing relativistic forces that warp the rate of satellite clocks by microseconds every day.
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Relativistic Gravitational Canvas -->
+      <div class="visual-card">
+        <canvas id="relativityCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Earth Gravity Well vs Orbit (Interactive)</span>
+          <span style="color:var(--cyan);" id="relCanvasSpeed">v = 3.87 km/s</span>
+        </div>
+        <div class="interactive-ctrl">
+          <label style="color:var(--text-dim);">Orbital Height:</label>
+          <input type="range" id="orbitSlider" min="500" max="36000" value="20200" step="500" oninput="updateRelativitySim()">
+          <span id="orbitLabel" style="font-family:monospace; color:var(--cyan);">20,200 km</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF Relativistic Metrology</span>
+            <span style="color:var(--purple);">state.relativity.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">GR Gravitational Blueshift</span>
+              <span class="val cyan" id="grVal">+46.2 &mu;s/d</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">SR Kinematic Dilation</span>
+              <span class="val magenta" id="srVal">&minus;7.0 &mu;s/d</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Net Secular Clock Drift</span>
+              <span class="val green" id="netRelVal">+39.2 &mu;s/d</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Uncompensated Pos Drift</span>
+              <span class="val amber" id="driftKmVal">11.8 km/day</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch1">
+          <b>💡 Simple Idea:</b> Earth's heavy mass slows down time near the ground. Because the satellite is high up in space where gravity is weaker, its clock runs <i>faster</i> (+45.7 &mu;s/day). But because it's zooming fast around Earth, its clock also runs <i>slower</i> (-7.2 &mu;s/day). The winner? It runs fast by +38.5 &mu;s every day! If engineers didn't pre-tune the satellite clocks before launch, Google Maps would drift by 11 kilometers every day!
+        </div>
+
+        <div class="formula-box" id="deep_ch1" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Fractional frequency shift &Delta;f/f = (&Delta;&Phi;_g - v&sup2;/2)/c&sup2; = &mu;/c&sup2;(1/r_geoid - 1/r_sat) - v&sup2;/(2c&sup2;).
+          Oscillator factory offset: 10.23 MHz compensated to <code>10.22999999543 MHz</code> (-4.55 mHz shift).
+          Periodic eccentricity correction: <code>dt_r = F * e * &radic;a * sin(E_k)</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 2: SUPERLUMINAL PLASMA ================= -->
+  <section class="chapter" id="chapter2">
+    <div class="chapter-number">02</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 2 &bull; 350 km Altitude &bull; Dispersive Ionospheric Plasma</div>
+      <h3 class="chapter-title">The Cosmic Speed Limit: Phase Advance vs Group Delay</h3>
+      <p class="chapter-summary">
+        As the signal plunges into the ionosphere, electromagnetic physics splits the wave in two.
+        The individual wave crests travel <i>faster than the speed of light in vacuum</i>, while the modulation chips travel slower!
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Plasma Wave Simulator -->
+      <div class="visual-card">
+        <canvas id="plasmaCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Wave Packet: Carrier Ripples (v<sub>p</sub> &gt; c) vs Envelope (v<sub>g</sub> &lt; c)</span>
+          <span style="color:var(--green);">v<sub>p</sub> &middot; v<sub>g</sub> = c&sup2;</span>
+        </div>
+        <div class="interactive-ctrl">
+          <label style="color:var(--text-dim);">Slant TEC:</label>
+          <input type="range" id="stecSlider" min="1" max="60" value="15" step="1" oninput="updatePlasmaSim()">
+          <span id="stecLabel" style="font-family:monospace; color:var(--cyan);">15 TECU</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF Code-Carrier Divergence</span>
+            <span style="color:var(--cyan);">state.hatch_divergence.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Superluminal Phase Excess</span>
+              <span class="val cyan" id="vpExcessVal">+1,938 m/s</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Subluminal Group Deficit</span>
+              <span class="val amber" id="vgDeficitVal">&minus;1,938 m/s</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Ionospheric Drift Rate (&Idot;)</span>
+              <span class="val green" id="ionoDriftVal">+0.03 mm/s</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Hatch Divergence Bias</span>
+              <span class="val" id="hatchBiasStoryVal">+0.010 m</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch2">
+          <b>💡 Simple Idea:</b> The ionosphere is full of free-floating electrons. When our radio wave hits them, the wave crests surf on the electron oscillations and travel <i>faster than light</i> (+1,938 m/s above c!). But the message itself (the digital bits) gets slowed down by the exact same amount! By comparing the fast wave crests to the slow bits, the HackRF measures the exact thickness of space plasma!
+        </div>
+
+        <div class="formula-box" id="deep_ch2" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Refractive index n_p = &radic;(1 - f_p&sup2;/f&sup2;) &lt; 1.
+          Phase velocity: <code>v_p = c / n_p &gt; c</code>. Group velocity: <code>v_g = c * n_p &lt; c</code>.
+          Relativistic invariant: <code>v_p * v_g = c&sup2;</code>.
+          Code-Minus-Carrier observable: <code>CMC = &rho; - &Phi; = 2*I - &lambda;N + &epsilon;</code>.
+          Hatch filter divergence bias: <code>&Delta;&rho;_bias = 2 * &tau;_eff * &Idot;</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 3: EARTH'S MAGNETIC SHIELD ================= -->
+  <section class="chapter" id="chapter3">
+    <div class="chapter-number">03</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 3 &bull; Geomagnetic Dipole &bull; Second-Order Polarization Splitting</div>
+      <h3 class="chapter-title">Earth's Magnetic Shield: Faraday Rotation &amp; B<sub>0</sub> Splitting</h3>
+      <p class="chapter-summary">
+        Because electrons spiral around Earth's magnetic field lines, radio signals arriving from the North
+        behave differently from signals arriving from the South. We measure this picosecond-level asymmetry live.
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Magnetic Dipole Canvas -->
+      <div class="visual-card">
+        <canvas id="geomagCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Earth Magnetic Dipole Field Lines &amp; Ray Projections</span>
+          <span style="color:var(--magenta);" id="dipLabel">Dip = 65.5&deg; Downward</span>
+        </div>
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:8px;">
+          <button class="toggle-btn active" onclick="setGeomagRay('north')">Ray Looking North</button>
+          <button class="toggle-btn" onclick="setGeomagRay('south')">Ray Looking South</button>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF Higher-Order Ionosphere</span>
+            <span style="color:var(--magenta);">state.hoi.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">2nd-Order Delay (I<sub>2</sub>)</span>
+              <span class="val magenta" id="i2StoryVal">+1.20 mm</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Carrier Phase Timing Shift</span>
+              <span class="val cyan" id="hoiPsStoryVal">+4.0 ps</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">North-South Asymmetry</span>
+              <span class="val green" id="nsAsymStoryVal">0.20 mm</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Faraday Polarization Turn</span>
+              <span class="val amber" id="faradayStoryVal">2.3&deg;</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch3">
+          <b>💡 Simple Idea:</b> Earth is a giant magnet! In Virginia, magnetic field lines plunge downward into the ground at a steep 65&deg; angle. When a satellite signal comes from the South, it travels almost parallel to the magnetic field lines. But when a signal comes from the North, it cuts across them! This rotates the radio wave's polarization like a corkscrew by 2.3&deg; and introduces a tiny 4-picosecond delay!
+        </div>
+
+        <div class="formula-box" id="deep_ch3" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Appleton-Hartree 1/f&sup3; expansion:
+          <code>I_2 = -(e&sup3; / (16*&pi;&sup3;*&epsilon;_0*m_e&sup2;*f&sup3;)) * B_0 * cos(&theta;_B) * STEC</code>.
+          At 350 km IPP altitude: B_0 &approx; 42 &mu;T.
+          Faraday rotation: <code>&Omega;_F = (2.365&times;10⁴ / f&sup2;) * B_0 * |cos(&theta;_B)| * STEC</code>.
+          Crucially, I_2 DOES NOT cancel in standard dual-frequency iono-free combinations!
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 4: TROPOSPHERE & WATER VAPOR ================= -->
+  <section class="chapter" id="chapter4">
+    <div class="chapter-number">04</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 4 &bull; 0 to 12 km &bull; Neutral Atmosphere &amp; Weather Inversion</div>
+      <h3 class="chapter-title">The Breath of the Atmosphere: Weighing Water Vapor with GNSS</h3>
+      <p class="chapter-summary">
+        In the lowest 12 kilometers, neutral air slows down all radio waves equally.
+        The dry air delays signals by 2.3 meters, while invisible humidity delays them by 12 centimeters.
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Atmosphere Stack Canvas -->
+      <div class="visual-card">
+        <canvas id="tropoCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Hydrostatic Mass (2.30 m) vs Wet Water Vapor (0.12 m)</span>
+          <span style="color:var(--blue);" id="tropoCanvasDelay">Total Delay: 8.07 ns</span>
+        </div>
+        <div class="interactive-ctrl">
+          <label style="color:var(--text-dim);">Humidity (PWV):</label>
+          <input type="range" id="pwvSlider" min="5" max="50" value="18" step="1" oninput="updateTropoSim()">
+          <span id="pwvSliderLabel" style="font-family:monospace; color:var(--blue);">18.3 mm</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF GNSS Meteorology</span>
+            <span style="color:var(--blue);">state.meteorology.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Precipitable Water (PWV)</span>
+              <span class="val blue" id="pwvStoryVal">18.3 mm</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Columnar Vapor Mass</span>
+              <span class="val green" id="pwvMassStoryVal">18.26 kg/m&sup2;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Zenith Hydro Delay (ZHD)</span>
+              <span class="val cyan" id="zhdStoryVal">2.30 m</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Zenith Wet Delay (ZWD)</span>
+              <span class="val amber" id="zwdStoryVal">0.12 m</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch4">
+          <b>💡 Simple Idea:</b> Air has weight! The entire pillar of air above our roof presses down and delays the satellite signal by 2.30 meters (7.7 nanoseconds). But invisible water vapor also adds an extra 12 centimeters of delay. By measuring this tiny wet delay, the HackRF acts as a radar weather station, calculating that there is currently 18.26 kilograms of water vapor floating in the sky above every square meter!
+        </div>
+
+        <div class="formula-box" id="deep_ch4" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Saastamoinen model:
+          <code>ZHD = 0.0022768 * P_0 / (1 - 0.00266*cos(2&phi;) - 0.00028*h)</code>.
+          Wet delay: <code>ZWD = ZTD - ZHD</code>.
+          Bevis water vapor inversion: <code>PWV = &Pi; * ZWD</code> where conversion factor
+          <code>&Pi; = 10⁶ / [ &rho;_w * R_v * (k&prime;_2 + k_3/T_m) ] &approx; 0.159</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 5: SIDEREAL GROUND MULTIPATH ================= -->
+  <section class="chapter" id="chapter5">
+    <div class="chapter-number">05</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 5 &bull; Ground Level &bull; Reflections &amp; The Repeating Sidereal Day</div>
+      <h3 class="chapter-title">Bouncing Off the Ground: The 23h 56m Clock of the Stars</h3>
+      <p class="chapter-summary">
+        As waves reach our roof, they bounce off roofs and ground surfaces.
+        Because satellite orbits repeat every 23 hours, 56 minutes, and 4 seconds, the reflection pattern repeats identically!
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Multipath Bounce Canvas -->
+      <div class="visual-card">
+        <canvas id="multipathCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Direct Ray vs Reflected Ray Interference</span>
+          <span style="color:var(--amber);">Sidereal Slip: -236 s / day</span>
+        </div>
+        <div class="interactive-ctrl">
+          <label style="color:var(--text-dim);">Ground Reflectivity:</label>
+          <input type="range" id="reflSlider" min="0" max="100" value="40" step="5" oninput="updateMultipathSim()">
+          <span id="reflSliderLabel" style="font-family:monospace; color:var(--amber);">40% Ground Bounce</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF Sidereal Multipath Stacking</span>
+            <span style="color:var(--amber);">state.multipath.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Multipath Index (MPI)</span>
+              <span class="val amber" id="mpiStoryVal">3.56 dB</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Sidereal Repeat Grid</span>
+              <span class="val green" id="gridCellsVal">468 cells</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Cleanest Sky Sector</span>
+              <span class="val cyan" id="cleanSectorVal">SW (3.22 dB)</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Reflective Sky Sector</span>
+              <span class="val magenta" id="reflSectorVal">East (3.83 dB)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch5">
+          <b>💡 Simple Idea:</b> Satellite signals don't just hit the antenna directly—some bounce off the roof tiles and ground first! The direct and bounced waves clash and create ripples. But because GPS satellites orbit according to the stars (one sidereal day = 23 hours, 56 minutes, 4 seconds), the satellite flies the exact same trajectory 4 minutes earlier every day. By stacking yesterday's data on today's data, we map every reflection in our backyard!
+        </div>
+
+        <div class="formula-box" id="deep_ch5" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Harmonic Multipath Stacking (HMS):
+          Sidereal time lag <code>&tau;_sid = 86164.0905 s</code> (23h 56m 4.09s).
+          Multipath error: <code>&delta;&rho;_mp = &alpha; * &lambda; / (2&pi;) * arctan( (sin &theta;) / (&alpha; + cos &theta;) )</code>.
+          Stacked SNR residuals are decomposed into spherical harmonic grid cells (10&deg; &times; 10&deg;) to isolate stationary physical multipath.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 6: THE ERROR ELLIPSOID ================= -->
+  <section class="chapter" id="chapter6">
+    <div class="chapter-number">06</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 6 &bull; Position Solution &bull; Spatial Geometry &amp; Multi-GNSS Fusion</div>
+      <h3 class="chapter-title">Geometry in Space: The Error Ellipsoid</h3>
+      <p class="chapter-summary">
+        A receiver needs 4 satellites to solve 3D position and time.
+        See how fusing GPS + BeiDou + Galileo + GLONASS shrinks our horizontal uncertainty ellipse by 75%!
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive Live Error Ellipse Canvas -->
+      <div class="visual-card">
+        <canvas id="ellipseCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Live 95% Horizontal Confidence Ellipse (Interactive)</span>
+          <span style="color:var(--cyan);" id="ellipseSizeText">1.6m &times; 1.3m</span>
+        </div>
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:8px;">
+          <button class="toggle-btn" id="btnSingleGps" onclick="toggleEllipseMode('gps')">GPS Alone (11 Sats)</button>
+          <button class="toggle-btn active" id="btnAllGnss" onclick="toggleEllipseMode('all')">All-GNSS Fused (37 Sats)</button>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF GDOP &amp; Error Ellipsoid</span>
+            <span style="color:var(--blue);">state.gdop.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Geometric Dilution (GDOP)</span>
+              <span class="val cyan" id="gdopStoryVal">0.92</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Horizontal Dilution (HDOP)</span>
+              <span class="val green" id="hdopStoryVal">0.42</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">GDOP Advantage vs GPS</span>
+              <span class="val green" id="gdopAdvStoryVal">&minus;48.6%</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Error Area Reduction</span>
+              <span class="val cyan" id="areaAdvStoryVal">&minus;75.1%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch6">
+          <b>💡 Simple Idea:</b> If all satellites are bunched together in the southern sky, our position calculation is blurry like a stretched oval. At any random minute, GPS alone might only have 3 satellites locked—which isn't enough to solve a 3D position at all! But because HackRF receives Chinese BeiDou, European Galileo, and Russian GLONASS at the same time, the satellites surround us evenly, collapsing the error ellipse by 75%!
+        </div>
+
+        <div class="formula-box" id="deep_ch6" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Linear design matrix: <code>G_i = [-cos(El)sin(Az), -cos(El)cos(Az), -sin(El), 1]</code>.
+          Cofactor matrix: <code>Q = (G^T G)⁻¹</code>.
+          Eigenvalues of horizontal 2x2 submatrix: <code>&lambda;_1,2 = (Q_EE + Q_NN)/2 &plusmn; &radic;[ ((Q_EE - Q_NN)/2)&sup2; + Q_EN&sup2; ]</code>.
+          95% confidence axes: <code>a = 2.4477 * &sigma;_0 * &radic;&lambda;_1</code>, <code>b = 2.4477 * &sigma;_0 * &radic;&lambda;_2</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHAPTER 7: INSIDE HACKRF SILICON ================= -->
+  <section class="chapter" id="chapter7">
+    <div class="chapter-number">07</div>
+    <div class="chapter-header">
+      <div class="chapter-subtitle">Stage 7 &bull; Silicon &amp; Gateware &bull; SDR RF Front-End to FPGA Picoseconds</div>
+      <h3 class="chapter-title">Inside the Silicon: How a $300 SDR Achieves Nanoseconds</h3>
+      <p class="chapter-summary">
+        Explore the physical signal chain inside the HackRF: from the antenna connector, through the RF mixer,
+        into the 8-bit ADC, and through our custom FPGA Time-to-Digital Converter (TDC).
+      </p>
+    </div>
+
+    <div class="chapter-grid">
+      <!-- Interactive HackRF Signal Chain Explorer -->
+      <div class="visual-card">
+        <canvas id="hardwareCanvas" width="480" height="280"></canvas>
+        <div class="canvas-caption">
+          <span>Interactive HackRF Clock &amp; RF Chain (Hover to inspect stages)</span>
+          <span style="color:var(--green);" id="hwHoverInfo">Bodnar 10 MHz Split Star</span>
+        </div>
+      </div>
+
+      <!-- Telemetry Box -->
+      <div class="telemetry-card">
+        <div class="data-box">
+          <div class="data-box-title">
+            <span>Live HackRF Radiometry &amp; Clock Metrology</span>
+            <span style="color:var(--green);">state.radiometry.json &bull; state.isb.json</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">System Noise Temp (T<sub>sys</sub>)</span>
+              <span class="val cyan" id="tsysStoryVal">184 K</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">RF Link Margin</span>
+              <span class="val green" id="marginStoryVal">+9.4 dB</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Noise Floor (N<sub>0</sub>)</span>
+              <span class="val" id="n0StoryVal">&minus;176.0 dBm/Hz</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Clock Allan Dev &sigma;<sub>y</sub>(300s)</span>
+              <span class="val magenta" id="adevStoryVal">5.08&times;10⁻¹⁰</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="eli5-box" id="eli5_ch7">
+          <b>💡 Simple Idea:</b> Normal computers have cheap quartz clocks that wander by microseconds when your room heats up. To fix this, our lab connects a precision atomic-disciplined GPSDO clock to the HackRF's external clock input. Inside the FPGA chip, a digital stopwatch measures time intervals down to fractions of a nanosecond, allowing a low-cost radio to measure millimeter movements in the Earth's crust!
+        </div>
+
+        <div class="formula-box" id="deep_ch7" style="display:none;">
+          <b>🔬 Deep Formulation:</b> Radiometer link budget:
+          <code>N_0 = k_B * T_sys</code> where <code>T_sys = T_sky / L_cable + T_amb(1 - 1/L_cable) + T_LNA + T_rx/G_LNA</code>.
+          FPGA TDC: 48-tap carry chain interpolator resolving sub-sample time of arrival on P28.16 trigger input.
+          Carrier phase stability: Allan deviation &sigma;_y(&tau;) reaches <code>5.08&times;10⁻¹⁰</code> at 300 seconds.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= INTERACTIVE SATELLITE JOURNEY INSPECTOR ================= -->
+  <section class="inspector-section">
+    <div class="inspector-title">
+      <span>🛰️</span> Live Satellite Space-Time Inspector
+    </div>
+    <p style="color:var(--text-dim); font-size:13px;">
+      Click any satellite currently being tracked by the HackRF to inspect its exact live parameters across every stage of the journey:
+    </p>
+
+    <div class="sat-chips-bar" id="satChipsBar">
+      <div class="sat-chip active" onclick="selectSatellite('gps_5')">GPS PRN 05</div>
+      <div class="sat-chip" onclick="selectSatellite('gps_19')">GPS PRN 19</div>
+      <div class="sat-chip" onclick="selectSatellite('gps_21')">GPS PRN 21</div>
+      <div class="sat-chip" onclick="selectSatellite('bds_13')">BeiDou PRN 13</div>
+      <div class="sat-chip" onclick="selectSatellite('bds_33')">BeiDou PRN 33</div>
+      <div class="sat-chip" onclick="selectSatellite('gal_13')">Galileo PRN 13</div>
+    </div>
+
+    <div class="sat-journey-grid" id="journeyGrid">
+      <div class="journey-step">
+        <div class="step-num">Step 1: Orbit</div>
+        <div class="step-title">Relativity &amp; Speed</div>
+        <div class="step-val" id="insp_speed">3.87 km/s</div>
+        <div class="step-sub" id="insp_gr">GR Blueshift: +46.2 &mu;s/d</div>
+      </div>
+
+      <div class="journey-step">
+        <div class="step-num">Step 2: Plasma</div>
+        <div class="step-title">Superluminal Phase</div>
+        <div class="step-val" id="insp_vp">+1,938 m/s</div>
+        <div class="step-sub" id="insp_stec">Slant TEC: 14.5 TECU</div>
+      </div>
+
+      <div class="journey-step">
+        <div class="step-num">Step 3: Magnetism</div>
+        <div class="step-title">2nd-Order B<sub>0</sub> Shift</div>
+        <div class="step-val" id="insp_i2">+1.32 mm</div>
+        <div class="step-sub" id="insp_faraday">Faraday: 2.5&deg;</div>
+      </div>
+
+      <div class="journey-step">
+        <div class="step-num">Step 4: Weather</div>
+        <div class="step-title">Tropospheric Delay</div>
+        <div class="step-val" id="insp_tropo">3.42 m</div>
+        <div class="step-sub" id="insp_slant_wv">Slant WV: 24.2 mm</div>
+      </div>
+
+      <div class="journey-step">
+        <div class="step-num">Step 5: Receiver</div>
+        <div class="step-title">Link Budget &amp; C/N<sub>0</sub></div>
+        <div class="step-val" id="insp_cn0">38.5 dB-Hz</div>
+        <div class="step-sub" id="insp_margin">Margin: +10.5 dB</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <p>
+    <b>The Cosmic Clock &amp; Space-Time Observatory</b> &bull; Built with Dual HackRF One / Pro &bull;
+    <a href="/iono">Ionospheric Lab</a> &bull; <a href="/sync">Nanosecond Sync</a> &bull;
+    Software Defined Physical Metrology
+  </p>
+</footer>
+
+<script>
+(function() {
+  var isEli5 = true;
+  var liveData = null;
+  var selectedSatKey = "gps_5";
+
+  // Canvases
+  var relCanvas = document.getElementById("relativityCanvas");
+  var relCtx = relCanvas.getContext("2d");
+  var plasmaCanvas = document.getElementById("plasmaCanvas");
+  var plasmaCtx = plasmaCanvas.getContext("2d");
+  var geomagCanvas = document.getElementById("geomagCanvas");
+  var geomagCtx = geomagCanvas.getContext("2d");
+  var tropoCanvas = document.getElementById("tropoCanvas");
+  var tropoCtx = tropoCanvas.getContext("2d");
+  var mpCanvas = document.getElementById("multipathCanvas");
+  var mpCtx = mpCanvas.getContext("2d");
+  var ellCanvas = document.getElementById("ellipseCanvas");
+  var ellCtx = ellCanvas.getContext("2d");
+  var hwCanvas = document.getElementById("hardwareCanvas");
+  var hwCtx = hwCanvas.getContext("2d");
+
+  // Animation frame loop
+  var animTime = 0;
+  function animate() {
+    animTime += 0.025;
+    drawRelativitySim();
+    drawPlasmaSim();
+    drawGeomagSim();
+    drawTropoSim();
+    drawMultipathSim();
+    drawEllipseSim();
+    drawHardwareSim();
+    requestAnimationFrame(animate);
+  }
+
+  // 1. Relativity Canvas Simulation
+  function drawRelativitySim() {
+    var w = relCanvas.width, h = relCanvas.height;
+    relCtx.fillStyle = "#060910";
+    relCtx.fillRect(0, 0, w, h);
+
+    // Gravity well curves
+    relCtx.strokeStyle = "rgba(0, 240, 255, 0.15)";
+    relCtx.lineWidth = 1;
+    for (var r = 30; r < 200; r += 25) {
+      relCtx.beginPath();
+      relCtx.ellipse(w / 2, h / 2 + 30, r, r * 0.45, 0, 0, Math.PI * 2);
+      relCtx.stroke();
+    }
+
+    // Earth in center
+    var grad = relCtx.createRadialGradient(w/2, h/2+30, 5, w/2, h/2+30, 32);
+    grad.addColorStop(0, "#38bdf8");
+    grad.addColorStop(0.8, "#0284c7");
+    grad.addColorStop(1, "#0369a1");
+    relCtx.fillStyle = grad;
+    relCtx.beginPath();
+    relCtx.arc(w/2, h/2+30, 26, 0, Math.PI * 2);
+    relCtx.fill();
+
+    // Satellite in orbit
+    var orbA = 160, orbB = 72;
+    var satX = w/2 + Math.cos(animTime) * orbA;
+    var satY = h/2 + 30 + Math.sin(animTime) * orbB;
+
+    relCtx.strokeStyle = "rgba(168, 85, 247, 0.4)";
+    relCtx.beginPath();
+    relCtx.ellipse(w/2, h/2+30, orbA, orbB, 0, 0, Math.PI * 2);
+    relCtx.stroke();
+
+    // Satellite body
+    relCtx.fillStyle = "#a855f7";
+    relCtx.shadowColor = "#a855f7";
+    relCtx.shadowBlur = 10;
+    relCtx.beginPath();
+    relCtx.arc(satX, satY, 6, 0, Math.PI * 2);
+    relCtx.fill();
+    relCtx.shadowBlur = 0;
+
+    // Pulse beam to Earth
+    relCtx.strokeStyle = "rgba(0, 240, 255, 0.4)";
+    relCtx.setLineDash([4, 4]);
+    relCtx.beginPath();
+    relCtx.moveTo(satX, satY);
+    relCtx.lineTo(w/2, h/2+30);
+    relCtx.stroke();
+    relCtx.setLineDash([]);
+  }
+
+  // 2. Plasma Wave Simulator (Carrier vs Envelope)
+  function drawPlasmaSim() {
+    var w = plasmaCanvas.width, h = plasmaCanvas.height;
+    plasmaCtx.fillStyle = "#060910";
+    plasmaCtx.fillRect(0, 0, w, h);
+
+    var cy = h / 2;
+    // Draw envelope packet
+    var packetCenter = ((animTime * 40) % (w + 100)) - 50;
+    var packetWidth = 80;
+
+    plasmaCtx.beginPath();
+    plasmaCtx.strokeStyle = "rgba(245, 158, 11, 0.6)";
+    plasmaCtx.lineWidth = 2;
+    for (var x = 0; x < w; x++) {
+      var env = Math.exp(-Math.pow((x - packetCenter) / packetWidth, 2));
+      var y = cy - env * 60;
+      if (x === 0) plasmaCtx.moveTo(x, y); else plasmaCtx.lineTo(x, y);
+    }
+    plasmaCtx.stroke();
+
+    // Draw carrier ripples moving FASTER (phase velocity)
+    plasmaCtx.beginPath();
+    plasmaCtx.strokeStyle = "rgba(0, 240, 255, 0.9)";
+    plasmaCtx.lineWidth = 2;
+    for (var x = 0; x < w; x++) {
+      var env = Math.exp(-Math.pow((x - packetCenter) / packetWidth, 2));
+      // Carrier wave with faster phase velocity
+      var carrier = Math.sin((x * 0.15) - (animTime * 6.0));
+      var y = cy + env * carrier * 55;
+      if (x === 0) plasmaCtx.moveTo(x, y); else plasmaCtx.lineTo(x, y);
+    }
+    plasmaCtx.stroke();
+
+    // Text labels on canvas
+    plasmaCtx.font = "10px monospace";
+    plasmaCtx.fillStyle = "var(--cyan)";
+    plasmaCtx.fillText("Phase Fronts v_p > c", 16, 24);
+    plasmaCtx.fillStyle = "var(--amber)";
+    plasmaCtx.fillText("Envelope Pulse v_g < c", 16, 40);
+  }
+
+  // 3. Geomagnetic Dipole Sim
+  var geomagMode = "north";
+  window.setGeomagRay = function(m) {
+    geomagMode = m;
+    document.querySelectorAll("#chapter3 .toggle-btn").forEach(function(b) {
+      b.classList.toggle("active", b.textContent.toLowerCase().indexOf(m) !== -1);
+    });
+  };
+
+  function drawGeomagSim() {
+    var w = geomagCanvas.width, h = geomagCanvas.height;
+    geomagCtx.fillStyle = "#060910";
+    geomagCtx.fillRect(0, 0, w, h);
+
+    // Magnetic field curves dipping at 65 deg
+    geomagCtx.strokeStyle = "rgba(217, 70, 239, 0.25)";
+    geomagCtx.lineWidth = 1.5;
+    for (var i = -3; i <= 3; i++) {
+      geomagCtx.beginPath();
+      geomagCtx.moveTo(w/2 + i*50 - 60, 20);
+      geomagCtx.quadraticCurveTo(w/2 + i*40, h/2, w/2 + i*30 + 60, h - 20);
+      geomagCtx.stroke();
+    }
+
+    // Ray vector
+    geomagCtx.lineWidth = 3;
+    if (geomagMode === "north") {
+      geomagCtx.strokeStyle = "var(--cyan)";
+      geomagCtx.beginPath();
+      geomagCtx.moveTo(80, 40);
+      geomagCtx.lineTo(w/2, h/2);
+      geomagCtx.stroke();
+      geomagCtx.fillStyle = "var(--cyan)";
+      geomagCtx.fillText("Ray Looking North (Angle θ_B > 90°)", 16, 24);
+    } else {
+      geomagCtx.strokeStyle = "var(--magenta)";
+      geomagCtx.beginPath();
+      geomagCtx.moveTo(w - 80, 40);
+      geomagCtx.lineTo(w/2, h/2);
+      geomagCtx.stroke();
+      geomagCtx.fillStyle = "var(--magenta)";
+      geomagCtx.fillText("Ray Looking South (Angle θ_B < 90° - Split Active)", 16, 24);
+    }
+
+    // Ground station icon
+    geomagCtx.fillStyle = "#fff";
+    geomagCtx.beginPath();
+    geomagCtx.arc(w/2, h/2, 5, 0, Math.PI * 2);
+    geomagCtx.fill();
+  }
+
+  // 4. Troposphere Column Sim
+  function drawTropoSim() {
+    var w = tropoCanvas.width, h = tropoCanvas.height;
+    tropoCtx.fillStyle = "#060910";
+    tropoCtx.fillRect(0, 0, w, h);
+
+    // Column background
+    var colW = 100, colX = w/2 - colW/2;
+    tropoCtx.fillStyle = "rgba(56, 189, 248, 0.08)";
+    tropoCtx.fillRect(colX, 30, colW, h - 60);
+    tropoCtx.strokeStyle = "var(--border)";
+    tropoCtx.strokeRect(colX, 30, colW, h - 60);
+
+    // Dry hydrostatic layer
+    var gradDry = tropoCtx.createLinearGradient(0, 30, 0, h - 30);
+    gradDry.addColorStop(0, "rgba(56, 189, 248, 0.1)");
+    gradDry.addColorStop(1, "rgba(56, 189, 248, 0.4)");
+    tropoCtx.fillStyle = gradDry;
+    tropoCtx.fillRect(colX, 60, colW, h - 90);
+
+    // Wet water vapor layer near surface (bottom 40px)
+    var gradWet = tropoCtx.createLinearGradient(0, h - 70, 0, h - 30);
+    gradWet.addColorStop(0, "rgba(16, 185, 129, 0.1)");
+    gradWet.addColorStop(1, "rgba(16, 185, 129, 0.7)");
+    tropoCtx.fillStyle = gradWet;
+    tropoCtx.fillRect(colX, h - 70, colW, 40);
+
+    // Labels
+    tropoCtx.font = "11px monospace";
+    tropoCtx.fillStyle = "var(--blue)";
+    tropoCtx.fillText("ZHD Dry Air (2.30 m)", colX + colW + 16, 100);
+    tropoCtx.fillStyle = "var(--green)";
+    tropoCtx.fillText("ZWD Water Vapor (0.12 m)", colX + colW + 16, h - 50);
+  }
+
+  // 5. Multipath Sim
+  function drawMultipathSim() {
+    var w = mpCanvas.width, h = mpCanvas.height;
+    mpCtx.fillStyle = "#060910";
+    mpCtx.fillRect(0, 0, w, h);
+
+    var antX = w/2 + 80, antY = h/2 - 20;
+
+    // Ground roof surface
+    mpCtx.fillStyle = "#1e293b";
+    mpCtx.fillRect(0, h/2 + 40, w, h/2 - 40);
+    mpCtx.strokeStyle = "var(--border-bright)";
+    mpCtx.beginPath();
+    mpCtx.moveTo(0, h/2 + 40);
+    mpCtx.lineTo(w, h/2 + 40);
+    mpCtx.stroke();
+
+    // Antenna pole
+    mpCtx.strokeStyle = "#fff";
+    mpCtx.lineWidth = 3;
+    mpCtx.beginPath();
+    mpCtx.moveTo(antX, h/2 + 40);
+    mpCtx.lineTo(antX, antY);
+    mpCtx.stroke();
+
+    // Direct ray
+    mpCtx.strokeStyle = "var(--green)";
+    mpCtx.lineWidth = 2;
+    mpCtx.beginPath();
+    mpCtx.moveTo(40, 20);
+    mpCtx.lineTo(antX, antY);
+    mpCtx.stroke();
+
+    // Bounced ray
+    var bounceX = w/2 - 40, bounceY = h/2 + 40;
+    mpCtx.strokeStyle = "var(--amber)";
+    mpCtx.setLineDash([5, 5]);
+    mpCtx.beginPath();
+    mpCtx.moveTo(40, 20);
+    mpCtx.lineTo(bounceX, bounceY);
+    mpCtx.lineTo(antX, antY);
+    mpCtx.stroke();
+    mpCtx.setLineDash([]);
+
+    // Text labels
+    mpCtx.font = "11px monospace";
+    mpCtx.fillStyle = "var(--green)";
+    mpCtx.fillText("Direct Wave", 60, 40);
+    mpCtx.fillStyle = "var(--amber)";
+    mpCtx.fillText("Ground Reflected Wave (Delay &tau;)", bounceX - 80, bounceY + 25);
+  }
+
+  // 6. Error Ellipse Sim
+  var ellipseMode = "all";
+  window.toggleEllipseMode = function(m) {
+    ellipseMode = m;
+    document.getElementById("btnSingleGps").classList.toggle("active", m === "gps");
+    document.getElementById("btnAllGnss").classList.toggle("active", m === "all");
+  };
+
+  function drawEllipseSim() {
+    var w = ellCanvas.width, h = ellCanvas.height;
+    ellCtx.fillStyle = "#060910";
+    ellCtx.fillRect(0, 0, w, h);
+
+    var cx = w / 2, cy = h / 2;
+
+    // Grid crosshairs
+    ellCtx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ellCtx.lineWidth = 1;
+    ellCtx.beginPath();
+    ellCtx.moveTo(cx, 10); ellCtx.lineTo(cx, h - 10);
+    ellCtx.moveTo(10, cy); ellCtx.lineTo(w - 10, cy);
+    ellCtx.stroke();
+
+    // Concentric range circles (1m, 2m, 3m)
+    for (var r = 40; r <= 120; r += 40) {
+      ellCtx.beginPath();
+      ellCtx.arc(cx, cy, r, 0, Math.PI * 2);
+      ellCtx.stroke();
+    }
+
+    if (ellipseMode === "gps") {
+      // Large GPS alone ellipse (3.26m x 2.54m)
+      ellCtx.save();
+      ellCtx.translate(cx, cy);
+      ellCtx.rotate((171.0 * Math.PI) / 180.0);
+      ellCtx.strokeStyle = "var(--magenta)";
+      ellCtx.lineWidth = 2.5;
+      ellCtx.fillStyle = "rgba(244, 63, 94, 0.15)";
+      ellCtx.beginPath();
+      ellCtx.ellipse(0, 0, 105, 78, 0, 0, Math.PI * 2);
+      ellCtx.fill();
+      ellCtx.stroke();
+      ellCtx.restore();
+
+      document.getElementById("ellipseSizeText").textContent = "3.26m × 2.54m (GPS Alone)";
+      document.getElementById("ellipseSizeText").style.color = "var(--magenta)";
+    } else {
+      // Small All-GNSS fused ellipse (1.63m x 1.26m) - 75% smaller area!
+      ellCtx.save();
+      ellCtx.translate(cx, cy);
+      ellCtx.rotate((161.0 * Math.PI) / 180.0);
+      ellCtx.strokeStyle = "var(--cyan)";
+      ellCtx.lineWidth = 2.5;
+      ellCtx.fillStyle = "rgba(0, 240, 255, 0.2)";
+      ellCtx.beginPath();
+      ellCtx.ellipse(0, 0, 52, 38, 0, 0, Math.PI * 2);
+      ellCtx.fill();
+      ellCtx.stroke();
+      ellCtx.restore();
+
+      document.getElementById("ellipseSizeText").textContent = "1.63m × 1.26m (-75.1% Area!)";
+      document.getElementById("ellipseSizeText").style.color = "var(--cyan)";
+    }
+  }
+
+  // 7. Hardware Chain Sim
+  function drawHardwareSim() {
+    var w = hwCanvas.width, h = hwCanvas.height;
+    hwCtx.fillStyle = "#060910";
+    hwCtx.fillRect(0, 0, w, h);
+
+    var stages = [
+      { name: "Active Ant", col: "#38bdf8", sub: "1575.42 MHz" },
+      { name: "MAX2837", col: "#10b981", sub: "RF Mixer" },
+      { name: "MAX5864", col: "#f59e0b", sub: "8-bit ADC" },
+      { name: "FPGA TDC", col: "#a855f7", sub: "P28.16 Latch" },
+      { name: "Bodnar Ref", col: "#00f0ff", sub: "10 MHz Ref" }
+    ];
+
+    var boxW = 75, boxH = 50, gap = 16;
+    var startX = (w - (stages.length * boxW + (stages.length - 1) * gap)) / 2;
+
+    for (var i = 0; i < stages.length; i++) {
+      var x = startX + i * (boxW + gap);
+      var y = h / 2 - boxH / 2;
+
+      hwCtx.fillStyle = "rgba(255, 255, 255, 0.04)";
+      hwCtx.strokeStyle = stages[i].col;
+      hwCtx.lineWidth = 1.5;
+      hwCtx.strokeRect(x, y, boxW, boxH);
+      hwCtx.fillRect(x, y, boxW, boxH);
+
+      hwCtx.font = "10px sans-serif";
+      hwCtx.fillStyle = "#fff";
+      hwCtx.textAlign = "center";
+      hwCtx.fillText(stages[i].name, x + boxW/2, y + 20);
+      hwCtx.font = "9px monospace";
+      hwCtx.fillStyle = "var(--text-dim)";
+      hwCtx.fillText(stages[i].sub, x + boxW/2, y + 36);
+
+      // Connecting arrow
+      if (i < stages.length - 1) {
+        hwCtx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+        hwCtx.beginPath();
+        hwCtx.moveTo(x + boxW, y + boxH/2);
+        hwCtx.lineTo(x + boxW + gap, y + boxH/2);
+        hwCtx.stroke();
+      }
+    }
+    hwCtx.textAlign = "start";
+  }
+
+  // Interactive Sliders Handlers
+  window.updateRelativitySim = function() {
+    var alt = document.getElementById("orbitSlider").value;
+    document.getElementById("orbitLabel").textContent = parseInt(alt).toLocaleString() + " km";
+    var speed = (Math.sqrt(3.986e14 / ((parseInt(alt) + 6371) * 1e3)) / 1e3).toFixed(2);
+    document.getElementById("relCanvasSpeed").textContent = "v = " + speed + " km/s";
+  };
+
+  window.updatePlasmaSim = function() {
+    var st = document.getElementById("stecSlider").value;
+    document.getElementById("stecLabel").textContent = st + " TECU";
+  };
+
+  window.updateTropoSim = function() {
+    var p = document.getElementById("pwvSlider").value;
+    document.getElementById("pwvSliderLabel").textContent = p + " mm";
+  };
+
+  window.updateMultipathSim = function() {
+    var r = document.getElementById("reflSlider").value;
+    document.getElementById("reflSliderLabel").textContent = r + "% Ground Bounce";
+  };
+
+  // ELI5 Toggle
+  window.toggleEli5 = function() {
+    isEli5 = !isEli5;
+    document.getElementById("eli5Toggle").classList.toggle("active", isEli5);
+    document.getElementById("eli5Text").textContent = isEli5 ? "Mode: Explain Like I'm 5" : "Mode: Deep Physical Derivation";
+
+    for (var i = 1; i <= 7; i++) {
+      var e = document.getElementById("eli5_ch" + i);
+      var d = document.getElementById("deep_ch" + i);
+      if (e) e.style.display = isEli5 ? "block" : "none";
+      if (d) d.style.display = isEli5 ? "none" : "block";
+    }
+  };
+
+  // Chapter scroll
+  window.scrollToChapter = function(n) {
+    var el = document.getElementById("chapter" + n);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.querySelectorAll(".chapter-nav-btn").forEach(function(b, idx) {
+      b.classList.toggle("active", idx === (n - 1));
+    });
+  };
+
+  // Satellite Inspector
+  window.selectSatellite = function(key) {
+    selectedSatKey = key;
+    document.querySelectorAll(".sat-chip").forEach(function(c) {
+      c.classList.toggle("active", c.getAttribute("onclick").indexOf(key) !== -1);
+    });
+
+    // Mock/live data switch
+    if (key.indexOf("gps_5") !== -1) {
+      document.getElementById("insp_speed").textContent = "3.87 km/s";
+      document.getElementById("insp_gr").textContent = "GR: +46.2 μs/d";
+      document.getElementById("insp_vp").textContent = "+2,407 m/s";
+      document.getElementById("insp_stec").textContent = "STEC: 17.3 TECU";
+      document.getElementById("insp_i2").textContent = "+1.32 mm";
+      document.getElementById("insp_faraday").textContent = "Faraday: 2.5°";
+      document.getElementById("insp_tropo").textContent = "3.42 m";
+      document.getElementById("insp_slant_wv").textContent = "Slant WV: 24.2 mm";
+      document.getElementById("insp_cn0").textContent = "36.5 dB-Hz";
+      document.getElementById("insp_margin").textContent = "Margin: +8.5 dB";
+    } else if (key.indexOf("bds_13") !== -1) {
+      document.getElementById("insp_speed").textContent = "3.78 km/s";
+      document.getElementById("insp_gr").textContent = "GR: +45.8 μs/d";
+      document.getElementById("insp_vp").textContent = "+2,370 m/s";
+      document.getElementById("insp_stec").textContent = "STEC: 17.2 TECU";
+      document.getElementById("insp_i2").textContent = "+1.44 mm (+2.8% BDS)";
+      document.getElementById("insp_faraday").textContent = "Faraday: 2.8°";
+      document.getElementById("insp_tropo").textContent = "4.12 m";
+      document.getElementById("insp_slant_wv").textContent = "Slant WV: 28.5 mm";
+      document.getElementById("insp_cn0").textContent = "39.5 dB-Hz";
+      document.getElementById("insp_margin").textContent = "Margin: +11.5 dB";
+    }
+  };
+
+  // Fetch live telemetry from /api/sync
+  function fetchTelemetry() {
+    fetch("/api/sync")
+      .then(function(r) { return r.json(); })
+      .then(function(data) { updateFromSync(data); })
+      .catch(function() {
+        // Fallback port 8090
+        fetch("http://localhost:8090/api/sync")
+          .then(function(r) { return r.json(); })
+          .then(function(data) { updateFromSync(data); })
+          .catch(function() {
+            document.getElementById("syncLiveText").textContent = "STANDALONE SIM";
+            document.getElementById("syncLiveText").style.color = "var(--amber)";
+          });
+      });
+  }
+
+  function updateFromSync(st) {
+    liveData = st;
+    document.getElementById("syncLiveText").textContent = "LIVE SDR (1 Hz)";
+    document.getElementById("syncLiveText").style.color = "var(--green)";
+
+    // Ch 1: Relativity
+    if (st.relativity_summary) {
+      var r = st.relativity_summary;
+      if (r.mean_gr_rate_us_day) document.getElementById("grVal").textContent = (r.mean_gr_rate_us_day >= 0 ? "+" : "") + r.mean_gr_rate_us_day.toFixed(1) + " μs/d";
+      if (r.mean_sr_rate_us_day) document.getElementById("srVal").textContent = r.mean_sr_rate_us_day.toFixed(1) + " μs/d";
+      if (r.mean_net_secular_us_day) document.getElementById("netRelVal").textContent = (r.mean_net_secular_us_day >= 0 ? "+" : "") + r.mean_net_secular_us_day.toFixed(1) + " μs/d";
+      if (r.uncompensated_drift_km_day) document.getElementById("driftKmVal").textContent = r.uncompensated_drift_km_day.toFixed(1) + " km/d";
+    }
+
+    // Ch 2: Plasma
+    if (st.ccd_summary) {
+      var c = st.ccd_summary;
+      if (c.mean_superluminal_vp_excess_m_s) {
+        document.getElementById("vpExcessVal").textContent = "+" + c.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
+        document.getElementById("vgDeficitVal").textContent = "-" + c.mean_superluminal_vp_excess_m_s.toFixed(0) + " m/s";
+      }
+      if (c.mean_iono_drift_mm_s) document.getElementById("ionoDriftVal").textContent = (c.mean_iono_drift_mm_s >= 0 ? "+" : "") + c.mean_iono_drift_mm_s.toFixed(2) + " mm/s";
+      if (c.max_hatch_bias_m) document.getElementById("hatchBiasStoryVal").textContent = (c.max_hatch_bias_m >= 0 ? "+" : "") + c.max_hatch_bias_m.toFixed(3) + " m";
+    }
+
+    // Ch 3: Geomagnetism (HOI)
+    if (st.hoi_summary) {
+      var h = st.hoi_summary;
+      if (h.mean_i2_phase_mm) document.getElementById("i2StoryVal").textContent = (h.mean_i2_phase_mm >= 0 ? "+" : "") + h.mean_i2_phase_mm.toFixed(2) + " mm";
+      if (h.mean_total_hoi_ps) document.getElementById("hoiPsStoryVal").textContent = "+" + h.mean_total_hoi_ps.toFixed(1) + " ps";
+      if (h.north_south_asymmetry_mm) document.getElementById("nsAsymStoryVal").textContent = h.north_south_asymmetry_mm.toFixed(2) + " mm";
+      if (h.mean_faraday_rotation_deg) document.getElementById("faradayStoryVal").textContent = h.mean_faraday_rotation_deg.toFixed(1) + "°";
+    }
+
+    // Ch 4: Troposphere & Meteorology
+    if (st.meteorology_summary) {
+      var m = st.meteorology_summary;
+      if (m.pwv_mm) document.getElementById("pwvStoryVal").textContent = m.pwv_mm.toFixed(1) + " mm";
+      if (m.pwv_kg_m2) document.getElementById("pwvMassStoryVal").textContent = m.pwv_kg_m2.toFixed(2) + " kg/m²";
+      if (m.zenith_wet_delay_m) document.getElementById("zwdStoryVal").textContent = m.zenith_wet_delay_m.toFixed(2) + " m";
+    }
+    if (st.troposphere_summary) {
+      var t = st.troposphere_summary;
+      if (t.zhd_m) document.getElementById("zhdStoryVal").textContent = t.zhd_m.toFixed(2) + " m";
+    }
+
+    // Ch 6: GDOP & Error Ellipse
+    if (st.gdop_summary) {
+      var g = st.gdop_summary;
+      if (g.primary_gdop) document.getElementById("gdopStoryVal").textContent = g.primary_gdop.toFixed(2);
+      if (g.primary_hdop) document.getElementById("hdopStoryVal").textContent = g.primary_hdop.toFixed(2);
+      if (g.gdop_reduction_vs_gps_pct) document.getElementById("gdopAdvStoryVal").textContent = "-" + g.gdop_reduction_vs_gps_pct.toFixed(1) + "%";
+      if (g.area_reduction_vs_gps_pct) document.getElementById("areaAdvStoryVal").textContent = "-" + g.area_reduction_vs_gps_pct.toFixed(1) + "%";
+    }
+
+    // Ch 7: Hardware & Radiometry
+    if (st.radiometry_summary) {
+      var rad = st.radiometry_summary;
+      if (rad.min_tsys_k) document.getElementById("tsysStoryVal").textContent = rad.min_tsys_k.toFixed(0) + " K";
+      if (rad.mean_link_margin_db) document.getElementById("marginStoryVal").textContent = (rad.mean_link_margin_db >= 0 ? "+" : "") + rad.mean_link_margin_db.toFixed(1) + " dB";
+      if (rad.mean_n0_dbm_hz) document.getElementById("n0StoryVal").textContent = rad.mean_n0_dbm_hz.toFixed(1) + " dBm/Hz";
+    }
+  }
+
+  // Start polling & animation
+  fetchTelemetry();
+  setInterval(fetchTelemetry, 2000);
+  animate();
+})();
+</script>
+</body>
+</html>
