@@ -484,9 +484,18 @@ a { color: inherit; }
     var ddText = dd ? dd.integer_fixed_pairs + "/" + dd.n_double_differenced_pairs + " fixed · " + dd.mean_dd_phase_residual_mm.toFixed(2) + " mm res" : "UNAVAILABLE";
     var sr = n && n.raw && n.raw.solar_ramp_summary ? n.raw.solar_ramp_summary : null;
     var srText = sr ? "El " + sr.solar_elevation_deg.toFixed(1) + "° · GHI " + sr.global_horizontal_irradiance_w_m2.toFixed(0) + " W/m² · dTEC/dt " + (sr.dtec_dt_tecu_per_hr >= 0 ? "+" : "") + sr.dtec_dt_tecu_per_hr.toFixed(2) + " TECU/h" : "MODEL ONLY";
+    var ppp = n && n.raw && n.raw.estimated_coordinates ? n.raw.estimated_coordinates : null;
+    var pppText = ppp ? "±" + ppp.sigma_3d_m.toFixed(2) + " m 3D (" + (ppp.formal_accuracy_tier ? ppp.formal_accuracy_tier.replace(/_/g, " ") : "CONVERGING") + ") · ZWD " + (n.raw.troposphere_estimation ? n.raw.troposphere_estimation.estimated_zwd_m.toFixed(3) + " m" : "—") : "CONVERGING";
+    var noon = n && n.raw && n.raw.solar_noon_milestone ? n.raw.solar_noon_milestone : null;
+    var noonText = noon ? noon.countdown + " to noon (" + noon.solar_noon_edt + " EDT) · q/q0 " + (n.raw.chapman_photochemistry ? n.raw.chapman_photochemistry.production_ratio_q_over_q0.toFixed(2) : "—") : "MODEL ONLY";
+    var iq = n && n.raw && n.raw.quadrature_imbalance ? n.raw.quadrature_imbalance : null;
+    var iqText = iq ? "IRR " + iq.image_rejection_ratio_db.toFixed(1) + " dB · Skew " + (iq.phase_skew_deg >= 0 ? "+" : "") + iq.phase_skew_deg.toFixed(2) + "° · Gain " + (iq.gain_imbalance_db >= 0 ? "+" : "") + iq.gain_imbalance_db.toFixed(2) + " dB" : "NORMAL";
     return [
       metric("Double-diff integer ambiguity", ddText, "state.double_difference · zero-baseline splitter", dd ? "good" : "warn"),
       metric("Morning solar ramp", srText, "state.solar_ramp · ephemeris/flux coupling", sr ? "good" : "warn"),
+      metric("Precise Point Positioning EKF", pppText, "state.ppp_ekf · dual-carrier L_IF/P_IF geodetic solve", ppp ? "good" : "warn"),
+      metric("Solar Noon & Chapman layer", noonText, "state.solar_noon · photochemistry countdown", noon ? "good" : "warn"),
+      metric("Front-End I/Q mixer sounder", iqText, "state.iq_imbalance · MAX2837 direct baseband metrology", iq ? "good" : "warn"),
       metric("External PPS capture", "Functionally demonstrated · not current telemetry", "bench record · P28.16"),
       metric("Fine TDC physical scale", "UNCALIBRATED", "no bin widths, DNL, INL, or absolute scale exposed", "warn"),
       metric("PPS arrival delay", "UNCALIBRATED", "matched cables are not delay calibration", "warn"),

@@ -612,6 +612,45 @@
       Multi-Carrier Synthesis: L<sub>IF</sub> = (f<sub>1</sub>&sup2;&Phi;<sub>1</sub> - f<sub>2</sub>&sup2;&Phi;<sub>2</sub>)/(f<sub>1</sub>&sup2; - f<sub>2</sub>&sup2;). 100% eliminates 1st-order ionospheric delay!
     </div>
   </div>
+
+  <!-- Card 19: Precise Point Positioning (PPP) Sequential EKF -->
+  <div class="card">
+    <div class="card-label">
+      <span>Precise Point Positioning (PPP) EKF</span>
+      <span class="badge" id="pppBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">CENTIMETER GEODETIC</span>
+    </div>
+    <div class="card-val" id="pppVal">&plusmn;0.04 <span class="unit">m 3D Pos Error (&sigma;<sub>3D</sub>)</span></div>
+    <div class="card-sub">ENU: <b id="pppEnuVal" style="color:var(--green);">&plusmn;0.02 / &plusmn;0.03 / &plusmn;0.07 m</b> &bull; ZWD: <b id="pppZwdVal" style="color:var(--cyan);">0.074 m</b> &bull; Clock: <b id="pppClkVal" style="color:var(--amber);">+57.6 ns</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Single-Receiver Inversion: EKF state [x, y, z, c&delta;t<sub>r</sub>, ZWD, A<sub>IF</sub><sup>i</sup>] via L<sub>IF</sub>/P<sub>IF</sub> dual-carrier observables with Saastamoinen ZHD &amp; phase wind-up without any base station!
+    </div>
+  </div>
+
+  <!-- Card 20: Solar Noon Zenith Countdown & Chapman Photochemistry -->
+  <div class="card">
+    <div class="card-label">
+      <span>Solar Noon Countdown &amp; Chapman Layer</span>
+      <span class="badge" id="noonBadge" style="background:rgba(245,158,11,0.15); color:var(--amber); border:1px solid rgba(245,158,11,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">SOLAR NOON: 13:08 EDT</span>
+    </div>
+    <div class="card-val" id="noonVal">-02h 30m 31s <span class="unit">to Solar Noon</span></div>
+    <div class="card-sub">Sun El: <b id="noonElVal" style="color:var(--amber);">43.1&deg; (&theta;<sub>max</sub>: 57.6&deg;)</b> &bull; Airmass: <b id="noonAirmassVal" style="color:var(--cyan);">1.46</b> &bull; Chapman q/q<sub>0</sub>: <b id="noonChapVal" style="color:var(--green);">0.68</b> &bull; Peak Lag: <b id="noonLagVal" style="color:var(--purple);">+55m (14:04 EDT)</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Photochemical Ion Production: q(z, &chi;) = q<sub>0</sub> exp(1 - z - sec(&chi;)e<sup>-z</sup>). Recombination continuity dN<sub>e</sub>/dt = q - &beta;N<sub>e</sub> creates ~55-minute phase lag between optical noon and diurnal TEC apex!
+    </div>
+  </div>
+
+  <!-- Card 21: Hardware Front-End Direct Baseband I/Q Imbalance & Mixer Sounder -->
+  <div class="card">
+    <div class="card-label">
+      <span>Hardware Front-End I/Q Mixer Sounder</span>
+      <span class="badge" id="iqBadge" style="background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">IRR: 25.9 dB</span>
+    </div>
+    <div class="card-val" id="iqVal">+0.14 <span class="unit">dB Gain Mismatch (&alpha;=1.016)</span></div>
+    <div class="card-sub">Phase Skew: <b id="iqSkewVal" style="color:var(--cyan);">+5.73&deg;</b> &bull; DC Carrier: <b id="iqDcVal" style="color:var(--green);">&lt; -60 dBFS</b> &bull; EVM Degradation: <b id="iqEvmVal" style="color:var(--amber);">7.16%</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      MAX2837 Zero-IF Metrology: Measures physical analog mixer quadrature orthogonality &amp; DC bleedthrough. Real-time Gram-Schmidt transform eliminates ghost image sidebands!
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1154,6 +1193,93 @@
       var lwv = document.getElementById("lifWlVal");
       if (lwv && lcs.wide_lane_wavelength_m !== undefined) {
         lwv.textContent = lcs.wide_lane_wavelength_m.toFixed(2) + " m";
+      }
+    }
+
+    // Card 19: Precise Point Positioning (PPP) Sequential EKF
+    if (st.estimated_coordinates) {
+      var ec = st.estimated_coordinates;
+      var pv = document.getElementById("pppVal");
+      if (pv && ec.sigma_3d_m !== undefined) {
+        pv.innerHTML = '&plusmn;' + ec.sigma_3d_m.toFixed(2) + ' <span class="unit">m 3D Pos Error (&sigma;<sub>3D</sub>)</span>';
+      }
+      var penu = document.getElementById("pppEnuVal");
+      if (penu && ec.sigma_east_m !== undefined) {
+        penu.textContent = '±' + ec.sigma_east_m.toFixed(2) + ' / ±' + ec.sigma_north_m.toFixed(2) + ' / ±' + ec.sigma_up_m.toFixed(2) + ' m';
+      }
+      var pzwd = document.getElementById("pppZwdVal");
+      if (pzwd && st.troposphere_estimation && st.troposphere_estimation.estimated_zwd_m !== undefined) {
+        pzwd.textContent = st.troposphere_estimation.estimated_zwd_m.toFixed(3) + ' m';
+      }
+      var pclk = document.getElementById("pppClkVal");
+      if (pclk && st.receiver_clock && st.receiver_clock.clock_bias_ns !== undefined) {
+        pclk.textContent = (st.receiver_clock.clock_bias_ns >= 0 ? '+' : '') + st.receiver_clock.clock_bias_ns.toFixed(1) + ' ns';
+      }
+      var pb = document.getElementById("pppBadge");
+      if (pb) {
+        pb.textContent = ec.formal_accuracy_tier ? ec.formal_accuracy_tier.replace(/_/g, ' ') : (st.filter_status || 'CONVERGING');
+        pb.style.color = ec.sigma_3d_m < 0.10 ? 'var(--green)' : 'var(--cyan)';
+      }
+    }
+
+    // Card 20: Solar Noon Zenith Countdown & Chapman Photochemistry
+    if (st.solar_noon_milestone) {
+      var snm = st.solar_noon_milestone;
+      var nv = document.getElementById("noonVal");
+      if (nv && snm.countdown) {
+        nv.innerHTML = snm.countdown + ' <span class="unit">to Solar Noon</span>';
+      }
+      var nb = document.getElementById("noonBadge");
+      if (nb && snm.solar_noon_edt) {
+        nb.textContent = 'SOLAR NOON: ' + snm.solar_noon_edt + ' EDT';
+      }
+      if (st.solar_geometry) {
+        var sg = st.solar_geometry;
+        var nel = document.getElementById("noonElVal");
+        if (nel && sg.solar_elevation_deg !== undefined) {
+          nel.textContent = sg.solar_elevation_deg.toFixed(1) + '° (θmax: ' + sg.max_elevation_at_noon_deg.toFixed(1) + '°)';
+        }
+        var nair = document.getElementById("noonAirmassVal");
+        if (nair && sg.optical_airmass !== undefined) {
+          nair.textContent = sg.optical_airmass.toFixed(2);
+        }
+      }
+      if (st.chapman_photochemistry) {
+        var nch = document.getElementById("noonChapVal");
+        if (nch && st.chapman_photochemistry.production_ratio_q_over_q0 !== undefined) {
+          nch.textContent = st.chapman_photochemistry.production_ratio_q_over_q0.toFixed(2);
+        }
+      }
+      if (st.diurnal_continuity_model) {
+        var nlag = document.getElementById("noonLagVal");
+        if (nlag && st.diurnal_continuity_model.predicted_phase_lag_min !== undefined) {
+          nlag.textContent = '+' + st.diurnal_continuity_model.predicted_phase_lag_min.toFixed(0) + 'm (' + st.diurnal_continuity_model.predicted_diurnal_vtec_apex_edt + ' EDT)';
+        }
+      }
+    }
+
+    // Card 21: Hardware Front-End Direct Baseband I/Q Imbalance & Mixer Sounder
+    if (st.quadrature_imbalance) {
+      var qi = st.quadrature_imbalance;
+      var iqv = document.getElementById("iqVal");
+      if (iqv && qi.gain_imbalance_db !== undefined) {
+        iqv.innerHTML = (qi.gain_imbalance_db >= 0 ? '+' : '') + qi.gain_imbalance_db.toFixed(2) + ' <span class="unit">dB Gain Mismatch (&alpha;=' + qi.gain_ratio_alpha.toFixed(3) + ')</span>';
+      }
+      var iqsk = document.getElementById("iqSkewVal");
+      if (iqsk && qi.phase_skew_deg !== undefined) {
+        iqsk.textContent = (qi.phase_skew_deg >= 0 ? '+' : '') + qi.phase_skew_deg.toFixed(2) + '°';
+      }
+      var iqdc = document.getElementById("iqDcVal");
+      if (iqdc && st.dc_carrier_leakage && st.dc_carrier_leakage.dc_power_dbfs !== undefined) {
+        iqdc.textContent = st.dc_carrier_leakage.dc_power_dbfs.toFixed(0) + ' dBFS';
+      }
+      var iqev = document.getElementById("iqEvmVal");
+      if (iqev && qi.evm_degradation_pct !== undefined) {
+        iqev.textContent = qi.evm_degradation_pct.toFixed(2) + '%';
+      }
+      var iqb = document.getElementById("iqBadge");
+      if (iqb && qi.image_rejection_ratio_db !== undefined) {
+        iqb.textContent = 'IRR: ' + qi.image_rejection_ratio_db.toFixed(1) + ' dB';
       }
     }
 

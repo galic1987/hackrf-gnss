@@ -28,10 +28,13 @@ DAEMONS=(
     "carrier_triple_difference_engine.py --interval 2.0"
     "solar_flare_sid_monitor.py --interval 2.0"
     "multi_frequency_linear_combinations.py --interval 2.0"
+    "ppp_sequential_ekf_engine.py --interval 2.0"
+    "solar_noon_photochemistry_engine.py --interval 2.0"
+    "frontend_iq_imbalance_sounder.py --interval 2.0"
 )
 
 start_all() {
-    echo "=== Starting All 21 GNSS Metrology Daemons ==="
+    echo "=== Starting All 24 GNSS Metrology Daemons ==="
     cd "$WORKDIR" || exit 1
     for d in "${DAEMONS[@]}"; do
         script=$(echo "$d" | awk '{print $1}')

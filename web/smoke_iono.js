@@ -85,6 +85,9 @@ async function main() {
     "tdVal", "tdPivotSat", "tdPairsCount", "tdBadge", "tdAmbStatus",
     "sidVal", "sidBadge", "sidAccelVal", "sidEventVal", "sriThreatVal",
     "lifVal", "lifBadge", "lifCount", "lifWlVal",
+    "pppVal", "pppBadge", "pppEnuVal", "pppZwdVal", "pppClkVal",
+    "noonVal", "noonBadge", "noonElVal", "noonAirmassVal", "noonChapVal", "noonLagVal",
+    "iqVal", "iqBadge", "iqSkewVal", "iqDcVal", "iqEvmVal",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -159,6 +162,9 @@ async function main() {
   if (elements["tdVal"]) console.log("Triple-Diff Val:", elements["tdVal"].innerHTML, "| Pivot:", elements["tdPivotSat"] ? elements["tdPivotSat"].textContent : "--", "| Ambiguity:", elements["tdAmbStatus"] ? elements["tdAmbStatus"].textContent : "--");
   if (elements["sidVal"]) console.log("SID Val:", elements["sidVal"].innerHTML, "| Flux:", elements["sidBadge"] ? elements["sidBadge"].textContent : "--", "| Accel:", elements["sidAccelVal"] ? elements["sidAccelVal"].textContent : "--");
   if (elements["lifVal"]) console.log("L_IF Val:", elements["lifVal"].innerHTML, "| Channels:", elements["lifCount"] ? elements["lifCount"].textContent : "--", "| Wide-Lane:", elements["lifWlVal"] ? elements["lifWlVal"].textContent : "--");
+  if (elements["pppVal"]) console.log("PPP Val:", elements["pppVal"].innerHTML, "| Tier:", elements["pppBadge"] ? elements["pppBadge"].textContent : "--", "| ENU:", elements["pppEnuVal"] ? elements["pppEnuVal"].textContent : "--");
+  if (elements["noonVal"]) console.log("Solar Noon Val:", elements["noonVal"].innerHTML, "| Milestone:", elements["noonBadge"] ? elements["noonBadge"].textContent : "--", "| Chapman:", elements["noonChapVal"] ? elements["noonChapVal"].textContent : "--");
+  if (elements["iqVal"]) console.log("Frontend IQ Val:", elements["iqVal"].innerHTML, "| IRR:", elements["iqBadge"] ? elements["iqBadge"].textContent : "--", "| Skew:", elements["iqSkewVal"] ? elements["iqSkewVal"].textContent : "--");
 
   console.log("SMOKE_IONO: PASS");
 }
