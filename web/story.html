@@ -107,6 +107,65 @@ nav.nav-links a:hover, nav.nav-links a.active {
   animation: pulse 1.5s infinite;
 }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.badge-status {
+  color: var(--text-dim);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
+/* Ch 7: live Constellation Census */
+.census-status { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; margin: 4px 0 10px; color: var(--text-dim); }
+.census-bar {
+  display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.05); margin-bottom: 8px;
+}
+.census-bar span { display: block; height: 100%; width: 0; transition: width 0.4s ease; }
+.census-bar .gps { background: var(--blue); }
+.census-bar .bds { background: var(--amber); }
+.census-bar .geo { background: var(--green); }
+.census-bar .gal { background: var(--purple); }
+.census-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.census-chip {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700;
+  padding: 2px 9px; border-radius: 12px; border: 1px solid var(--border); color: var(--text-dim);
+}
+.census-chip.gps { color: var(--blue); border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.08); }
+.census-chip.bds { color: var(--amber); border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); }
+.census-chip.geo { color: var(--green); border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.08); }
+.census-chip.gal { color: var(--purple); border-color: rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.08); }
+
+/* Ch 7: Precision Ladder */
+.ladder-card { margin-top: 20px; text-align: left; }
+.ladder { padding: 6px 4px 0; }
+.ladder-row {
+  display: grid; grid-template-columns: 210px 1fr; gap: 12px; align-items: center;
+  padding: 7px 0; border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+.ladder-label { font-size: 12px; font-weight: 700; line-height: 1.3; }
+.ladder-label small { display: block; font-weight: 500; color: var(--text-dim); font-size: 10.5px; margin-top: 2px; }
+.ladder-track { position: relative; height: 24px; background: rgba(255, 255, 255, 0.03); border-radius: 4px; overflow: visible; }
+.ladder-bar { position: absolute; top: 6px; height: 12px; border-radius: 6px; }
+.ladder-bar.measuring {
+  background: repeating-linear-gradient(90deg, rgba(0, 240, 255, 0.55) 0 8px, transparent 8px 14px);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 60%);
+  mask-image: linear-gradient(90deg, transparent, #000 60%);
+  animation: ladderPulse 2.6s ease-in-out infinite;
+}
+@keyframes ladderPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.95; } }
+.ladder-mark { position: absolute; top: 3px; width: 3px; height: 18px; border-radius: 2px; }
+.ladder-mark.uncal {
+  width: 6px; left: 33.7%; background: transparent;
+  border: 1px dashed var(--magenta); border-radius: 2px;
+}
+.ladder-tag { position: absolute; top: 5px; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+.ladder-axis {
+  position: relative; height: 18px; margin: 6px 0 0 222px;
+  font-size: 10px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.ladder-axis span { position: absolute; top: 2px; transform: translateX(-50%); }
 
 /* Hero Story Banner */
 .hero {
@@ -216,8 +275,24 @@ nav.nav-links a:hover, nav.nav-links a.active {
   gap: 28px;
   align-items: center;
 }
-@media (max-width: 860px) {
+@media (max-width: 900px) {
   .chapter-grid { grid-template-columns: 1fr; }
+  .chapter { padding: 20px; }
+  .chapter-number { font-size: 34px; top: 12px; right: 16px; }
+  .chapter-title { font-size: 21px; }
+  .hero h2 { font-size: 28px; }
+  .hero { padding: 32px 16px 20px; }
+  .chapter-nav { flex-wrap: wrap; }
+  .chapter-nav-btn { font-size: 11px; padding: 6px 10px; }
+  header { justify-content: center; }
+  .visual-card canvas { max-width: 100%; height: auto; }
+  .data-grid { grid-template-columns: repeat(2, 1fr); }
+  .ladder-row { grid-template-columns: 1fr; gap: 4px; }
+  .ladder-axis { margin-left: 0; }
+}
+@media (max-width: 520px) {
+  .data-grid { grid-template-columns: 1fr; }
+  .container { padding: 0 12px 40px; }
 }
 
 /* Interactive Canvas Card */
@@ -693,6 +768,7 @@ footer a { color: var(--cyan); text-decoration: none; }
       <div class="pulse-dot"></div>
       <span id="syncLiveText">LIVE SDR (1 Hz)</span>
     </div>
+    <div class="badge-live badge-status" id="stationStatusChip" title="Live multi-constellation clock solve: satellites in solve and per-constellation count (G=GPS, C=BeiDou, S=SBAS GEO, E=Galileo)">solve idle</div>
   </div>
 </header>
 
@@ -701,7 +777,8 @@ footer a { color: var(--cyan); text-decoration: none; }
   <h2>The Journey of a Photon: Space to Silicon</h2>
   <p class="lead">
     How an electromagnetic wave traverses 20,200 kilometers of curved space-time, superluminal ionospheric plasma,
-    the Earth's magnetic dipole, and turbulent weather—before being captured by a software-defined radio and disciplined to nanoseconds.
+    the Earth's magnetic dipole, and turbulent weather—before being captured by a software-defined radio that solves one receiver clock
+    from four constellations at once: honest to tens of nanoseconds, with every rejected measurement published rather than hidden.
   </p>
 
   <!-- Interactive Chapter Navigator -->
@@ -712,7 +789,7 @@ footer a { color: var(--cyan); text-decoration: none; }
     <button class="chapter-nav-btn" onclick="scrollToChapter(4)">4. Troposphere &amp; Rain</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(5)">5. Sidereal Ground Multipath</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(6)">6. The Error Ellipsoid</button>
-    <button class="chapter-nav-btn" onclick="scrollToChapter(7)">7. Inside HackRF Silicon</button>
+    <button class="chapter-nav-btn" onclick="scrollToChapter(7)">7. Four Constellations, One Clock</button>
     <button class="chapter-nav-btn" onclick="scrollToChapter(8)">8. Solar Cascade &amp; Meson Showers</button>
     <button class="chapter-nav-btn" style="background:rgba(245,158,11,0.15); color:var(--amber); border-color:rgba(245,158,11,0.4);" onclick="toggleGlossary()">📚 Term &amp; Acronym Dictionary</button>
   </div>
@@ -1132,11 +1209,14 @@ footer a { color: var(--cyan); text-decoration: none; }
   <section class="chapter" id="chapter7">
     <div class="chapter-number">07</div>
     <div class="chapter-header">
-      <div class="chapter-subtitle">Stage 7 &bull; Silicon &amp; Gateware &bull; SDR RF Front-End to FPGA Picoseconds</div>
-      <h3 class="chapter-title">Inside the Silicon: How a $300 SDR Achieves Nanoseconds</h3>
+      <div class="chapter-subtitle">Stage 7 &bull; Silicon &amp; Software &bull; One 16 Msps Capture &bull; Four Constellations &bull; One Clock</div>
+      <h3 class="chapter-title">Inside the Silicon: Four Constellations, One Honest Clock</h3>
       <p class="chapter-summary">
-        Explore the physical signal chain inside the HackRF: from the antenna connector, through the RF mixer,
-        into the 8-bit ADC, and through our custom FPGA Time-to-Digital Converter (TDC).
+        A single 16 Msps capture centred at 1568.25 MHz carries GPS L1 C/A, BeiDou B1I, WAAS/SBAS GEO ranging and Galileo E1B
+        at the same time. Every second the station solves <em>one</em> receiver clock from all four systems, publishes every
+        gate that rejected a measurement, and labels its precision honestly: a single-frequency code-phase clock floors at
+        roughly 10&ndash;50 ns absolute &mdash; tens of nanoseconds, not &ldquo;nanoseconds&rdquo; &mdash; and the picosecond
+        numbers on this page belong to a broadcast-TV anchor and an uncalibrated FPGA stopwatch, not to GNSS.
       </p>
     </div>
 
@@ -1152,10 +1232,65 @@ footer a { color: var(--cyan); text-decoration: none; }
 
       <!-- Telemetry Box -->
       <div class="telemetry-card">
+        <!-- LIVE Constellation Census (bound to clock_bias) -->
+        <div class="data-box" id="censusBox">
+          <div class="data-box-title">
+            <span>Live Constellation Census</span>
+            <span style="color:var(--green);" id="censusSource">/api/sync &bull; clock_bias</span>
+          </div>
+          <div class="census-status" id="censusStatus">SOLVE IDLE &mdash; waiting for &ge; 4 ranging satellites</div>
+          <div class="census-bar" id="censusBar" title="Share of the solved satellites per constellation">
+            <span class="gps" id="censusBarGps"></span>
+            <span class="bds" id="censusBarBds"></span>
+            <span class="geo" id="censusBarGeo"></span>
+            <span class="gal" id="censusBarGal"></span>
+          </div>
+          <div class="census-chips">
+            <span class="census-chip gps" id="censusChipGps" title="GPS L1 C/A">G &mdash;</span>
+            <span class="census-chip bds" id="censusChipBds" title="BeiDou B1I (D1 nav)">C &mdash;</span>
+            <span class="census-chip geo" id="censusChipGeo" title="WAAS/SBAS GEO ranging (PRN 131/135, MT9 ephemeris)">S &mdash;</span>
+            <span class="census-chip gal" id="censusChipGal" title="Galileo E1B (I/NAV decoded in-house)">E &mdash;</span>
+          </div>
+          <div class="data-grid">
+            <div class="data-item">
+              <span class="lbl">Satellites in solve (n_sat)</span>
+              <span class="val cyan" id="censusNsat">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Residual RMS</span>
+              <span class="val" id="censusResidual">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">A/B membership check</span>
+              <span class="val" id="censusAb">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">GGTO (Galileo&ndash;GPS time offset)</span>
+              <span class="val" id="censusGgto">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Slips this second / unused</span>
+              <span class="val" id="censusSlips">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Dropped by outlier gate (BDS+GAL)</span>
+              <span class="val" id="censusDropped">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Fresh / predicted ephemeris</span>
+              <span class="val" id="censusFresh">&mdash;</span>
+            </div>
+            <div class="data-item">
+              <span class="lbl">Receiver clock (weighted / unweighted)</span>
+              <span class="val" id="censusClock">&mdash;</span>
+            </div>
+          </div>
+        </div>
+
         <div class="data-box">
           <div class="data-box-title">
             <span>Live HackRF Radiometry &amp; Clock Metrology</span>
-            <span style="color:var(--green);">state.radiometry.json &bull; state.isb.json</span>
+            <span style="color:var(--green);">state.radiometry.json &bull; /api/sync</span>
           </div>
           <div class="data-grid">
             <div class="data-item">
@@ -1171,22 +1306,93 @@ footer a { color: var(--cyan); text-decoration: none; }
               <span class="val" id="n0StoryVal">&minus;176.0 dBm/Hz</span>
             </div>
             <div class="data-item">
-              <span class="lbl">Clock Allan Dev &sigma;<sub>y</sub>(300s)</span>
+              <span class="lbl">Code-phase clock ADEV &sigma;<sub>y</sub>(300 s) &mdash; not carrier</span>
               <span class="val magenta" id="adevStoryVal">5.08&times;10⁻¹⁰</span>
+              <span class="lbl" id="adevStoryNote">&asymp; 150 ns of wander over 300 s (code-phase solution)</span>
             </div>
           </div>
         </div>
 
         <div class="eli5-box" id="eli5_ch7">
-          <b>💡 Simple Idea:</b> Normal computers have cheap quartz clocks that wander by microseconds when your room heats up. To fix this, our lab connects a precision atomic-disciplined GPSDO clock to the HackRF's external clock input. Inside the FPGA chip, a digital stopwatch measures time intervals down to fractions of a nanosecond, allowing a low-cost radio to measure millimeter movements in the Earth's crust!
+          <b>💡 Simple Idea:</b> Four different countries fly four different satellite navigation systems, and all four
+          talk on almost the same radio channel. Our $300 radio listens to one 16-million-samples-per-second slice of that
+          channel and hears GPS, China's BeiDou, Europe's Galileo (we decode its messages ourselves, including the
+          error-correcting code) and two American WAAS satellites that sit parked over the equator and are <em>always</em>
+          in our southern sky. From all of them it works out one thing: how wrong its own clock is, right now.
+          Then it is honest about the answer. A satellite whose signal hiccupped is thrown out of that second, but the second is kept.
+          A measurement that is far noisier than its neighbours is thrown out too, with the threshold set by the noise of the
+          moment rather than a magic number. Two independent solvers must agree on <em>which</em> satellites to trust, and when they
+          disagree the second is published with a flag instead of quietly hidden. Only one program may hold the radio at a time (a lease),
+          and a watchdog heartbeat proves the observer is alive. The honest result: the clock is known to a few tens of billionths
+          of a second &mdash; good, but it will never reach one billionth no matter how long we average, because the ionosphere and
+          rooftop echoes bias it. The picosecond numbers below come from other, separate measurements, and we say so.
         </div>
 
         <div class="formula-box" id="deep_ch7" style="display:none;">
-          <b>🔬 Deep Formulation:</b> Radiometer link budget:
-          <code>N_0 = k_B * T_sys</code> where <code>T_sys = T_sky / L_cable + T_amb(1 - 1/L_cable) + T_LNA + T_rx/G_LNA</code>.
-          FPGA TDC: 48-tap carry chain interpolator resolving sub-sample time of arrival on P28.16 trigger input.
-          Carrier phase stability: Allan deviation &sigma;_y(&tau;) reaches <code>5.08&times;10⁻¹⁰</code> at 300 seconds.
+          <b>🔬 Deep Formulation:</b> One capture, centred 1568.25 MHz at 16 Msps, spans GPS L1 C/A (1575.42), Galileo E1B (1575.42),
+          WAAS/SBAS L1 (1575.42) and BeiDou B1I (1561.098). Galileo I/NAV is decoded in-house: 250 sym/s, sync word <code>0101100000</code>,
+          30&times;8 block de-interleave, K=7 Viterbi with the inverted-G2 branch, CRC-24Q, then BGD(E1,E5b) and GGTO applied so
+          E1B pseudoranges land on GPS time. SBAS GEO ranging uses PRN 131/135 positions from MT9 ephemeris.
+          Per-epoch solve: <code>ρ_i − |x_sat,i − x_rx| = c·δt_rx + ISB_sys(i) + ε_i</code>, one clock <code>δt_rx</code> for all systems;
+          inter-system biases are measured, not hidden (GEO &asymp; &minus;80&hellip;&minus;120 m, Galileo &minus;40&hellip;&minus;120 m PRN-dependent,
+          BeiDou &minus;30&hellip;0 m relative to GPS). Gates: slip-tolerant (a slipping satellite is dropped from that second, the second survives),
+          MAD-scaled outlier rejection <code>|r_i| &gt; k·1.4826·MAD(r)</code>, and an A/B membership check (weighted vs unweighted
+          solutions must select the same satellite set; mismatches are published with <code>ab_membership_match=false</code>).
+          Typical: quality epochs (&ge; 5 satellites, no slips) 92&ndash;100 % of the time, mean n_sat 6.6&ndash;8.6, residual RMS 35&ndash;60 m.
+          Precision, honestly: single-frequency code-phase clock floors at ~10&ndash;50 ns absolute (ionosphere, multipath, anchor systematics);
+          detrended code RMS ~76 ns; code TDEV 23&ndash;45 ns at 100&ndash;800 s; <code>σ_y(300 s) = 5.08&times;10⁻¹⁰</code> is this code-phase
+          solution (&asymp; 150 ns), not carrier. Carrier-phase stability is under measurement (exploratory, no gate pre-registered).
+          The ATSC channel-35 pilot anchor tracked by the second HackRF on the same GPSDO gives a median hourly TDEV(1000 s) &asymp; 58 ps
+          (7.5 ps &ndash; 2.3 ns hour to hour) &mdash; an anchor observable, not GNSS. The FPGA 48-tap carry-chain TDC resolves ~105.5 ps per tap but
+          is UNCALIBRATED (sweep quarantined until a sealed capture with a measured clock exists). TCXO: &minus;0.667 &plusmn; 0.004 ppm vs the GPSDO PPS (temperature-scoped).
         </div>
+      </div>
+    </div>
+
+    <!-- Precision Ladder (honest labels; log time axis 1 ps .. 1 us) -->
+    <div class="visual-card ladder-card" id="precisionLadder">
+      <div class="data-box-title" style="text-align:left;">
+        <span>The Precision Ladder &mdash; what each number actually is</span>
+        <span style="color:var(--text-dim);">log axis &bull; 1 ps &rarr; 1 &micro;s</span>
+      </div>
+      <div class="ladder">
+        <div class="ladder-row">
+          <div class="ladder-label"><span style="color:var(--amber);">Code-phase clock solution</span><small>single-frequency, 4 constellations &bull; ~10&ndash;50 ns ABSOLUTE floor &bull; ~76 ns detrended RMS &bull; TDEV 23&ndash;45 ns @ 100&ndash;800 s</small></div>
+          <div class="ladder-track">
+            <div class="ladder-bar" style="left:66.7%; width:11.6%; background:var(--amber);"></div>
+            <span class="ladder-tag" style="left:79%; color:var(--amber);">10&ndash;50 ns &bull; cannot average down to 1 ns</span>
+          </div>
+        </div>
+        <div class="ladder-row">
+          <div class="ladder-label"><span style="color:var(--cyan);">Carrier-phase GNSS stability</span><small>the path below code phase &bull; being measured &bull; exploratory, no gate pre-registered &bull; no number claimed yet</small></div>
+          <div class="ladder-track">
+            <div class="ladder-bar measuring" style="left:0; width:66.7%;"></div>
+            <span class="ladder-tag" style="left:30%; color:var(--cyan);">? &nbsp;measuring</span>
+          </div>
+        </div>
+        <div class="ladder-row">
+          <div class="ladder-label"><span style="color:var(--green);">ATSC ch-35 pilot anchor</span><small>broadcast TV transmitter on the 2nd HackRF, same GPSDO &bull; median hourly TDEV(1000 s) &asymp; 58 ps &bull; range 7.5 ps &ndash; 2.3 ns &bull; ANCHOR observable, not GNSS</small></div>
+          <div class="ladder-track">
+            <div class="ladder-bar" style="left:14.6%; width:41.4%; background:rgba(16,185,129,0.18);"></div>
+            <div class="ladder-mark" style="left:29.4%; background:var(--green);"></div>
+            <span class="ladder-tag" style="left:31.5%; color:var(--green);">58 ps median</span>
+            <span class="ladder-tag" style="left:57%; color:var(--text-dim);">2.3 ns worst hour</span>
+          </div>
+        </div>
+        <div class="ladder-row">
+          <div class="ladder-label"><span style="color:var(--magenta);">FPGA 48-tap carry-chain TDC</span><small>~105.5 ps per tap &bull; resolution, not accuracy &bull; UNCALIBRATED &mdash; sweep quarantined until a sealed capture with a measured clock exists</small></div>
+          <div class="ladder-track">
+            <div class="ladder-mark uncal" style="left:33.7%;"></div>
+            <span class="ladder-tag" style="left:36%; color:var(--magenta);">105.5 ps/tap &bull; uncalibrated</span>
+          </div>
+        </div>
+        <div class="ladder-axis">
+          <span style="left:0;">1 ps</span><span style="left:16.7%;">10 ps</span><span style="left:33.3%;">100 ps</span><span style="left:50%;">1 ns</span><span style="left:66.7%;">10 ns</span><span style="left:83.3%;">100 ns</span><span style="left:100%;">1 &micro;s</span>
+        </div>
+      </div>
+      <div class="canvas-caption">
+        <span>Lower is better. Only the amber rung is the GNSS clock; the green and magenta rungs are separate instruments.</span>
+        <span style="color:var(--text-dim);">TCXO vs GPSDO PPS: &minus;0.667 &plusmn; 0.004 ppm</span>
       </div>
     </div>
   </section>
@@ -1820,7 +2026,7 @@ footer a { color: var(--cyan); text-decoration: none; }
     document.getElementById("eli5Toggle").classList.toggle("active", isEli5);
     document.getElementById("eli5Text").textContent = isEli5 ? "Mode: Explain Like I'm 5" : "Mode: Deep Physical Derivation";
 
-    for (var i = 1; i <= 7; i++) {
+    for (var i = 1; i <= 8; i++) {
       var e = document.getElementById("eli5_ch" + i);
       var d = document.getElementById("deep_ch" + i);
       if (e) e.style.display = isEli5 ? "block" : "none";
@@ -2542,9 +2748,9 @@ footer a { color: var(--cyan); text-decoration: none; }
       key: "TDC",
       name: "Time-to-Digital Converter",
       cat: "TIMING",
-      eli5: "A digital stopwatch circuit inside the FPGA that measures the exact time an external pulse arrives with picosecond resolution.",
-      units: "Picoseconds (ps)",
-      relevance: "Measures the phase of the external 1PPS Bodnar tick relative to the ADC sampling clock."
+      eli5: "A digital stopwatch circuit inside the FPGA that tags when an external pulse arrives, using a 48-tap carry chain of ~105.5 ps per tap. That is resolution, not accuracy.",
+      units: "Picoseconds per tap (~105.5 ps); UNCALIBRATED",
+      relevance: "Tags the 1PPS Bodnar tick against the ADC sampling clock; its calibration sweep is quarantined until a sealed capture with a measured clock exists."
     },
     TDEV: {
       key: "TDEV",
@@ -2552,7 +2758,7 @@ footer a { color: var(--cyan); text-decoration: none; }
       cat: "TIMING",
       eli5: "Standard statistical metric used by time metrologists to quantify clock jitter and wander across different averaging times.",
       units: "Nanoseconds (ns)",
-      relevance: "Our Leg 1 verification proved TDEV < 0.244 ns across a 1-hour window."
+      relevance: "Code-phase clock TDEV is 23-45 ns at 100-800 s; the ATSC pilot anchor (not GNSS) reaches ~58 ps median hourly TDEV(1000 s)."
     },
     ADEV: {
       key: "ADEV",
@@ -2566,9 +2772,9 @@ footer a { color: var(--cyan); text-decoration: none; }
       key: "ISB",
       name: "Inter-System Bias",
       cat: "TIMING",
-      eli5: "The nanosecond hardware delay difference between processing GPS, BeiDou, and Galileo in the same radio.",
-      units: "Nanoseconds (ns); ~+10.19 ns",
-      relevance: "Must be calibrated to combine satellites from different nations into a single position fix."
+      eli5: "The constant offset between constellations when their pseudoranges are put on one clock: different system time scales plus different hardware delays in the same radio.",
+      units: "Metres or ns (1 m = 3.34 ns); measured here: GEO ~ -80..-120 m, Galileo -40..-120 m (PRN-dependent), BeiDou -30..0 m vs GPS",
+      relevance: "Measured live and published, never hidden; solved alongside the single receiver clock every second."
     },
     TSYS: {
       key: "TSYS",
@@ -2641,6 +2847,70 @@ footer a { color: var(--cyan); text-decoration: none; }
       eli5: "One Earth rotation relative to the distant stars (4 minutes shorter than a 24-hour solar day).",
       units: "86,164.09 seconds",
       relevance: "GPS satellite orbits repeat every sidereal day, allowing yesterday's multipath to cancel today's!"
+    },
+    INAV: {
+      key: "I/NAV",
+      name: "Galileo E1B Integrity Navigation Message",
+      cat: "TIMING",
+      eli5: "The data stream Galileo satellites broadcast on E1B: 250 symbols per second, a 0101100000 sync word, a 30x8 de-interleaver, a K=7 Viterbi decoder (with the inverted-G2 branch) and a CRC-24Q check. We decode it in-house.",
+      units: "250 sym/s; 2 s pages; CRC-24Q",
+      relevance: "Gives us Galileo ephemeris, clock, BGD and GGTO so E1B pseudoranges can join the one-clock solve."
+    },
+    GGTO: {
+      key: "GGTO",
+      name: "Galileo-to-GPS Time Offset",
+      cat: "TIMING",
+      eli5: "Galileo and GPS each keep their own system time. GGTO is the broadcast difference between them, so Galileo ranges can be placed on the GPS time scale.",
+      units: "Nanoseconds (ns); broadcast in I/NAV word 10",
+      relevance: "Applied before the solve; the census box shows ggto_applied so you can see when it is in force."
+    },
+    BGD: {
+      key: "BGD",
+      name: "Broadcast Group Delay (E1, E5b)",
+      cat: "TIMING",
+      eli5: "Each Galileo satellite's signals leave its antenna with slightly different hardware delays per frequency. BGD is the broadcast correction that makes a single-frequency E1 receiver consistent with the satellite clock model.",
+      units: "Nanoseconds (ns)",
+      relevance: "Applied to every Galileo E1B pseudorange in our single-frequency solve."
+    },
+    MAD_GATE: {
+      key: "MAD GATE",
+      name: "Median-Absolute-Deviation Outlier Gate",
+      cat: "TIMING",
+      eli5: "Instead of a fixed threshold, the outlier gate scales itself to the noise of the moment: a residual much larger than the typical spread (the MAD) is dropped for that second.",
+      units: "Threshold = k x 1.4826 x MAD of the residuals",
+      relevance: "Rejected satellites are counted (n_*_pre_reject vs n_*) and published, never silently removed."
+    },
+    AB_MEMBERSHIP: {
+      key: "A/B MEMBERSHIP",
+      name: "A/B Membership Check",
+      cat: "TIMING",
+      eli5: "Two independent solvers (weighted and unweighted) must agree on WHICH satellites to trust. If they disagree the epoch is published with a flag instead of being hidden.",
+      units: "Boolean (ab_membership_match)",
+      relevance: "Our main guard against a single clever weighting quietly choosing a convenient answer."
+    },
+    LEASE: {
+      key: "LEASE",
+      name: "Atomic Radio Ownership Lease",
+      cat: "TIMING",
+      eli5: "Only one program may touch the HackRF at a time. A lease file is claimed atomically and expires, so two capture jobs can never fight over the same radio.",
+      units: "Lease token with expiry (s)",
+      relevance: "Paired with an observer heartbeat that proves the watching process is still alive."
+    },
+    TDEV_VS_ADEV: {
+      key: "TDEV vs ADEV",
+      name: "Time Deviation vs Allan Deviation",
+      cat: "TIMING",
+      eli5: "ADEV measures how stable a clock's frequency is; TDEV measures how far its time wanders at a given averaging span. A tiny ADEV at 300 s can still mean ~150 ns of time wander: multiply by tau.",
+      units: "ADEV dimensionless; TDEV in seconds (ps/ns)",
+      relevance: "Our 5.08e-10 ADEV at 300 s is the code-phase solution: about 150 ns, not nanoseconds."
+    },
+    SBAS_GEO: {
+      key: "SBAS GEO",
+      name: "SBAS Geostationary Ranging (WAAS PRN 131/135)",
+      cat: "TIMING",
+      eli5: "WAAS satellites are parked over the equator and broadcast a GPS-like ranging signal. From our roof they are always visible in the open southern sky, so they anchor the solve when other satellites set.",
+      units: "Position from MT9 ephemeris; ISB ~ -80..-120 m vs GPS",
+      relevance: "Two GEOs are part of the four-constellation single-clock solve in one 16 Msps capture."
     }
   };
 
@@ -2765,10 +3035,95 @@ footer a { color: var(--cyan); text-decoration: none; }
   setupTooltips();
 
 
+  // Ch 7: live Constellation Census + header status chip (bound to /api/sync clock_bias).
+  // The clock_bias block is only present while the emitter's state file is fresher than its
+  // 10 s TTL; when absent we render an explicit idle state (never NaN/undefined).
+  function fmtNum(v, digits) {
+    return (typeof v === "number" && isFinite(v)) ? v.toFixed(digits) : null;
+  }
+  function renderCensus(cb) {
+    var $ = function(id) { return document.getElementById(id); };
+    var setText = function(id, txt, col) {
+      var el = $(id); if (!el) return;
+      el.textContent = txt;
+      if (col !== undefined) el.style.color = col;
+    };
+    var setW = function(id, pct) { var el = $(id); if (el) el.style.width = pct + "%"; };
+    var chip = $("stationStatusChip");
+
+    if (!cb || typeof cb !== "object") {
+      setText("censusStatus", "SOLVE IDLE \u2014 waiting for \u2265 4 ranging satellites (no fresh clock_bias)", "var(--text-dim)");
+      setText("censusSource", "/api/sync \u2022 clock_bias absent", "var(--amber)");
+      ["Gps", "Bds", "Geo", "Gal"].forEach(function(s) { setW("censusBar" + s, 0); });
+      setText("censusChipGps", "G \u2014"); setText("censusChipBds", "C \u2014");
+      setText("censusChipGeo", "S \u2014"); setText("censusChipGal", "E \u2014");
+      ["censusNsat", "censusResidual", "censusAb", "censusGgto", "censusSlips", "censusDropped", "censusFresh", "censusClock"]
+        .forEach(function(id) { setText(id, "\u2014", ""); });
+      if (chip) { chip.textContent = "solve idle"; chip.style.color = "var(--text-dim)"; chip.style.borderColor = "var(--border)"; }
+      return;
+    }
+
+    var n = function(k) { return (typeof cb[k] === "number" && isFinite(cb[k])) ? cb[k] : null; };
+    var nG = n("n_gps") || 0, nC = n("n_bds") || 0, nS = n("n_sbas") || 0, nE = n("n_gal") || 0;
+    var nSat = n("n_sat"); if (nSat === null) nSat = nG + nC + nS + nE;
+    var slips = n("slips"), slipsUnused = n("slips_unused");
+    var total = Math.max(1, nG + nC + nS + nE);
+    setW("censusBarGps", 100 * nG / total); setW("censusBarBds", 100 * nC / total);
+    setW("censusBarGeo", 100 * nS / total); setW("censusBarGal", 100 * nE / total);
+    setText("censusChipGps", "G " + nG); setText("censusChipBds", "C " + nC);
+    setText("censusChipGeo", "S " + nS); setText("censusChipGal", "E " + nE);
+    setText("censusSource", "/api/sync \u2022 clock_bias" + (n("gen") !== null ? " gen " + n("gen") : ""), "var(--green)");
+    setText("censusNsat", String(nSat), "var(--cyan)");
+
+    var quality = nSat >= 5 && slips === 0;
+    var reason;
+    if (quality) reason = "QUALITY EPOCH \u2014 " + nSat + " satellites, no slips";
+    else if (nSat < 4) reason = "SOLVE STARVED \u2014 " + nSat + " satellites (need \u2265 4)";
+    else if (nSat < 5) reason = "MINIMAL SOLVE \u2014 " + nSat + " satellites (quality needs \u2265 5)";
+    else if (slips === null) reason = "UNGATED \u2014 slip count missing";
+    else reason = "SLIP-TOLERANT EPOCH \u2014 " + slips + " slip" + (slips === 1 ? "" : "s") + " dropped this second, epoch kept";
+    setText("censusStatus", reason, quality ? "var(--green)" : "var(--amber)");
+
+    var rms = fmtNum(cb.residual_rms_m, 1);
+    setText("censusResidual", rms !== null ? rms + " m" : "\u2014", rms !== null && cb.residual_rms_m <= 60 ? "" : "var(--amber)");
+    if (cb.ab_membership_match === true) setText("censusAb", "A/B agree", "var(--green)");
+    else if (cb.ab_membership_match === false) setText("censusAb", "A/B disagreement (flagged)", "var(--amber)");
+    else setText("censusAb", "\u2014", "");
+    if (cb.ggto_applied === true) setText("censusGgto", "applied", "var(--green)");
+    else if (cb.ggto_applied === false) setText("censusGgto", "not applied", "var(--amber)");
+    else setText("censusGgto", "\u2014", "");
+    setText("censusSlips", (slips !== null ? slips : "\u2014") + " / " + (slipsUnused !== null ? slipsUnused : "\u2014"),
+      slips ? "var(--amber)" : "");
+    var dropped = 0, haveDrop = false;
+    if (n("n_bds_pre_reject") !== null) { dropped += Math.max(0, n("n_bds_pre_reject") - nC); haveDrop = true; }
+    if (n("n_gal_pre_reject") !== null) { dropped += Math.max(0, n("n_gal_pre_reject") - nE); haveDrop = true; }
+    setText("censusDropped", haveDrop ? String(dropped) : "\u2014", dropped ? "var(--amber)" : "");
+    setText("censusFresh", (n("n_fresh") !== null ? n("n_fresh") : "\u2014") + " / " + (n("n_pred") !== null ? n("n_pred") : "\u2014"), "");
+    var ck = fmtNum(cb.clock_ns, 1), cku = fmtNum(cb.clock_ns_uw, 1);
+    setText("censusClock", (ck !== null ? ck : "\u2014") + " / " + (cku !== null ? cku : "\u2014") + " ns", "");
+
+    if (chip) {
+      chip.textContent = nSat + " sats \u00b7 G" + nG + " C" + nC + " S" + nS + " E" + nE;
+      chip.style.color = quality ? "var(--green)" : "var(--amber)";
+      chip.style.borderColor = quality ? "rgba(16, 185, 129, 0.3)" : "rgba(245, 158, 11, 0.4)";
+    }
+  }
+
   function updateFromSync(st) {
     liveData = st;
     document.getElementById("syncLiveText").textContent = "LIVE SDR (1 Hz)";
     document.getElementById("syncLiveText").style.color = "var(--green)";
+
+    // Ch 7 + header: multi-constellation clock solve (graceful idle when block is absent)
+    renderCensus(st && st.clock_bias ? st.clock_bias : null);
+    if (st && typeof st.adev_tau_300s === "number" && isFinite(st.adev_tau_300s) && st.adev_tau_300s > 0) {
+      var ad = st.adev_tau_300s;
+      var ex = Math.floor(Math.log10(ad));
+      var mant = ad / Math.pow(10, ex);
+      document.getElementById("adevStoryVal").innerHTML = mant.toFixed(2) + "\u00d710<sup>" + ex + "</sup>";
+      var note = document.getElementById("adevStoryNote");
+      if (note) note.textContent = "\u2248 " + (ad * 300 * 1e9).toFixed(0) + " ns of wander over 300 s (code-phase solution, not carrier)";
+    }
 
     // Ch 1: Relativity
     if (st.relativity_summary) {
@@ -2861,6 +3216,10 @@ footer a { color: var(--cyan); text-decoration: none; }
       if (rad.mean_n0_dbm_hz) document.getElementById("n0StoryVal").textContent = rad.mean_n0_dbm_hz.toFixed(1) + " dBm/Hz";
     }
   }
+
+  window.updateFromSync = updateFromSync;   // exposed for web/smoke_story.js
+  window.renderCensus = renderCensus;
+  renderCensus(null);                        // explicit idle state until the first /api/sync arrives
 
   // Start polling & animation
   fetchTelemetry();

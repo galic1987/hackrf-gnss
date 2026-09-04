@@ -33,6 +33,12 @@ async function main() {
     hardwareCanvas: 0,
     solarCascadeCanvas: 0
   };
+  // Ch 7 census / header elements that updateFromSync must render without NaN/undefined
+  const CENSUS_IDS = [
+    "censusStatus", "censusSource", "censusNsat", "censusResidual", "censusAb", "censusGgto",
+    "censusSlips", "censusDropped", "censusFresh", "censusClock",
+    "censusChipGps", "censusChipBds", "censusChipGeo", "censusChipGal", "stationStatusChip", "adevStoryVal", "adevStoryNote"
+  ];
   const nanViolations = [];
 
   function getEl(id) {
@@ -169,7 +175,79 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("smoke_story: SUCCESS! All canvases initialized cleanly without NaN violations.");
+  // ---- Ch 7 Constellation Census + header chip: exercise updateFromSync directly ----
+  const updateFromSync = context.window.updateFromSync;
+  if (typeof updateFromSync !== "function") {
+    throw new Error("window.updateFromSync is not exposed by story.html");
+  }
+  function assertClean(label) {
+    const bad = [];
+    for (const id of CENSUS_IDS) {
+      const el = elements[id];
+      if (!el) { bad.push(id + " (never touched)"); continue; }
+      const txt = String(el.textContent) + " " + String(el.innerHTML);
+      if (/NaN|undefined|null/.test(txt)) bad.push(id + " => " + JSON.stringify(txt));
+    }
+    for (const id of ["censusBarGps", "censusBarBds", "censusBarGeo", "censusBarGal"]) {
+      const w = elements[id] && elements[id].style.width;
+      if (w === undefined || /NaN|undefined/.test(String(w))) bad.push(id + ".style.width => " + w);
+    }
+    if (bad.length) {
+      console.error("FAIL [" + label + "]: census elements rendered NaN/undefined/untouched:");
+      console.error(bad);
+      process.exit(1);
+    }
+  }
+  function expect(label, id, re) {
+    const txt = String(elements[id] ? elements[id].textContent : "");
+    if (!re.test(txt)) {
+      console.error("FAIL [" + label + "]: #" + id + " = " + JSON.stringify(txt) + " did not match " + re);
+      process.exit(1);
+    }
+  }
+
+  // (1) payload lacking clock_bias -> graceful idle state
+  updateFromSync({ adev_tau_300s: 5.085e-10 });
+  assertClean("no clock_bias");
+  expect("no clock_bias", "censusStatus", /SOLVE IDLE/);
+  expect("no clock_bias", "stationStatusChip", /^solve idle$/);
+  expect("no clock_bias", "censusNsat", /^\u2014$/);
+  expect("no clock_bias", "adevStoryNote", /153 ns/);
+  console.log("smoke_story: census idle state OK ->", elements.censusStatus.textContent, "|", elements.stationStatusChip.textContent);
+
+  // (2) full clock_bias block (all 17 keys the emitter publishes) -> quality epoch
+  const fullCb = {
+    ab_membership_match: true, clock_ns: 1234.5, clock_ns_uw: 1230.1, gen: 42, ggto_applied: true,
+    n_bds: 1, n_bds_pre_reject: 2, n_fresh: 7, n_gal: 1, n_gal_pre_reject: 1, n_gps: 4, n_pred: 1,
+    n_sat: 8, n_sbas: 2, residual_rms_m: 42.3, slips: 0, slips_unused: 1
+  };
+  updateFromSync({ adev_tau_300s: 5.085e-10, clock_bias: fullCb });
+  assertClean("full clock_bias");
+  expect("full clock_bias", "censusStatus", /QUALITY EPOCH/);
+  expect("full clock_bias", "censusNsat", /^8$/);
+  expect("full clock_bias", "stationStatusChip", /^8 sats \u00b7 G4 C1 S2 E1$/);
+  expect("full clock_bias", "censusAb", /A\/B agree/);
+  expect("full clock_bias", "censusGgto", /applied/);
+  expect("full clock_bias", "censusResidual", /^42\.3 m$/);
+  expect("full clock_bias", "censusDropped", /^1$/);
+  expect("full clock_bias", "censusSlips", /^0 \/ 1$/);
+  expect("full clock_bias", "censusClock", /^1234\.5 \/ 1230\.1 ns$/);
+  console.log("smoke_story: census quality state OK ->", elements.censusStatus.textContent, "|", elements.stationStatusChip.textContent);
+
+  // (3) degraded block: slips + A/B disagreement -> amber with reason, still no NaN
+  updateFromSync({ clock_bias: Object.assign({}, fullCb, { n_sat: 6, n_gps: 2, slips: 2, ab_membership_match: false, ggto_applied: false, residual_rms_m: null }) });
+  assertClean("degraded clock_bias");
+  expect("degraded clock_bias", "censusStatus", /SLIP-TOLERANT EPOCH .* 2 slips/);
+  expect("degraded clock_bias", "censusAb", /disagreement \(flagged\)/);
+  expect("degraded clock_bias", "censusResidual", /^\u2014$/);
+  console.log("smoke_story: census degraded state OK ->", elements.censusStatus.textContent);
+
+  // (4) back to idle after a live block (TTL expiry) must fully reset
+  updateFromSync({});
+  assertClean("idle after live");
+  expect("idle after live", "stationStatusChip", /^solve idle$/);
+
+  console.log("smoke_story: SUCCESS! All canvases initialized cleanly without NaN violations; census bindings render idle/quality/degraded states cleanly.");
 }
 
 main().catch((e) => {
