@@ -76,6 +76,7 @@ async function main() {
     "mpiActiveRisk", "tropoBadge", "ztdVal", "zhdVal", "zwdVal", "ztdNs", "p0Val",
     "relBadge", "relVal", "relGr", "relSr", "relFactory", "relDrift", "relSagnac", "relEcc",
     "pwvBadge", "pwvVal", "pwvMass", "tmVal", "tdVal", "bevisPi", "regimeVal", "maxSwv",
+    "rfiBadge", "tsysVal", "fsplVal", "marginVal", "n0Val", "tskyVal", "lnaNf", "meanCn0",
     "syncStatus", "skyCanvas", "stripCanvas", "tooltip"
   ].forEach(getEl);
 
@@ -130,6 +131,9 @@ async function main() {
   console.log("PWV Val:", elements["pwvVal"].innerHTML);
   console.log("PWV Mass / Tm / Td:", elements["pwvMass"].textContent, "/", elements["tmVal"].textContent, "/", elements["tdVal"].textContent);
   console.log("PWV Regime:", elements["regimeVal"].textContent);
+  console.log("Radiometry Tsys:", elements["tsysVal"].innerHTML);
+  console.log("Radiometry FSPL / Margin:", elements["fsplVal"].textContent, "/", elements["marginVal"].textContent);
+  console.log("Radiometry Threat:", elements["rfiBadge"].textContent);
 
   console.log("SMOKE_IONO: PASS");
 }

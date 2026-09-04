@@ -360,6 +360,7 @@
         <th>Total Atm</th>
         <th>Relativity (Ecc / Sagnac)</th>
         <th>Slant WV</th>
+        <th>FSPL / Margin</th>
         <th>C/N<sub>0</sub></th>
         <th>&sigma;<sub>&phi;</sub> (rad)</th>
         <th>S<sub>4</sub></th>
@@ -369,7 +370,7 @@
       </tr>
     </thead>
     <tbody id="satTableBody">
-      <tr><td colspan="17" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
+      <tr><td colspan="18" style="text-align: center; color: var(--text-dim);">Connecting to /api/sync telemetry...</td></tr>
     </tbody>
   </table>
 </div>
@@ -464,6 +465,19 @@
     <div class="card-sub">Mass: <b id="pwvMass">18.26 kg/m&sup2;</b> &bull; T<sub>m</sub>: <b id="tmVal">8.1&deg;C</b> &bull; T<sub>d</sub>: <b id="tdVal">9.3&deg;C</b></div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
       Bevis &Pi;: <span id="bevisPi">0.159</span> &bull; Regime: <b id="regimeVal" style="color:var(--green);">NORMAL</b> &bull; Max Slant WV: <b id="maxSwv">31.4 mm</b>.
+    </div>
+  </div>
+
+  <!-- Card 8: RF Radiometry & Link Budget Metrology -->
+  <div class="card">
+    <div class="card-label">
+      <span>RF Radiometry &amp; Link Budget</span>
+      <span class="badge" id="rfiBadge" style="background:rgba(16,185,129,0.15); color:var(--green); border:1px solid rgba(16,185,129,0.3); padding:1px 6px; border-radius:4px; font-size:10px;">RF QUIET</span>
+    </div>
+    <div class="card-val" id="tsysVal">172 <span class="unit">K T<sub>sys</sub></span></div>
+    <div class="card-sub">FSPL: <b id="fsplVal">184.2 dB</b> &bull; Margin: <b id="marginVal" style="color:var(--green);">+10.5 dB</b> &bull; N<sub>0</sub>: <b id="n0Val">-176.3 dBm/Hz</b></div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px; border-top:1px solid var(--border); padding-top:6px;">
+      Antenna T<sub>sky</sub>: <span id="tskyVal">79.4 K</span> &bull; LNA NF: <span id="lnaNf">1.2 dB</span> &bull; C/N<sub>0</sub> mean: <b id="meanCn0">38.5 dB-Hz</b>.
     </div>
   </div>
 </div>
@@ -702,6 +716,30 @@
       if (pmax && msum.max_slant_wv_mm !== undefined) pmax.textContent = msum.max_slant_wv_mm.toFixed(1) + " mm";
     }
 
+    // RF Radiometry & Link Budget
+    if (st.radiometry_summary) {
+      var rsum = st.radiometry_summary;
+      var tv = document.getElementById("tsysVal");
+      if (tv && rsum.min_tsys_k !== undefined) tv.innerHTML = rsum.min_tsys_k.toFixed(0) + ' <span class="unit">K T<sub>sys</sub></span>';
+      var fv = document.getElementById("fsplVal");
+      if (fv && rsum.mean_fspl_db !== undefined) fv.textContent = rsum.mean_fspl_db.toFixed(1) + " dB";
+      var mv = document.getElementById("marginVal");
+      if (mv && rsum.mean_link_margin_db !== undefined) mv.textContent = (rsum.mean_link_margin_db >= 0 ? "+" : "") + rsum.mean_link_margin_db.toFixed(1) + " dB";
+      var nv = document.getElementById("n0Val");
+      if (nv && rsum.mean_n0_dbm_hz !== undefined) nv.textContent = rsum.mean_n0_dbm_hz.toFixed(1) + " dBm/Hz";
+      var tkv = document.getElementById("tskyVal");
+      if (tkv && rsum.antenna_sky_temp_k !== undefined) tkv.textContent = rsum.antenna_sky_temp_k.toFixed(1) + " K";
+      var lnav = document.getElementById("lnaNf");
+      if (lnav && rsum.lna_noise_figure_db !== undefined) lnav.textContent = rsum.lna_noise_figure_db.toFixed(1) + " dB";
+      var mcv = document.getElementById("meanCn0");
+      if (mcv && rsum.mean_cn0_db_hz !== undefined) mcv.textContent = rsum.mean_cn0_db_hz.toFixed(1) + " dB-Hz";
+      var rfb = document.getElementById("rfiBadge");
+      if (rfb && rsum.rfi_threat_level) {
+        rfb.textContent = "RF " + rsum.rfi_threat_level;
+        rfb.style.color = rsum.rfi_threat_level === "QUIET" ? "var(--green)" : (rsum.rfi_threat_level === "ELEVATED_NOISE" ? "var(--amber)" : "var(--magenta)");
+      }
+    }
+
     updateTable(st.satellites || {});
     drawSkyPlot(st.satellites || {});
     drawStripChart();
@@ -712,7 +750,7 @@
     var html = "";
     var keys = Object.keys(sats);
     if (keys.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='17' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='18' style='text-align: center; color: var(--text-dim);'>No channels currently meeting lock thresholds.</td></tr>";
       return;
     }
 
@@ -755,6 +793,12 @@
         ? "<span style='color:var(--cyan); font-weight:600;'>" + metSat.swv_mm.toFixed(1) + " mm</span>"
         : "—";
 
+      var radSat = (lastPayload && lastPayload.radiometry_satellites && lastPayload.radiometry_satellites[keys[i]]) ? lastPayload.radiometry_satellites[keys[i]] : null;
+      var fsplCol = radSat
+        ? "<span style='color:var(--text-dim); font-size:11px;'>" + radSat.fspl_db.toFixed(1) + " dB</span> / " +
+          "<span style='color:" + (radSat.link_margin_db >= 10 ? "var(--green)" : "var(--amber)") + "; font-weight:600;'>+" + radSat.link_margin_db.toFixed(1) + " dB</span>"
+        : "—";
+
       var mpInfo = (lastPayload && lastPayload.active_satellites && lastPayload.active_satellites[keys[i]]) ? lastPayload.active_satellites[keys[i]] : null;
       var mpCol = mpInfo
         ? (mpInfo.reflection_risk === "HIGH" ? "<span style='color:var(--magenta); font-weight:600;'>HIGH (" + mpInfo.grid_mpi_db.toFixed(1) + " dB)</span>"
@@ -774,6 +818,7 @@
         "<td>" + totalAtmCol + "</td>" +
         "<td>" + relCol + "</td>" +
         "<td>" + swvCol + "</td>" +
+        "<td>" + fsplCol + "</td>" +
         "<td>" + cn0 + "</td>" +
         "<td>" + sig + "</td>" +
         "<td>" + s4 + "</td>" +
@@ -1048,6 +1093,10 @@
       var metTip = metSat
         ? "<br><strong>Water Vapor:</strong> Slant WV: " + metSat.swv_mm.toFixed(1) + " mm (" + metSat.swv_kg_m2.toFixed(1) + " kg/m²)"
         : "";
+      var radSat = (lastPayload && lastPayload.radiometry_satellites && lastPayload.radiometry_satellites[match.key]) ? lastPayload.radiometry_satellites[match.key] : null;
+      var radTip = radSat
+        ? "<br><strong>RF Link Budget:</strong> FSPL: " + radSat.fspl_db.toFixed(1) + " dB &bull; Margin: +" + radSat.link_margin_db.toFixed(1) + " dB &bull; Tsys: " + radSat.t_sys_k.toFixed(0) + " K"
+        : "";
 
       tooltip.innerHTML = "<strong>" + match.key + "</strong> (" + (s.sys || "").toUpperCase() + ")<br>" +
         "Elevation: " + (s.el_deg ? s.el_deg.toFixed(1) + "°" : "—") + "<br>" +
@@ -1061,6 +1110,7 @@
         tropoTip +
         relTip +
         metTip +
+        radTip +
         mpTip;
     } else {
       tooltip.style.display = "none";
