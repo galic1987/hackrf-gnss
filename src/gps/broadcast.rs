@@ -16,9 +16,14 @@
 
 use std::collections::HashMap;
 
-const MU_E: f64 = 3.986005e14; // WGS-84 gravitational parameter, m^3/s^2
+/// WGS-84 gravitational parameter, m^3/s^2 (IS-GPS-200 Table 20-IV).
+/// Public since 2026-09-04 so the relativity-off experiment
+/// (examples/clock_bias.rs) can name the GPS pair explicitly.
+pub const MU_E: f64 = 3.986005e14;
 const OMEGA_E: f64 = 7.2921151467e-5; // Earth rotation rate, rad/s (ICD)
-const F_REL: f64 = -4.442807633e-10; // relativistic clock constant
+/// GPS relativistic clock constant F = -2 sqrt(mu)/c^2, s/sqrt(m)
+/// (IS-GPS-200 20.3.3.3.3.1). Public for the same reason as [`MU_E`].
+pub const F_REL: f64 = -4.442807633e-10;
 /// Galileo gravitational parameter (OS SIS ICD 2.1 Table 66) — equals the
 /// BDS value, NOT the GPS MU_E; omega_E is the GPS value (Table 66).
 pub const MU_GAL: f64 = 3.986004418e14;
@@ -583,12 +588,37 @@ pub fn sat_clock(e: &BrdcEph, t: f64) -> f64 {
 fn sat_clock_impl(e: &BrdcEph, t: f64, mu: f64, f_rel: f64) -> f64 {
     let dt = wrap_tk(t - e.toc);
     let poly = e.af0 + e.af1 * dt + e.af2 * dt * dt;
+    // 2026-09-04: the periodic relativistic term is factored out (see
+    // relativistic_periodic_s) with the expression order preserved —
+    // `poly + (((f_rel * e) * sqrt_a) * sin(Ek)) - tgd` before and after,
+    // so every GPS/BDS/GAL clock stays bit-identical.
+    poly + relativistic_periodic_s(e, t, mu, f_rel) - e.tgd
+}
+
+/// The periodic relativistic clock term dt_r = F·e·√A·sin(Ek) (seconds,
+/// IS-GPS-200 20.3.3.3.3.1 / Galileo ICD Eq. 15) evaluated with EXACTLY
+/// the eccentric anomaly the clock uses — `sat_clock_impl` calls this, so
+/// the value returned here is, bit for bit, what the constellation's
+/// dt_sv contains at the same `t`. Constant-parameterized like the clock
+/// (GPS: [`MU_E`]/[`F_REL`]; Galileo: [`MU_GAL`]/[`F_REL_GAL`]).
+///
+/// Purpose (2026-09-04, relativity-off experiment): the clock_bias emitter
+/// removes this term from one satellite's modeled clock so the station's
+/// own residual log can measure general relativity's periodic term
+/// (amplitude F·e·√A·c ≈ 14 m for e ≈ 0.02) instead of assuming it.
+pub fn relativistic_periodic_s(e: &BrdcEph, t: f64, mu: f64, f_rel: f64) -> f64 {
     let a = e.sqrt_a * e.sqrt_a;
     let n0 = (mu / (a * a * a)).sqrt();
     let tk = wrap_tk(t - e.toe);
     let mk = e.m0 + (n0 + e.delta_n) * tk;
     let ek = kepler_e(mk, e.e);
-    poly + f_rel * e.e * e.sqrt_a * ek.sin() - e.tgd
+    f_rel * e.e * e.sqrt_a * ek.sin()
+}
+
+/// [`relativistic_periodic_s`] with the GPS constants — the term
+/// [`sat_clock`] contains at `t`.
+pub fn relativistic_periodic_gps_s(e: &BrdcEph, t: f64) -> f64 {
+    relativistic_periodic_s(e, t, MU_E, F_REL)
 }
 
 // ------------------------------------------------------------- Galileo I/NAV
@@ -1280,6 +1310,130 @@ E02 2026 09 01 20 00 00 6.600067717955e-05 2.685851541173e-12 0.000000000000e+00
         // omega_E is shared with GPS (ICD Table 66) — sat_at_txtime_gal
         // deliberately reuses OMEGA_E, unlike BDS's 7.2921150e-5.
         assert_eq!(OMEGA_E, 7.2921151467e-5);
+    }
+
+    // -------------------------------------- relativity-off (window-run)
+    //
+    // 2026-09-04 experiment support: relativistic_periodic_s must be the
+    // exact term the clock contains, on GPS and Galileo constants alike,
+    // and the live G07 record is pinned against the python cross-check
+    // tests/fixtures/relativity/gps_rel_eval.json (scripts/
+    // relativity_reference.py, hand-parsed RINEX, 12-step Newton Kepler).
+
+    /// A synthetic eccentric GPS orbit: e = 0.02 makes the term ~1e-8 s,
+    /// far above the 1e-15 tolerance, and the toc != toe / af1 / af2 /
+    /// tgd fields make sure the identity is not trivially 0 == 0.
+    fn eccentric_eph() -> BrdcEph {
+        BrdcEph {
+            sqrt_a: 5153.7,
+            e: 0.02,
+            m0: 0.3,
+            delta_n: 4.5e-9,
+            toe: 453_600.0,
+            toc: 453_600.0 + 600.0,
+            af0: -2.2e-4,
+            af1: -3.3e-12,
+            af2: 1.0e-20,
+            tgd: -1.07e-8,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn relativistic_term_is_exactly_the_clocks_periodic_part() {
+        let e = eccentric_eph();
+        for &t in &[453_600.0, 453_600.0 + 900.0, 453_600.0 + 2700.0, 453_600.0 + 21_000.0, 3_000.0] {
+            let dt = wrap_tk(t - e.toc);
+            let poly = e.af0 + e.af1 * dt + e.af2 * dt * dt;
+            let rel = relativistic_periodic_gps_s(&e, t);
+            assert!(rel.abs() > 1e-10, "t {t}: term {rel} should be ~1e-8 s on e=0.02");
+            assert!(
+                (sat_clock(&e, t) - (poly - e.tgd) - rel).abs() < 1e-15,
+                "t {t}: sat_clock - (poly - tgd) != rel: {} vs {rel}",
+                sat_clock(&e, t) - (poly - e.tgd)
+            );
+            // the factoring preserved the op order: the clock is bit-identical
+            // to the pre-factoring expression
+            let a = e.sqrt_a * e.sqrt_a;
+            let n0 = (MU_E / (a * a * a)).sqrt();
+            let tk = wrap_tk(t - e.toe);
+            let ek = kepler_e(e.m0 + (n0 + e.delta_n) * tk, e.e);
+            let legacy = poly + F_REL * e.e * e.sqrt_a * ek.sin() - e.tgd;
+            assert_eq!(legacy.to_bits(), sat_clock(&e, t).to_bits(), "t {t}: op order changed");
+            assert_eq!(rel, relativistic_periodic_s(&e, t, MU_E, F_REL));
+        }
+        // circular orbit: the term vanishes identically
+        let c = circular_eph();
+        assert_eq!(relativistic_periodic_gps_s(&c, 1234.5), 0.0);
+    }
+
+    #[test]
+    fn relativistic_term_matches_the_galileo_clock_too() {
+        // the same factoring serves sat_clock_gal (MU_GAL / F_REL_GAL):
+        // on the pinned E02 record the identity holds and the pinned
+        // clock_e1 value is untouched by the refactor
+        let ephs = parse_rinex_gal(&format!("{RNX_HDR}{GAL_E02}"));
+        let e = &ephs[&2];
+        let t = 244_800.0;
+        let rel = relativistic_periodic_s(e, t, MU_GAL, F_REL_GAL);
+        let poly = e.af0; // dt == 0 at toc
+        assert!((sat_clock_gal(e, t) - (poly - e.tgd) - rel).abs() < 1e-15);
+        assert!((sat_clock_gal(e, t) - 6.600396590403022e-05).abs() < 1e-15);
+        // GPS constants on a GAL record give a DIFFERENT term (the
+        // function is honest about its parameters, never a hidden default)
+        assert_ne!(rel, relativistic_periodic_gps_s(e, t));
+    }
+
+    /// Live brdc_latest.rnx G07 record (2026-09-04 06:00, toe 453600,
+    /// e = 0.0209, √A = 5153.76) verbatim — the python cross-check's input.
+    const GPS_G07: &str = "\
+G07 2026 09 04 06 00 00-2.215462736785e-04-3.296918293927e-12 0.000000000000e+00
+     7.700000000000e+01-1.853125000000e+01 4.966278293997e-09-1.184373590828e-01
+    -8.661299943924e-07 2.093016507570e-02 7.657334208488e-06 5.153760953903e+03
+     4.536000000000e+05-1.993030309677e-07 2.943443499676e+00 3.203749656677e-07
+     9.516107696539e-01 2.325937500000e+02-1.950459143607e+00-8.424993791951e-09
+     2.207234797332e-10 1.000000000000e+00 2.434000000000e+03 0.000000000000e+00
+     2.000000000000e+00 0.000000000000e+00-1.071020960808e-08 7.700000000000e+01
+     4.464180000000e+05 4.000000000000e+00                                      ";
+
+    #[test]
+    fn relativistic_term_pins_the_python_cross_check_on_live_g07() {
+        // (t_sow, Ek rad, rel_s, sat_clock s) from tests/fixtures/
+        // relativity/gps_rel_eval.json. The pipelines are op-identical
+        // f64 (Newton seeded at Mk, 12 steps), so agreement is libm-ulp
+        // class: rel_s to 1e-18 (3e-10 m), Ek to 1e-12, clock to 1e-15.
+        let cases: [(f64, f64, f64, f64); 3] = [
+            (453_600.0, -0.12096296423660788, 5.7829206782970885e-09, -0.00022152978054821364),
+            (454_500.0, 0.013103234446386914, -6.279434253455477e-10, -0.0002215391586387818),
+            (456_300.0, 0.2811693738649913, -1.3297959694025663e-08, -0.00022155776310797955),
+        ];
+        let r = parse_rinex_gps_nav(&format!("{RNX_HDR}{GPS_G07}"));
+        assert_eq!(r.rejected, 0, "live G07 record must parse clean");
+        assert_eq!(r.unit, AngUnit::Radians, "live G records are radians");
+        let e = &r.ephs[&7];
+        assert_eq!(e.toe, 453_600.0);
+        assert_eq!(e.toc, 453_600.0);
+        assert_eq!(e.e, 2.093016507570e-02);
+        assert_eq!(e.sqrt_a, 5153.760953903);
+        assert_eq!(e.tgd, -1.071020960808e-08);
+        // amplitude F·e·√A: -4.79e-8 s = -14.37 m
+        let amp = F_REL * e.e * e.sqrt_a;
+        assert!((amp - -4.7924151656860264e-08).abs() < 1e-20, "amplitude {amp}");
+        for (t, ek, rel, clk) in cases {
+            let a = e.sqrt_a * e.sqrt_a;
+            let n0 = (MU_E / (a * a * a)).sqrt();
+            let ek_rs = kepler_e(e.m0 + (n0 + e.delta_n) * wrap_tk(t - e.toe), e.e);
+            assert!((ek_rs - ek).abs() < 1e-12, "t {t}: Ek {ek_rs} vs pinned {ek}");
+            let rel_rs = relativistic_periodic_gps_s(e, t);
+            assert!((rel_rs - rel).abs() < 1e-18, "t {t}: rel {rel_rs} vs pinned {rel}");
+            let clk_rs = sat_clock(e, t);
+            assert!((clk_rs - clk).abs() < 1e-15, "t {t}: clock {clk_rs} vs pinned {clk}");
+            // and the experiment's "clock without the term" is the pinned
+            // clock_minus_rel_s: poly - tgd
+            let dt = wrap_tk(t - e.toc);
+            let poly = e.af0 + e.af1 * dt + e.af2 * dt * dt;
+            assert!((clk_rs - rel_rs - (poly - e.tgd)).abs() < 1e-15);
+        }
     }
 
     #[test]

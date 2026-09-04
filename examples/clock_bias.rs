@@ -93,6 +93,39 @@
 //!    the rejected ones, residual against the final clock. Labels use the
 //!    dropped_slip convention (G/C/S/E).
 //!
+//! v4 additive amendment (2026-09-04, relativity-off experiment; schema
+//! string unchanged, fields ADDITIVE ONLY): measure general relativity's
+//! periodic clock term F·e·√A·sin(Ek) (IS-GPS-200 20.3.3.3.3.1; amplitude
+//! c·F·e·√A ≈ 14 m for e ≈ 0.02) from the station's own data by switching
+//! it OFF for named GPS satellites. Env var CLOCK_BIAS_RELATIVITY_OFF_PRNS
+//! (read ONCE at start; comma-separated canonical labels "G07,G24"; GPS
+//! only; unset/blank = inactive; any non-GPS or malformed token refuses
+//! to start, exit 78 = EX_CONFIG) names the experiment satellites. Each is
+//! built exactly as today, then broadcast::relativistic_periodic_s — the
+//! term the modeled clock contains, evaluated with the SAME Ek — is
+//! removed from its corrected pseudorange (the model now lacks the term),
+//! and the row is EXPERIMENT-CLASS: it never enters either solve (not in
+//! n_sat/n_gps, never an A/B member, never slip-dropped — its smoother
+//! resets count as slips_unused), but it IS logged in `residuals` against
+//! the final weighted clock as [label, r_m, 0.0, fresh|pred, "exp"] — a
+//! third verdict beside ok/rej, weight 0.0 because it carried none. Every
+//! row published while the switch is active carries the additive
+//! `relativity_off: ["G07", ...]` (omitted when inactive). The exp row's
+//! residual therefore reads (its ordinary noise) MINUS c·dt_rel: the
+//! sinusoid the analysis fits over an orbit is the relativistic term with
+//! the sign flipped. Clock consequence: when the named satellite would
+//! have been excluded anyway (no ephemeris, cn0/lock filter, or rejected
+//! by the studentized gate — the final solve runs over the accepted set
+//! alone) the published clock is unchanged; when it would have been a
+//! member the solve simply has one fewer satellite, which the identity
+//! counters show. A restart with the switch rolls `gen` as any producer
+//! restart does, so switched and unswitched rows never share a series.
+//!
+//! Experiment-class rows still count in n_fresh/n_pred (stream-event
+//! semantics, like unbuilt sats) but never in n_sat/n_gps; their exp
+//! residuals carry weight 0.0 and pass NO elevation gate — analyses must
+//! apply their own elevation mask and use the fresh|pred tag.
+//!
 //! v4 (2026-08-30): post-rejection constellation identity and a strict
 //! paired-A/B membership gate. v3 (2026-08-29) added the GPS+BDS vector.
 //! The motivation is
@@ -143,7 +176,10 @@
 //!    until 2026-09-03, scaled since). No median normalization, as v1.
 
 use hackrf_gnss::beidou_d1::{parse_rinex_bds, sat_at_txtime_bds};
-use hackrf_gnss::gps::broadcast::{parse_rinex_gal, parse_rinex_gps, sat_at_txtime_gal, wrap_tk, BrdcEph};
+use hackrf_gnss::gps::broadcast::{
+    parse_rinex_gal, parse_rinex_gps, relativistic_periodic_gps_s, sat_at_txtime_gal, wrap_tk,
+    BrdcEph, C_LIGHT,
+};
 use hackrf_gnss::gps::hatch::Hatch;
 use hackrf_gnss::gps::pvt::{ClockFix, ClockResidual};
 use hackrf_gnss::sbas::{geo_at_txtime, GeoEph};
@@ -206,6 +242,13 @@ const INNOV_CONTIG_S: f64 = 2.6;
 /// resets the smoother. Code noise is ~10–30 m, so it fires only on a real
 /// discontinuity (v2 amendment value, unchanged).
 const INNOV_GATE_M: f64 = 500.0;
+/// Relativity-off experiment switch (2026-09-04): comma-separated canonical
+/// GPS labels ("G07,G24") whose modeled clock drops the periodic
+/// relativistic term. Read once at start; see [`parse_relativity_off`]
+/// for the exact grammar and the fail-closed rules.
+const RELATIVITY_OFF_ENV: &str = "CLOCK_BIAS_RELATIVITY_OFF_PRNS";
+/// sysexits.h EX_CONFIG: the producer refuses to start on a bad switch.
+const EX_CONFIG: i32 = 78;
 
 /// Constellation of one built measurement (the per-row identity the
 /// accepted-set counters and the dropped_slip labels are derived from).
@@ -335,6 +378,144 @@ fn residual_rows(residuals: &[ClockResidual], cls: &[Cls], prn: &[u8], fresh: &[
             json!([label, r_m, w, kind, verdict])
         })
         .collect()
+}
+
+/// Relativity-off experiment (2026-09-04): parse CLOCK_BIAS_RELATIVITY_OFF_PRNS.
+/// Grammar, fail-closed: `None`, empty or all-whitespace → inactive
+/// (empty list). Otherwise a comma-separated list of tokens, each trimmed
+/// of ASCII whitespace and required to be EXACTLY the canonical label
+/// `G` + two digits with PRN 1..=32 ("G07"; "G7", "g07", "G33", "G00" are
+/// malformed). A token naming another constellation (C/E/S/R/J/I prefix)
+/// is refused with a GPS-only message; an empty token (",," or a trailing
+/// comma) is malformed. Duplicates collapse; the result is sorted. Pure
+/// so the window tests exercise every rule without a process exit.
+fn parse_relativity_off(raw: Option<&str>) -> Result<Vec<u8>, String> {
+    let raw = match raw {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return Ok(Vec::new()),
+    };
+    let mut prns: Vec<u8> = Vec::new();
+    for tok in raw.split(',') {
+        let t = tok.trim();
+        if t.is_empty() {
+            return Err(format!("{RELATIVITY_OFF_ENV}: empty token in {raw:?} (trailing or doubled comma)"));
+        }
+        if !t.is_ascii() {
+            return Err(format!("{RELATIVITY_OFF_ENV}: malformed token {t:?} (non-ASCII)"));
+        }
+        let b = t.as_bytes();
+        if matches!(b[0], b'C' | b'E' | b'S' | b'R' | b'J' | b'I' | b'c' | b'e' | b's' | b'r' | b'j' | b'i') {
+            return Err(format!(
+                "{RELATIVITY_OFF_ENV}: {t:?} is not a GPS satellite — the relativity-off switch is GPS only for now"
+            ));
+        }
+        let prn = match (b.len(), b[0], t[1..].parse::<u8>()) {
+            (3, b'G', Ok(p)) if b[1].is_ascii_digit() && b[2].is_ascii_digit() && (1..=32).contains(&p) => p,
+            _ => {
+                return Err(format!(
+                    "{RELATIVITY_OFF_ENV}: malformed token {t:?} — expected the canonical GPS label Gnn (G01..G32)"
+                ))
+            }
+        };
+        if !prns.contains(&prn) {
+            prns.push(prn);
+        }
+    }
+    prns.sort_unstable();
+    Ok(prns)
+}
+
+/// The loud stderr banner (once at start) for an active relativity-off
+/// switch — the operator must never mistake an experiment series for a
+/// production one.
+fn relativity_off_banner(labels: &[String]) -> String {
+    let list = labels.join(", ");
+    let rule = "=".repeat(80);
+    [
+        String::new(),
+        rule.clone(),
+        format!("  RELATIVITY-OFF EXPERIMENT ACTIVE  ({RELATIVITY_OFF_ENV})"),
+        "  GPS satellites modeled WITHOUT the periodic relativistic clock term".to_string(),
+        format!("  F*e*sqrt(A)*sin(Ek):  {list}"),
+        "  These rows are EXCLUDED from the clock solve (not in n_sat/n_gps, never".to_string(),
+        "  A/B members, never slip-dropped; their resets count as slips_unused) and".to_string(),
+        "  are logged in `residuals` with verdict \"exp\" (weight 0.0) against the".to_string(),
+        format!("  final weighted clock. Every row carries relativity_off: [{list}] while"),
+        "  this switch is active. Unset the variable and restart to end it.".to_string(),
+        rule,
+        String::new(),
+    ]
+    .join("\n")
+}
+
+/// Undo the relativistic clock correction on a built measurement: the
+/// corrected pseudorange (km) carries c·dt_sv with dt_sv = poly + dt_rel −
+/// tgd, so a model WITHOUT the term is the same row minus c·dt_rel. (A
+/// literal "add c·dt_rel" would double-apply the correction.) `rel_s` must
+/// be the term evaluated at the clock's own evaluation time — see
+/// [`build_meas_detailed`].
+fn strip_relativity(m: hackrf_gnss::gps::pvt::Meas, rel_s: f64) -> hackrf_gnss::gps::pvt::Meas {
+    hackrf_gnss::gps::pvt::Meas {
+        sat: m.sat,
+        pseudorange: m.pseudorange - rel_s * 299_792.458,
+        clock_free: m.clock_free,
+    }
+}
+
+/// Residual (metres) of one measurement against a clock (km), by exactly
+/// pvt::solve_clock_only_detailed's definition: y = pseudorange − |anchor −
+/// sat|, r_m = (y − clock)·1000. Used for the experiment-class rows, which
+/// the solver never saw.
+fn exp_residual_m(m: &hackrf_gnss::gps::pvt::Meas, anchor_km: [f64; 3], clock_km: f64) -> f64 {
+    let d = [anchor_km[0] - m.sat[0], anchor_km[1] - m.sat[1], anchor_km[2] - m.sat[2]];
+    let g = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    ((m.pseudorange - g) - clock_km) * 1000.0
+}
+
+/// One built measurement with its identity + flags: (Meas, Cls, prn,
+/// contributed-with-a-reset-this-epoch, anchor-used-broadcast-GGTO,
+/// fresh-code-update (else carrier-predicted), experiment-class
+/// (relativity-off: never a solve member)).
+type Built = (hackrf_gnss::gps::pvt::Meas, Cls, u8, bool, bool, bool, bool);
+
+/// Split the built set into (solve set, experiment rows) — the exp rows
+/// leave BEFORE the emit gate, the frozen-removal settlement, the slip
+/// plan and both solves, so nothing the row's identity describes can ever
+/// contain them. Pure for the window tests.
+fn partition_experiment(meas: Vec<Built>) -> (Vec<Built>, Vec<Built>) {
+    meas.into_iter().partition(|r| !r.6)
+}
+
+/// Apply the relativity-off experiment's additive fields to an assembled
+/// row: `relativity_off` (the canonical labels, on EVERY row while the
+/// switch is active — even when none of them is in view) and the exp
+/// entries appended to `residuals` as [label, r_m (0.1 m), 0.0, "fresh"|
+/// "pred", "exp"] (weight 0.0: the row carried none). `exp` is (label,
+/// r_m, fresh) per experiment row, r_m from [`exp_residual_m`] against the
+/// final weighted clock. Inactive switch (empty `relativity_off`) → the
+/// row is untouched, exp rows or not (there can be none).
+fn apply_relativity_experiment(row: &mut Value, relativity_off: &[String], exp: &[(String, f64, bool)]) {
+    if relativity_off.is_empty() {
+        return;
+    }
+    row["relativity_off"] = json!(relativity_off);
+    if exp.is_empty() {
+        return;
+    }
+    let entries: Vec<Value> = exp
+        .iter()
+        .map(|(label, r_m, fresh)| {
+            let r_m = (r_m * 10.0).round() / 10.0;
+            let kind = if *fresh { "fresh" } else { "pred" };
+            json!([label, r_m, 0.0, kind, "exp"])
+        })
+        .collect();
+    if !row.get("residuals").is_some_and(Value::is_array) {
+        row["residuals"] = json!([]);
+    }
+    if let Some(arr) = row["residuals"].as_array_mut() {
+        arr.extend(entries);
+    }
 }
 
 /// Assemble the jsonl epoch row (pure for the window tests). `cls`/`prn`/
@@ -555,6 +736,11 @@ fn tropo_delay_m(site_alt_m: f64, el_rad: f64) -> f64 {
     (ztd * map).clamp(0.0, 35.0)
 }
 
+/// The un-instrumented GPS builder (its Meas is pinned byte-identical to
+/// [`build_meas_detailed`]'s by the window tests; main uses the detailed
+/// form so the experiment can strip the term on the same row).
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
 fn build_meas(
     prn: u8,
     rho_m: f64,
@@ -567,6 +753,35 @@ fn build_meas(
     sbas_lt: &HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)>,
     sbas_dnu: &HashMap<u8, f64>,
 ) -> Option<hackrf_gnss::gps::pvt::Meas> {
+    build_meas_detailed(prn, rho_m, t_tx, ephs, site_m, site_lla, igp_delay, sbas_prc, sbas_lt, sbas_dnu)
+        .map(|(m, _, _)| m)
+}
+
+/// [`build_meas`] plus the relativity-off experiment's inputs: returns
+/// (Meas, dt_rel_s, t_sv) where `t_sv` is the GPS time at which the SV
+/// clock inside `Meas` was evaluated and `dt_rel_s` =
+/// broadcast::relativistic_periodic_gps_s(eph, t_sv) — the periodic
+/// relativistic term that dt_sv contains, computed with the SAME Ek.
+/// The Meas is byte-identical to build_meas's (same ops, same order; the
+/// extra bookkeeping touches nothing on that path). Reconstruction of
+/// `t_sv`: snapshot::sat_at_txtime_impl evaluates sat_clock at tow − τ
+/// with τ = |sat − rx|/C_LIGHT from its last light-time pass, and returns
+/// that very |sat − rx| as `rng`, so tow − rng / C_LIGHT reproduces the
+/// clock's argument bit for bit (the window test
+/// `sv_clock_evaluation_time_is_reconstructed_bit_exactly` pins it).
+#[allow(clippy::too_many_arguments)]
+fn build_meas_detailed(
+    prn: u8,
+    rho_m: f64,
+    t_tx: f64,
+    ephs: &HashMap<u8, BrdcEph>,
+    site_m: [f64; 3],
+    site_lla: [f64; 3],
+    igp_delay: &HashMap<(i16, i16), f64>,
+    sbas_prc: &HashMap<u8, (f64, f64)>,
+    sbas_lt: &HashMap<u8, (hackrf_gnss::sbas::LtCorr, f64)>,
+    sbas_dnu: &HashMap<u8, f64>,
+) -> Option<(hackrf_gnss::gps::pvt::Meas, f64, f64)> {
     if sbas_dnu.contains_key(&prn) {
         return None; // UDREI >= 14 exclusion
     }
@@ -574,12 +789,16 @@ fn build_meas(
     let (_, dt0, _) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, t_tx, site_m);
     let mut a = t_tx - dt0 + 0.075;
     let (mut sat_m, mut dt_sv) = ([0.0; 3], dt0);
+    // GPS time the SV clock in dt_sv was evaluated at (see the doc above)
+    let mut t_sv = t_tx;
     for _ in 0..2 {
         let (s, d, r) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(eph, a, site_m);
         sat_m = s;
         dt_sv = d;
+        t_sv = a - r / C_LIGHT;
         a = t_tx - d + r / 299_792_458.0;
     }
+    let rel_s = relativistic_periodic_gps_s(eph, t_sv);
     
     // SBAS Fast Corrections (PRC)
     let prc = sbas_prc.get(&prn).map(|&(p, _)| p).unwrap_or(0.0);
@@ -626,11 +845,12 @@ fn build_meas(
     // Tropospheric Slant Delay
     let tropo_m = tropo_delay_m(site_lla[2], el);
 
-    Some(hackrf_gnss::gps::pvt::Meas {
+    let m = hackrf_gnss::gps::pvt::Meas {
         sat: [sat_m[0] / 1000.0, sat_m[1] / 1000.0, sat_m[2] / 1000.0],
         pseudorange: (rho_m + prc - iono_m - tropo_m) / 1000.0 + (dt_sv + daf0) * 299_792.458,
         clock_free: false,
-    })
+    };
+    Some((m, rel_s, t_sv))
 }
 
 /// BDS twin of build_meas, mirroring live_fix.rs:763-780 (the "beidou"
@@ -812,6 +1032,21 @@ fn main() {
     let mut bds_ephs = load_bds_ephs(); // same RINEX file, same cadence
     let mut gal_ephs = load_gal_ephs(); // same RINEX file, same cadence
     let mut eph_loaded = unix_now();
+    // Relativity-off experiment switch: read ONCE (a change is a config
+    // change → restart, new gen), fail-closed on anything but canonical
+    // GPS labels, loud banner when active.
+    let env_raw = std::env::var_os(RELATIVITY_OFF_ENV).map(|v| v.to_string_lossy().into_owned());
+    let relativity_off: Vec<u8> = match parse_relativity_off(env_raw.as_deref()) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("clock_bias: refusing to start — {msg}");
+            std::process::exit(EX_CONFIG);
+        }
+    };
+    let relativity_off_labels: Vec<String> = relativity_off.iter().map(|&p| Cls::Gps.label(p)).collect();
+    if !relativity_off_labels.is_empty() {
+        eprint!("{}", relativity_off_banner(&relativity_off_labels));
+    }
     // the surveyed site.json anchor: site_m (metres) is the light-time
     // anchor for sat_at_txtime_pub (live_fix's site_m), anchor_km is the
     // FIXED position of the clock-only solve. Computed once — a site.json
@@ -946,10 +1181,9 @@ fn main() {
         }
 
         let site_lla = site_lla();
-        // built measurements with their identity + slip + GGTO + path flags:
-        // (Meas, Cls, prn, contributed-with-a-reset-this-epoch,
-        //  anchor-used-broadcast-GGTO, fresh-code-update (else carrier-predicted))
-        let mut meas: Vec<(hackrf_gnss::gps::pvt::Meas, Cls, u8, bool, bool, bool)> = Vec::new();
+        // built measurements with their identity + slip + GGTO + path +
+        // experiment flags — see the `Built` alias
+        let mut meas: Vec<Built> = Vec::new();
         let mut slips = 0u32;
         // fix 1: resets on sats that touched no member of this epoch's set
         let mut slips_unused = 0u32;
@@ -974,6 +1208,9 @@ fn main() {
             if cls == Cls::Sbas && !GEO_RANGING_PRNS.contains(&prn) {
                 continue; // GEO ranging is whitelisted (see the const)
             }
+            // relativity-off experiment: this sat's row is experiment-class
+            // (built without the term, never a solve member, logged "exp")
+            let exp = cls == Cls::Gps && relativity_off.contains(&prn);
             if s["cn0_proxy"].as_f64().unwrap_or(0.0) < 30.0 { continue; }
             let lock_s = s["lock_s"].as_f64().unwrap_or(0.0);
             if lock_s < 20.0 { continue; }
@@ -1021,7 +1258,9 @@ fn main() {
                         p.stream_epoch = s_epoch;
                         p.contrib_valid = false;
                     }
-                    if was_contrib {
+                    // (an exp sat is never a member, so its reset can
+                    // touch no member of the set: slips_unused)
+                    if was_contrib && !exp {
                         removed_contrib.push(cls.label(prn));
                     } else {
                         slips_unused += 1;
@@ -1053,7 +1292,9 @@ fn main() {
                         Cls::Gal => build_meas_gal(
                             prn, rho_used, t_tx_gal, &gal_ephs, site_m, site_lla, &igp_delay,
                         ),
-                        Cls::Gps => build_meas(
+                        // (experiment-class: the term the clock contains,
+                        // at the clock's own evaluation time, removed)
+                        Cls::Gps => build_meas_detailed(
                             prn,
                             rho_used,
                             t_tx_used,
@@ -1064,7 +1305,8 @@ fn main() {
                             &sbas_prc,
                             &sbas_lt,
                             &sbas_dnu,
-                        ),
+                        )
+                        .map(|(m, rel_s, _)| if exp { strip_relativity(m, rel_s) } else { m }),
                     };
                     if let Some(m) = m {
                         match cls {
@@ -1074,7 +1316,7 @@ fn main() {
                         }
                         // predicted rows carry no reset by construction
                         // (a reset on the frozen path voids the chain above)
-                        meas.push((m, cls, prn, false, cls == Cls::Gal && ggto_used, false));
+                        meas.push((m, cls, prn, false, cls == Cls::Gal && ggto_used, false, exp));
                     }
                     n_pred += 1;
                 }
@@ -1115,7 +1357,8 @@ fn main() {
                 Cls::Gal => {
                     build_meas_gal(prn, rho_s, t_tx_gal, &gal_ephs, site_m, site_lla, &igp_delay)
                 }
-                Cls::Gps => build_meas(
+                // (experiment-class: see the frozen path)
+                Cls::Gps => build_meas_detailed(
                     prn,
                     rho_s,
                     t_tx,
@@ -1126,7 +1369,8 @@ fn main() {
                     &sbas_prc,
                     &sbas_lt,
                     &sbas_dnu,
-                ),
+                )
+                .map(|(m, rel_s, _)| if exp { strip_relativity(m, rel_s) } else { m }),
             };
             if let Some(m) = m {
                 match cls {
@@ -1137,10 +1381,15 @@ fn main() {
                 // `reset` is exactly the event the `slips` counter counts
                 // for this sat — the lever-3b drop plan keys off it. Fix 1:
                 // counted HERE, only when the sat actually enters the set.
+                // An exp row is not a member: its reset is slips_unused.
                 if reset {
-                    slips += 1;
+                    if exp {
+                        slips_unused += 1;
+                    } else {
+                        slips += 1;
+                    }
                 }
-                meas.push((m, cls, prn, reset, cls == Cls::Gal && ggto_used, true));
+                meas.push((m, cls, prn, reset, cls == Cls::Gal && ggto_used, true, exp));
             } else if reset {
                 // fix 1: the reset happened but nothing was built (no
                 // ephemeris / stale batch / DNU) — the sat is not a member
@@ -1149,6 +1398,12 @@ fn main() {
                 slips_unused += 1;
             }
         }
+        // Relativity-off experiment (2026-09-04): the exp rows leave the
+        // set HERE — before the emit gate, the frozen-removal settlement,
+        // the slip plan and both solves — so nothing the row's identity
+        // describes can contain them. They rejoin only in the residual
+        // log, against the final clock (apply_relativity_experiment).
+        let (mut meas, exp_rows) = partition_experiment(meas);
         if meas.len() < 4 { continue; }   // emit gate 5->4 (window pkg, UNBUILT): the n>=5 floor was the hour-gate killer (2026-08-29 bake-off: duty 24.7% -> 38.3%). ISB tension: a 2-state (clock+ISB) solve needs n>=5 with BDS OR GAL present (GAL adds the GGTO-residual + E1B-vs-C/A receiver ISB on top of the BDS one) — when ISB surgery lands, re-raise the gate for mixed solves or constrain ISB from the recent estimate at n==4.
         // Fix 1: live contributors removed by a frozen-path reset are
         // settled by the lever-3b rule on the pre-removal count — recorded
@@ -1162,7 +1417,7 @@ fn main() {
         // epoch (the analyzer's slips==0 quality gate would exclude it).
         // The dropped resets leave the published `slips` count; the row
         // records them as dropped_slip labels instead.
-        let slipped: Vec<bool> = meas.iter().map(|&(_, _, _, s, _, _)| s).collect();
+        let slipped: Vec<bool> = meas.iter().map(|&(_, _, _, s, _, _, _)| s).collect();
         let drop = plan_slip_drop(&slipped);
         if !drop.is_empty() {
             dropped_slip.extend(drop.iter().map(|&i| meas[i].1.label(meas[i].2)));
@@ -1175,12 +1430,12 @@ fn main() {
             }
             meas = keep;
         }
-        let cls_of: Vec<Cls> = meas.iter().map(|&(_, c, _, _, _, _)| c).collect();
-        let prn_of: Vec<u8> = meas.iter().map(|&(_, _, p, _, _, _)| p).collect();
-        let ggto_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, g, _)| g).collect();
-        let fresh_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, _, f)| f).collect();
+        let cls_of: Vec<Cls> = meas.iter().map(|&(_, c, _, _, _, _, _)| c).collect();
+        let prn_of: Vec<u8> = meas.iter().map(|&(_, _, p, _, _, _, _)| p).collect();
+        let ggto_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, g, _, _)| g).collect();
+        let fresh_of: Vec<bool> = meas.iter().map(|&(_, _, _, _, _, f, _)| f).collect();
         let meas: Vec<hackrf_gnss::gps::pvt::Meas> =
-            meas.into_iter().map(|(m, _, _, _, _, _)| m).collect();
+            meas.into_iter().map(|(m, _, _, _, _, _, _)| m).collect();
         // CAVEAT: ONE clock state for FOUR constellations — the GPS/BDS/GAL
         // inter-system channel biases are unmodeled in this 1-state solve (a
         // weighted mean with studentized rejection; no ISB state — surgery
@@ -1206,7 +1461,7 @@ fn main() {
             // ab_membership_match:false and both accepted counts, and the
             // analyzer keeps it out of claims (visible in data, excluded
             // from claims). epoch_row derives the flag and the counts.
-            let row = epoch_row(
+            let mut row = epoch_row(
                 &a,
                 &b,
                 &cls_of,
@@ -1224,6 +1479,14 @@ fn main() {
                 &dropped_slip,
                 &gen_id,
             );
+            // Relativity-off experiment: the exp rows, never seen by either
+            // solve, are logged against the FINAL weighted clock with
+            // verdict "exp"; relativity_off rides every row while active.
+            let exp_log: Vec<(String, f64, bool)> = exp_rows
+                .iter()
+                .map(|r| (r.1.label(r.2), exp_residual_m(&r.0, anchor_km, a.clock_km), r.5))
+                .collect();
+            apply_relativity_experiment(&mut row, &relativity_off_labels, &exp_log);
             use std::io::Write;
             if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(OUT) {
                 let _ = writeln!(f, "{}", row);
@@ -1232,7 +1495,7 @@ fn main() {
             // every other producer): the panel reads the live clock bias
             // without parsing the archive. Fail-closed by TTL: when no
             // clean solve exists the file simply expires.
-            let st = json!({
+            let mut st = json!({
                 "schema": "clock_bias-v4",
                 "epoch": epoch,
                 "ttl_s": 10,
@@ -1256,6 +1519,10 @@ fn main() {
                     "gen": gen_id,
                 },
             });
+            // additive, only while the switch is active (never a null key)
+            if let Some(v) = row.get("relativity_off") {
+                st["clock_bias"]["relativity_off"] = v.clone();
+            }
             let tmp = format!("{STATE_CB}.tmp");
             if fs::write(&tmp, serde_json::to_string(&st).unwrap_or_default()).is_ok() {
                 let _ = fs::rename(&tmp, STATE_CB);
@@ -1749,5 +2016,227 @@ E02 2026 09 01 20 00 00 6.600067717955e-05 2.685851541173e-12 0.000000000000e+00
         let bare = epoch_row(&a, &b, &cls, &prn, &[false; 6], &fresh, &[], 1.0, 1, 1, 4, 2, 0, 0, &[], "t");
         assert!(bare.get("residuals").is_none());
         assert_eq!(bare["slips_unused"], 0);
+    }
+
+    // ------------------------------------ relativity-off experiment (2026-09-04)
+
+    /// The switch grammar, every fail-closed rule, without a process exit.
+    #[test]
+    fn relativity_off_parser_is_strict_and_gps_only() {
+        assert_eq!(parse_relativity_off(None).unwrap(), Vec::<u8>::new(), "unset = inactive");
+        assert_eq!(parse_relativity_off(Some("")).unwrap(), Vec::<u8>::new());
+        assert_eq!(parse_relativity_off(Some("  \t ")).unwrap(), Vec::<u8>::new());
+        assert_eq!(parse_relativity_off(Some("G07")).unwrap(), vec![7]);
+        assert_eq!(parse_relativity_off(Some("G07, G24")).unwrap(), vec![7, 24]);
+        assert_eq!(parse_relativity_off(Some(" G24 ,G07,G07 ")).unwrap(), vec![7, 24], "dedup + sorted");
+        assert_eq!(parse_relativity_off(Some("G01,G32")).unwrap(), vec![1, 32]);
+        // non-GPS constellations: refused with the GPS-only message
+        for bad in ["C07", "E05", "S131", "R01", "J01", "I01", "e05", "G07,C32"] {
+            let err = parse_relativity_off(Some(bad)).unwrap_err();
+            assert!(err.contains("GPS only"), "{bad:?} -> {err}");
+        }
+        // malformed tokens: never guessed at
+        for bad in ["G7", "g07", "G007", "G33", "G00", "G-1", "G+7", "07", "G07,,G24", "G07,", ",G07", "G0a", "Ĝ07", "G07 G24"] {
+            let err = parse_relativity_off(Some(bad)).unwrap_err();
+            assert!(err.contains(RELATIVITY_OFF_ENV), "{bad:?} -> {err}");
+            assert!(!err.contains("GPS only"), "{bad:?} is malformed, not non-GPS: {err}");
+        }
+        // the banner names every label and the env var
+        let banner = relativity_off_banner(&["G07".to_string(), "G24".to_string()]);
+        assert!(banner.contains("RELATIVITY-OFF EXPERIMENT ACTIVE"));
+        assert!(banner.contains(RELATIVITY_OFF_ENV));
+        assert!(banner.contains("G07, G24"));
+    }
+
+    /// Live G07 record (tests/fixtures/relativity/gps_rel_eval.json) in a
+    /// one-record RINEX so build_meas runs the real chain.
+    const G07_RNX: &str = "\
+     3.05           NAVIGATION DATA     MIXED               RINEX VERSION / TYPE
+                                                            END OF HEADER
+G07 2026 09 04 06 00 00-2.215462736785e-04-3.296918293927e-12 0.000000000000e+00
+     7.700000000000e+01-1.853125000000e+01 4.966278293997e-09-1.184373590828e-01
+    -8.661299943924e-07 2.093016507570e-02 7.657334208488e-06 5.153760953903e+03
+     4.536000000000e+05-1.993030309677e-07 2.943443499676e+00 3.203749656677e-07
+     9.516107696539e-01 2.325937500000e+02-1.950459143607e+00-8.424993791951e-09
+     2.207234797332e-10 1.000000000000e+00 2.434000000000e+03 0.000000000000e+00
+     2.000000000000e+00 0.000000000000e+00-1.071020960808e-08 7.700000000000e+01
+     4.464180000000e+05 4.000000000000e+00                                      ";
+
+    /// The lemma build_meas_detailed's `t_sv` rests on: sat_at_txtime_pub
+    /// evaluates the SV clock at tow − rng/C_LIGHT, bit for bit.
+    #[test]
+    fn sv_clock_evaluation_time_is_reconstructed_bit_exactly() {
+        let ephs = parse_rinex_gps(G07_RNX);
+        let e = &ephs[&7];
+        let site_m = STATION.map(|x| x * 1000.0);
+        for &tow in &[453_600.0, 453_900.0, 456_300.0, 470_000.0] {
+            let (_, dt, rng) = hackrf_gnss::gps::snapshot::sat_at_txtime_pub(e, tow, site_m);
+            let t_sv = tow - rng / C_LIGHT;
+            assert_eq!(
+                dt.to_bits(),
+                hackrf_gnss::gps::broadcast::sat_clock(e, t_sv).to_bits(),
+                "tow {tow}: clock argument not reconstructed"
+            );
+        }
+    }
+
+    /// build_meas_detailed: the plain Meas is byte-identical to build_meas
+    /// (the non-experiment path is untouched), dt_rel is the term the SV
+    /// clock in that Meas contains at its own evaluation time, and
+    /// strip_relativity removes exactly c·dt_rel from the corrected
+    /// pseudorange. (G07 is below the station's horizon at this epoch —
+    /// tropo 0, iono absent — which is irrelevant to the clock identity.)
+    #[test]
+    fn build_meas_detailed_strips_the_clocks_own_relativistic_term() {
+        let ephs = parse_rinex_gps(G07_RNX);
+        let e = &ephs[&7];
+        let site_m = STATION.map(|x| x * 1000.0);
+        let site_lla = [40.46, -73.8, 30.0];
+        let (igp, prc, lt, dnu) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+        let t_tx = 453_600.0 + 300.0;
+        let rho = 26_600_000.0;
+        let plain = build_meas(7, rho, t_tx, &ephs, site_m, site_lla, &igp, &prc, &lt, &dnu).expect("ranges");
+        let (m, rel_s, t_sv) =
+            build_meas_detailed(7, rho, t_tx, &ephs, site_m, site_lla, &igp, &prc, &lt, &dnu).expect("ranges");
+        assert_eq!(plain.pseudorange.to_bits(), m.pseudorange.to_bits(), "non-experiment path changed");
+        assert_eq!(plain.sat, m.sat);
+        // t_sv is the SV-clock evaluation time: reception `a` minus the
+        // light time, i.e. the GPS TRANSMIT time t_tx - dt_sv (hundreds of
+        // microseconds from t_tx for G07), NOT one light time earlier —
+        // the reception epoch already had the light time added.
+        let dt_sv = hackrf_gnss::gps::broadcast::sat_clock(e, t_sv);
+        assert!((t_sv - (t_tx - dt_sv)).abs() < 1e-6, "t_sv {t_sv} t_tx {t_tx} dt_sv {dt_sv}");
+        // the term at the clock's own time, and the clock minus it is the
+        // polynomial minus TGD (the experiment's model of this satellite)
+        assert_eq!(rel_s, relativistic_periodic_gps_s(e, t_sv));
+        assert!(rel_s.abs() > 1e-10 && rel_s.abs() < 5e-8, "term {rel_s} s (amplitude 4.79e-8)");
+        let dt = wrap_tk(t_sv - e.toc);
+        let poly = e.af0 + e.af1 * dt + e.af2 * dt * dt;
+        let clk = hackrf_gnss::gps::broadcast::sat_clock(e, t_sv);
+        assert!((clk - rel_s - (poly - e.tgd)).abs() < 1e-15);
+        // strip = the same row minus c·dt_rel (km), nothing else
+        let off = strip_relativity(m, rel_s);
+        assert_eq!(off.sat, m.sat);
+        assert!(!off.clock_free);
+        assert_eq!(off.pseudorange.to_bits(), (m.pseudorange - rel_s * 299_792.458).to_bits());
+        let d_m = (m.pseudorange - off.pseudorange) * 1000.0;
+        assert!((d_m - rel_s * C_LIGHT).abs() < 1e-6, "removed {d_m} m vs c·dt_rel {}", rel_s * C_LIGHT);
+        // fail-closed inputs still fail closed
+        assert!(build_meas_detailed(8, rho, t_tx, &ephs, site_m, site_lla, &igp, &prc, &lt, &dnu).is_none());
+    }
+
+    /// An experiment-class satellite never enters the solve set (not in
+    /// n_sat/n_gps, not an accepted index of either solve, not in the slip
+    /// plan) and appears in `residuals` with verdict "exp", weight 0.0,
+    /// its residual reading the removed term; the clock is bit-identical
+    /// to a run in which that satellite was simply absent, and the row
+    /// carries relativity_off.
+    #[test]
+    fn experiment_class_sat_is_logged_exp_and_never_solved() {
+        let clock = 50.0;
+        let m6 = ranges(clock);
+        let prn = [16u8, 4, 7, 27, 31, 9];
+        // the G07 row, built as today and then stripped of a −4.79e-8 s
+        // term (the live G07 amplitude): +14.37 m on its corrected range
+        let rel_s = -4.7924151656860264e-08;
+        let built: Vec<Built> = m6
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| {
+                let exp = i == 2;
+                let m = if exp { strip_relativity(m, rel_s) } else { m };
+                // the exp row even carries a reset flag: it must not reach
+                // the slip plan
+                (m, Cls::Gps, prn[i], exp, false, i != 3, exp)
+            })
+            .collect();
+        let (solve, exp_rows) = partition_experiment(built);
+        assert_eq!(solve.len(), 5);
+        assert_eq!(exp_rows.len(), 1);
+        assert_eq!(exp_rows[0].2, 7);
+        assert!(solve.iter().all(|r| !r.6 && r.2 != 7));
+        let slipped: Vec<bool> = solve.iter().map(|r| r.3).collect();
+        assert!(plan_slip_drop(&slipped).is_empty(), "the exp reset never reaches the plan");
+        let cls_of: Vec<Cls> = solve.iter().map(|r| r.1).collect();
+        let prn_of: Vec<u8> = solve.iter().map(|r| r.2).collect();
+        let fresh_of: Vec<bool> = solve.iter().map(|r| r.5).collect();
+        let meas: Vec<Meas> = solve.iter().map(|r| r.0).collect();
+        let (a, res) = solve_clock_only_detailed(&meas, STATION, true).expect("weighted");
+        let b = solve_clock_only(&meas, STATION, false).expect("unweighted");
+        assert_eq!(a.n_sat, 5);
+        assert_eq!(a.accepted_indices.len(), 5);
+        assert_eq!(b.accepted_indices.len(), 5);
+        // bit-identical to the run where G07 was absent from the input
+        let absent: Vec<Meas> = m6.iter().enumerate().filter(|&(i, _)| i != 2).map(|(_, &m)| m).collect();
+        let a_abs = solve_clock_only(&absent, STATION, true).expect("weighted");
+        assert_eq!(a.clock_km.to_bits(), a_abs.clock_km.to_bits());
+        assert_eq!(a.residual_rms_m.to_bits(), a_abs.residual_rms_m.to_bits());
+        let mut row = epoch_row(&a, &b, &cls_of, &prn_of, &[false; 5], &fresh_of, &res, 1.0, 0, 0, 5, 1, 0, 1, &[], "t");
+        assert_eq!(row["n_sat"], 5);
+        assert_eq!(row["n_gps"], 5);
+        assert_eq!(row["residuals"].as_array().unwrap().len(), 5);
+        assert!(row.get("relativity_off").is_none(), "epoch_row itself is untouched");
+        let labels = vec!["G07".to_string()];
+        let exp_log: Vec<(String, f64, bool)> = exp_rows
+            .iter()
+            .map(|r| (r.1.label(r.2), exp_residual_m(&r.0, STATION, a.clock_km), r.5))
+            .collect();
+        apply_relativity_experiment(&mut row, &labels, &exp_log);
+        assert_eq!(row["relativity_off"], json!(["G07"]));
+        // identity untouched by the experiment log
+        assert_eq!(row["n_sat"], 5);
+        assert_eq!(row["n_gps"], 5);
+        assert_eq!(row["n_sat_weighted"], 5);
+        assert_eq!(row["n_sat_unweighted"], 5);
+        assert_eq!(row["ab_membership_match"], json!(true));
+        let r = row["residuals"].as_array().unwrap();
+        assert_eq!(r.len(), 6, "5 solve rows + 1 exp row");
+        for e in &r[..5] {
+            assert_eq!(e[4], json!("ok"));
+            assert_ne!(e[0], json!("G07"));
+        }
+        let x = r[5].as_array().unwrap();
+        assert_eq!(x.len(), 5);
+        assert_eq!(x[0], json!("G07"));
+        // the residual reads the removed term: −c·dt_rel = +14.37 m → 14.4
+        let r_m = x[1].as_f64().unwrap();
+        assert!((r_m - 14.4).abs() < 0.05, "exp residual {r_m} m");
+        assert_eq!(x[2], json!(0.0), "weight 0.0: the row carried none");
+        assert_eq!(x[3], json!("fresh"));
+        assert_eq!(x[4], json!("exp"));
+        // the exact (unrounded) residual is −c·dt_rel on this exact fixture
+        assert!((exp_log[0].1 - (-rel_s * C_LIGHT)).abs() < 1e-6, "{}", exp_log[0].1);
+    }
+
+    /// relativity_off rides EVERY row while the switch is active — with or
+    /// without an experiment sat in view — and never appears when it is
+    /// inactive; an inactive switch leaves the row byte-identical.
+    #[test]
+    fn relativity_off_field_rides_every_row_only_while_active() {
+        let m = ranges(50.0);
+        let cls = [Cls::Gps; 6];
+        let prn = [16u8, 4, 26, 27, 31, 9];
+        let (a, res) = solve_clock_only_detailed(&m, STATION, true).expect("weighted");
+        let b = solve_clock_only(&m, STATION, false).expect("unweighted");
+        let base = epoch_row(&a, &b, &cls, &prn, &[false; 6], &[true; 6], &res, 1.0, 0, 0, 6, 0, 0, 0, &[], "t");
+        // active, no exp sat in view: the field, no exp residual rows
+        let mut row = base.clone();
+        apply_relativity_experiment(&mut row, &["G07".to_string(), "G24".to_string()], &[]);
+        assert_eq!(row["relativity_off"], json!(["G07", "G24"]));
+        assert_eq!(row["residuals"].as_array().unwrap().len(), 6);
+        // pred-path exp row is labelled "pred"
+        let mut row2 = base.clone();
+        apply_relativity_experiment(&mut row2, &["G07".to_string()], &[("G07".to_string(), -3.98, false)]);
+        let last = row2["residuals"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last, json!(["G07", -4.0, 0.0, "pred", "exp"]));
+        // inactive: untouched, even if (impossibly) handed exp rows
+        let mut row3 = base.clone();
+        apply_relativity_experiment(&mut row3, &[], &[("G07".to_string(), 1.0, true)]);
+        assert_eq!(row3, base);
+        assert!(row3.get("relativity_off").is_none());
+        // a row without any residuals field still gets a well-formed array
+        let mut bare = json!({"schema": "clock_bias-v4"});
+        apply_relativity_experiment(&mut bare, &["G07".to_string()], &[("G07".to_string(), 1.26, true)]);
+        assert_eq!(bare["residuals"], json!([["G07", 1.3, 0.0, "fresh", "exp"]]));
     }
 }
