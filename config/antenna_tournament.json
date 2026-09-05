@@ -1,0 +1,39 @@
+{
+  "schema": "antenna-tournament-config/v1",
+  "receiver_serial": "0000000000000000645061de252d6613",
+  "primary_port": "A0",
+  "topology_source": "Operator's Opera Cake wiring description, 2026-09-04; identities are declarations, not RF verification",
+  "b0_connection": "unknown",
+  "switch": {
+    "board_address": 0,
+    "restore": null,
+    "settle_s": 0.1
+  },
+  "reference_port": "A1",
+  "rounds": 2,
+  "sample_rate_hz": 8000000,
+  "capture_seconds": 0.25,
+  "discard_samples": 65536,
+  "fft_size": 4096,
+  "lna_db": 16,
+  "vga_db": 16,
+  "amp": false,
+  "bias_tee": false,
+  "frequency_offset_hz": 1000000,
+  "max_artifact_bytes": 1073741824,
+  "ports": [
+    {"id": "A1", "label": "Default indoor antenna", "identity_status": "operator_declared", "power_state": "unknown"},
+    {"id": "A2", "label": "Whip or GPS antenna — unidentified", "identity_status": "unknown", "power_state": "unknown"},
+    {"id": "A3", "label": "Outdoor omni", "identity_status": "operator_declared", "power_state": "unknown"},
+    {"id": "A4", "label": "ClearStream via Mohu Leaf amplifier", "identity_status": "operator_declared", "power_state": "amplifier_power_unknown"},
+    {"id": "B1", "label": "ANT500 indoor", "identity_status": "operator_declared", "power_state": "passive_antenna_declared"},
+    {"id": "B2", "label": "WLAN antenna — supported band unverified", "identity_status": "operator_declared_band_unknown", "power_state": "unknown"},
+    {"id": "B3", "label": "Whip or GPS antenna — unidentified", "identity_status": "unknown", "power_state": "unknown"},
+    {"id": "B4", "label": "Indoor omni on stand", "identity_status": "operator_declared", "power_state": "unknown"}
+  ],
+  "targets": [
+    {"id": "fm_92_5", "label": "FM window 92.5 MHz", "signal_hz": 92500000, "signal_half_width_hz": 100000, "guard_inner_hz": 250000, "guard_outer_hz": 450000, "selection_basis": "Repeated feature in archived 2026-09-04 sweeps; transmitter identity not decoded"},
+    {"id": "fm_102_5", "label": "FM window 102.5 MHz", "signal_hz": 102500000, "signal_half_width_hz": 100000, "guard_inner_hz": 250000, "guard_outer_hz": 450000, "selection_basis": "Repeated feature in archived 2026-09-04 sweeps; transmitter identity not decoded"},
+    {"id": "witness_602_80944", "label": "Historical TV witness window 602.809440 MHz", "signal_hz": 602809440, "signal_half_width_hz": 5000, "guard_inner_hz": 15000, "guard_outer_hz": 60000, "selection_basis": "Frequency used by the separate One carrier tracker; modulation and RF channel identity not established by this tournament"}
+  ]
+}
