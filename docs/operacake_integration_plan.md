@@ -23,21 +23,21 @@ The Opera Cake provides two primary bidirectional RF ports (**PA** and **PB**) a
                   +-------------------------------------------------------+
                   |               HACKRF OPERA CAKE                       |
                   |                                                       |
-  Zenith L1/B1 -->| A1 [RHCP High-El Active Ant]                          |
-  Bistatic L1  -->| A2 [Horizon Grazing Ant / GNSS-R]   [PA] -------------> HackRF Pro RF IN
-  Cross-Pol    -->| A3 [LHCP Ground-Bounce Ant]          |                (MAX2839 Front End)
-  Noise Cal    -->| A4 [50-Ohm Precision Termination]    |                
+  Default Indoor->| A1 [Telescopic Whip - Wideband/FM]                    |
+  Passive Whip  ->| A2 [VHF/FM Resonant Metallic Whip]  [A0 / PA] --------> HackRF Pro RF IN
+  Outdoor Omni  ->| A3 [High-Band Cellular / PCS / Omni] |                (MAX2839 Front End)
+  Mohu+ClearStrm->| A4 [Mohu Leaf Amp -> ClearStream TV] |                
                   |                                      | (Interconnect) 
-  Baseline Ant1-->| B1 [West Horizon Array Node]         |                
-  Baseline Ant2-->| B2 [East Horizon Array Node]        [PB] -------------> HackRF One RF IN
-  Terrestrial  -->| B3 [Vertical Dipole (ATSC ch35)]                      (ClearStream / Monitoring)
-  Loopback Cal -->| B4 [Coupled RF Loopback Calibrator]                   
+  ANT500 Indoor ->| B1 [ANT500 Telescopic 75-1000 MHz]   |                
+  WLAN 2.4 GHz  ->| B2 [2.4 GHz WiFi Rubber Ducky]      [B0 / PB] --------> (Optional Secondary)
+  Active GPS Ant->| B3 [Active GPS Patch (Unpowered LNA)]                 
+  Indoor Omni St->| B4 [VHF High-Band Resonant Stand]                     
                   +-------------------------------------------------------+
                                     |                |
                           Control & Power: P20/P22 Expansion
                                     |                |
                   +-------------------------------------------------------+
-                  |               HACKRF PRO / ONE BENCH                  |
+                  |               HACKRF PRO BENCH                        |
                   +-------------------------------------------------------+
 ```
 
