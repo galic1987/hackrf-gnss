@@ -524,10 +524,10 @@
     document.getElementById("sigmaVal").textContent = (st.max_sigma_phi_rad || 0.04).toFixed(3);
     document.getElementById("s4Val").textContent = (st.max_s4 || 0.06).toFixed(3);
     if (st.delta_stec_tecu !== null && st.delta_stec_tecu !== undefined) {
-      document.getElementById("tecVal").textContent = st.delta_stec_tecu.toFixed(2);
+      document.getElementById("tecVal").textContent = (st.delta_stec_tecu || 0).toFixed(2);
     }
     if (st.roti_tecu_per_min !== null && st.roti_tecu_per_min !== undefined) {
-      document.getElementById("rotiVal").textContent = st.roti_tecu_per_min.toFixed(2);
+      document.getElementById("rotiVal").textContent = (st.roti_tecu_per_min || 0).toFixed(2);
     }
 
     // Push to chart history
@@ -611,11 +611,11 @@
       }
       var ad = document.getElementById("atscDisp");
       if (ad && st.phase.disp_mm !== undefined) {
-        ad.textContent = (st.phase.disp_mm >= 0 ? "+" : "") + st.phase.disp_mm.toFixed(2) + " mm";
+        ad.textContent = (((st.phase||{}).disp_mm||0) >= 0 ? "+" : "") + ((st.phase||{}).disp_mm||0).toFixed(2) + " mm";
       }
       var as = document.getElementById("atscSigma");
       if (as && st.phase.sigma_mm !== undefined) {
-        as.textContent = "±" + st.phase.sigma_mm.toFixed(3) + " mm";
+        as.textContent = "±" + ((st.phase||{}).sigma_mm||0).toFixed(3) + " mm";
       }
     }
 
@@ -633,7 +633,7 @@
     }
     var tr = document.getElementById("tdcResidual");
     if (tr && st.clock_bias && st.clock_bias.residual_rms_m !== undefined) {
-      tr.textContent = st.clock_bias.residual_rms_m.toFixed(1) + " m";
+      tr.textContent = ((st.clock_bias||{}).residual_rms_m||0).toFixed(1) + " m";
     }
     var tg = document.getElementById("tdcGpsdo");
     if (tg && st.gpsdo) {
@@ -647,15 +647,15 @@
     // Card 5: Inter-System Bias (ISB)
     if (st.isb_median_ns !== undefined && st.isb_median_ns !== null) {
       var iv = document.getElementById("isbVal");
-      if (iv) iv.innerHTML = (st.isb_median_ns >= 0 ? "+" : "") + st.isb_median_ns.toFixed(2) + ' <span class="unit">ns</span>';
+      if (iv) iv.innerHTML = (st.isb_median_ns >= 0 ? "+" : "") + (st.isb_median_ns || 0).toFixed(2) + ' <span class="unit">ns</span>';
       var imad = document.getElementById("isbMad");
-      if (imad && st.isb_mad_ns !== undefined) imad.innerHTML = "&plusmn;" + st.isb_mad_ns.toFixed(2) + " ns";
+      if (imad && st.isb_mad_ns !== undefined) imad.innerHTML = "&plusmn;" + (st.isb_mad_ns || 0).toFixed(2) + " ns";
       var ipath = document.getElementById("isbPath");
-      if (ipath && st.isb_equivalent_path_m !== undefined) ipath.innerHTML = (st.isb_equivalent_path_m >= 0 ? "+" : "") + st.isb_equivalent_path_m.toFixed(2) + " m";
+      if (ipath && st.isb_equivalent_path_m !== undefined) ipath.innerHTML = (st.isb_equivalent_path_m >= 0 ? "+" : "") + (st.isb_equivalent_path_m || 0).toFixed(2) + " m";
       var iadev = document.getElementById("isbAdev");
       if (iadev && st.adev_tau_300s !== undefined) iadev.innerHTML = st.adev_tau_300s.toExponential(2);
       var ispan = document.getElementById("isbSpan");
-      if (ispan && st.total_span_hours !== undefined) ispan.textContent = st.total_span_hours.toFixed(1) + " h";
+      if (ispan && st.total_span_hours !== undefined) ispan.textContent = (st.total_span_hours || 0).toFixed(1) + " h";
       var inum = document.getElementById("isbN");
       if (inum && st.n_samples !== undefined) inum.textContent = st.n_samples;
     }
@@ -666,34 +666,34 @@
       var ty = document.getElementById("thermalY");
       if (ty && !isNaN(numY)) ty.innerHTML = (numY >= 0 ? "+" : "") + numY.toExponential(2);
       var tmhz = document.getElementById("thermalMhz");
-      if (tmhz && st.carrier_offset_mhz !== undefined) tmhz.innerHTML = (st.carrier_offset_mhz >= 0 ? "+" : "") + st.carrier_offset_mhz.toFixed(3) + " mHz";
+      if (tmhz && st.carrier_offset_mhz !== undefined) tmhz.innerHTML = (st.carrier_offset_mhz >= 0 ? "+" : "") + (st.carrier_offset_mhz || 0).toFixed(3) + " mHz";
       var tmmd = document.getElementById("thermalMmDay");
       if (tmmd && st.secular_drift_mm_per_day !== undefined) {
         var dStr = Math.abs(st.secular_drift_mm_per_day) >= 1000
           ? (st.secular_drift_mm_per_day / 1000.0).toFixed(2) + " m/d"
-          : st.secular_drift_mm_per_day.toFixed(2) + " mm/d";
+          : (st.secular_drift_mm_per_day || 0).toFixed(2) + " mm/d";
         tmmd.innerHTML = (st.secular_drift_mm_per_day >= 0 ? "+" : "") + dStr;
       }
       var tdiurn = document.getElementById("thermalDiurnal");
       if (tdiurn && st.diurnal_wander_ptp_mm !== undefined) {
         tdiurn.textContent = st.diurnal_wander_ptp_mm >= 1000
           ? (st.diurnal_wander_ptp_mm / 1000.0).toFixed(2) + " m"
-          : st.diurnal_wander_ptp_mm.toFixed(1) + " mm";
+          : (st.diurnal_wander_ptp_mm || 0).toFixed(1) + " mm";
       }
       var tps = document.getElementById("thermalPs");
       if (tps && st.diurnal_wander_ptp_ps !== undefined) {
         tps.textContent = st.diurnal_wander_ptp_ps >= 1000
           ? (st.diurnal_wander_ptp_ps / 1000.0).toFixed(1) + " ns"
-          : st.diurnal_wander_ptp_ps.toFixed(1) + " ps";
+          : (st.diurnal_wander_ptp_ps || 0).toFixed(1) + " ps";
       }
       var trms = document.getElementById("thermalRms");
       if (trms && st.unmodeled_rms_mm !== undefined) {
         trms.textContent = st.unmodeled_rms_mm >= 1000
           ? (st.unmodeled_rms_mm / 1000.0).toFixed(2) + " m"
-          : st.unmodeled_rms_mm.toFixed(1) + " mm";
+          : (st.unmodeled_rms_mm || 0).toFixed(1) + " mm";
       }
       var thours = document.getElementById("thermalHours");
-      if (thours && st.total_span_hours !== undefined) thours.textContent = st.total_span_hours.toFixed(1) + " h";
+      if (thours && st.total_span_hours !== undefined) thours.textContent = (st.total_span_hours || 0).toFixed(1) + " h";
     }
 
     updateTable(st.satellites || {});

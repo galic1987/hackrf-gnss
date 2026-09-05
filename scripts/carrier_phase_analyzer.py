@@ -2,7 +2,13 @@
 """Leg 1 Official Carrier-Phase TDEV Stability Analyzer.
 
 Evaluates continuous carrier-phase tracking records from observations/phase_history.jsonl
-against the re-registered Leg 1 stability gate:
+against an IN-SCRIPT (unregistered) 1 ns stability gate.
+NOTE: the input phase_history.jsonl is the ATSC ch35 PILOT anchor (HackRF One
+vs GPSDO), NOT Leg-1 GNSS carrier phase; a PASS is EXPLORATORY (exit 2), never
+claim-grade. Default window is trailing/latest (no cherry-pick); --scan-longest
+opts back into the min-RMS scan. Real GNSS carrier tooling: carrier_tdev_analyzer.py
+and docs/superpowers/evidence/relativity-carrier-2026-09-04/.
+Original gate line:
   1. Continuous 1-hour span (span >= 3600 s, rows >= 3400, max gap <= 5 s)
   2. Detrended Carrier-Phase RMS < 1.0 ns
   3. NIST SP 1065 Modified-Allan TDEV(tau) < 1.0 ns for tau in [10, 100, 1000] s
@@ -248,7 +254,7 @@ def analyze_carrier_file(
     path=DEFAULT_PATH,
     min_span=MIN_SPAN_S,
     min_rows=MIN_ROWS,
-    window_latest=False,
+    window_latest=True,
     bridge_ab_mismatches=True,
 ):
     """Analyze carrier phase log file and return full verification report.
@@ -409,7 +415,7 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output JSON format")
     parser.add_argument("--min-span", type=float, default=MIN_SPAN_S, help="Min continuous span in seconds")
     parser.add_argument("--min-rows", type=int, default=MIN_ROWS, help="Min rows floor")
-    parser.add_argument("--latest", action="store_true", help="Select latest segment instead of longest")
+    parser.add_argument("--scan-longest", action="store_true", help="Opt in to the old scan for the lowest-RMS window (NOT default; cherry-picks)")
     parser.add_argument("--no-bridge", action="store_true", help="Disable single-row exclusion gap bridging")
     args = parser.parse_args()
 
@@ -417,16 +423,19 @@ def main():
         args.path,
         min_span=args.min_span,
         min_rows=args.min_rows,
-        window_latest=args.latest,
+        window_latest=(not args.scan_longest),
         bridge_ab_mismatches=not args.no_bridge,
     )
 
     if args.json:
         print(json.dumps(rep, indent=2))
-        sys.exit(0 if rep.get("status") == "PASS" else 1)
+        # Charter (GOVERNANCE.md Epistemic Mandate): no PASS/exit-0 without a
+        # registered spec. This gate is in-script and the observable is the
+        # ATSC ch35 pilot anchor, NOT Leg-1 GNSS carrier phase.
+        sys.exit(2 if rep.get("status") == "PASS" else 1)
 
     print("=================================================================")
-    print("        LEG 1 CARRIER-PHASE TDEV STABILITY VERIFICATION          ")
+    print("  ATSC ch35 PILOT ANCHOR — carrier TDEV (EXPLORATORY, unregistered gate) ")
     print("=================================================================")
     print(f"File: {args.path}")
     print(f"Evaluation Window: Deterministic Trailing Rolling Window ({rep.get('span_s', 0):.1f} s)")
