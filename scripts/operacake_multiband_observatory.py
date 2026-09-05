@@ -269,11 +269,10 @@ def compute_cross_port_metrology(atsc_obs, adsb_obs, fm_obs):
     }
 
 
-def main():
-    print(f"[{time.strftime('%H:%M:%S')}] Starting Opera Cake Multi-Band Scientific Observatory...")
-    
+def run_single_cycle():
     epoch_start = time.time()
     
+    print(f"\n[{time.strftime('%H:%M:%S')}] Executing Opera Cake Multi-Band Scientific Survey...")
     print("  [1/3] Observing ATSC Ch 35 TV Pilot on Port A4 (ClearStream TV)...")
     atsc_obs = observe_atsc_pilot()
     print(f"        -> ATSC Pilot SNR: {atsc_obs['snr_db']:.1f} dB (Locked: {atsc_obs['locked']}), Offset: {atsc_obs['carrier_offset_hz']:+.1f} Hz")
@@ -322,6 +321,32 @@ def main():
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
     print(f"[{time.strftime('%H:%M:%S')}] Observatory state successfully written to {STATE_FILE}")
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Opera Cake Multi-Band Scientific Observatory")
+    parser.add_argument("--continuous", action="store_true", help="Run continuously in a loop")
+    parser.add_argument("--interval", type=float, default=15.0, help="Interval in seconds between cycles in continuous mode")
+    args = parser.parse_args()
+
+    print("========================================================================")
+    print("      OPERA CAKE MULTI-BAND SCIENTIFIC OBSERVATORY (RX-ONLY)            ")
+    print("========================================================================")
+    print(f"Device: HackRF Pro ({PRO_SERIAL})")
+    print("Reference: Bodnar LBE-1421 GPSDO 10 MHz & 1PPS")
+    print(f"State File: {STATE_FILE}\n")
+
+    if args.continuous:
+        print(f"Running continuously with {args.interval:.1f}s interval. Press Ctrl-C to stop.\n")
+        try:
+            while True:
+                run_single_cycle()
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\nObservatory loop terminated by operator.")
+    else:
+        run_single_cycle()
 
 
 if __name__ == "__main__":
